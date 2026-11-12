@@ -3,7 +3,7 @@
  * Tag Scope Toggle ([Current Tab | All Skills]), Smart Auto-Tab Switching, Tag CRUD Management,
  * and High-Visibility Empty States
  */
-import { api } from "../api.js?v=20261112-v6";
+import { api } from "../api.js?v=20261112-v7";
 import {
   store,
   slugifyTitle,
@@ -12,12 +12,12 @@ import {
   getProviderSvgIcon,
   showToast,
   showConfirmDialog
-} from "../state.js?v=20261112-v6";
+} from "../state.js?v=20261112-v7";
 import {
   highlightText,
   extractInstructionMatchSnippet,
   escapeHtml
-} from "../markdown.js?v=20261112-v6";
+} from "../markdown.js?v=20261112-v7";
 
 export function initSkillList({ onSelectSkill, onQuickSyncSkill, onRefreshAll }) {
   const el = {
@@ -29,6 +29,14 @@ export function initSkillList({ onSelectSkill, onQuickSyncSkill, onRefreshAll })
     countTemplate: document.getElementById("count-template"),
     countSystem: document.getElementById("count-system"),
     countPlugin: document.getElementById("count-plugin"),
+    overviewTotalCount: document.getElementById("overview-total-count"),
+    statCountPersonal: document.getElementById("stat-count-personal"),
+    statCountSynced: document.getElementById("stat-count-synced"),
+    statSubdetailSynced: document.getElementById("stat-subdetail-synced"),
+    statCountTemplates: document.getElementById("stat-count-templates"),
+    statCountPlugins: document.getElementById("stat-count-plugins"),
+    statCountSystem: document.getElementById("stat-count-system"),
+    statPills: document.querySelectorAll(".stat-pill"),
     libraryGlobalSummary: document.getElementById("library-global-summary"),
     libraryTabExplanation: document.getElementById("library-tab-explanation"),
     activeFilterIndicator: document.getElementById("active-filter-indicator"),
@@ -114,11 +122,22 @@ export function initSkillList({ onSelectSkill, onQuickSyncSkill, onRefreshAll })
     if (el.countSystem) el.countSystem.textContent = String(systemCount);
     if (el.countPlugin) el.countPlugin.textContent = String(pluginCount);
 
-    // Multi-Tab Overview Global Summary & Subtitle Explanation
+    // Multi-Tab Overview Global Summary & Stat Strip Breakdown
+    const totalUnique = (skills || []).length;
     const totalPersonal = (skills || []).filter((s) => (s.source_category || "user") === "user" && !s.is_catalog_only).length;
     const totalSynced = (skills || []).filter((s) => !s.is_catalog_only && s.source_category !== "system").length;
     const totalTemplates = (skills || []).filter((s) => s.source_category === "template").length;
     const syncedTemplates = (skills || []).filter((s) => s.source_category === "template" && !s.is_catalog_only).length;
+    const totalPlugins = (skills || []).filter((s) => s.source_category === "plugin").length;
+    const totalSystem = (skills || []).filter((s) => s.source_category === "system").length;
+
+    if (el.overviewTotalCount) el.overviewTotalCount.textContent = String(totalUnique);
+    if (el.statCountPersonal) el.statCountPersonal.textContent = String(totalPersonal);
+    if (el.statCountSynced) el.statCountSynced.textContent = String(totalSynced);
+    if (el.statSubdetailSynced) el.statSubdetailSynced.textContent = `(${totalPersonal} Personal + ${syncedTemplates} Templates)`;
+    if (el.statCountTemplates) el.statCountTemplates.textContent = String(totalTemplates);
+    if (el.statCountPlugins) el.statCountPlugins.textContent = String(totalPlugins);
+    if (el.statCountSystem) el.statCountSystem.textContent = String(totalSystem);
 
     if (el.libraryGlobalSummary) {
       el.libraryGlobalSummary.textContent = `${totalPersonal} Personal · ${totalSynced} Synced · ${totalTemplates} Built-in`;
@@ -127,13 +146,13 @@ export function initSkillList({ onSelectSkill, onQuickSyncSkill, onRefreshAll })
     if (el.libraryTabExplanation) {
       const { categoryFilter, tagScope, selectedTag } = store.getState();
       if (selectedTag && tagScope === "all") {
-        el.libraryTabExplanation.textContent = `All Skills Scope — Showing all skills matching #${selectedTag} across all categories.`;
+        el.libraryTabExplanation.textContent = `All Skills Scope — Showing all skills matching #${selectedTag} across Personal, Synced, Templates, and Plugins.`;
       } else if (categoryFilter === "user") {
-        el.libraryTabExplanation.textContent = `My Skills — Personal skills authored by you or imported. All active skills here sync automatically across your AI tools.`;
+        el.libraryTabExplanation.textContent = `My Skills — Showing ${userCount} personal skills authored by you or imported. All active skills here synchronize automatically across your AI tools.`;
       } else if (categoryFilter === "synced") {
-        el.libraryTabExplanation.textContent = `Active & Synced — Showing all ${totalSynced} skills currently synced across your AI providers (${totalPersonal} personal, ${syncedTemplates} template).`;
+        el.libraryTabExplanation.textContent = `Active & Synced — Showing all ${totalSynced} skills currently being synchronized across your AI providers (${totalPersonal} Personal + ${syncedTemplates} Templates).`;
       } else if (categoryFilter === "template") {
-        el.libraryTabExplanation.textContent = `Built-in & Templates — Curated agent skills from OpenAI, Antigravity, Claude, and Cursor. Click "+ Sync to My AIs" to activate.`;
+        el.libraryTabExplanation.textContent = `Built-in & Templates — Curated agent skills from OpenAI Codex, Antigravity, Claude, and Cursor. Click "+ Sync to My AIs" on any skill to activate sync.`;
       } else if (categoryFilter === "system") {
         el.libraryTabExplanation.textContent = `System — Internal meta-skills, bootstrap protocol, and core system utilities.`;
       } else if (categoryFilter === "plugin") {
@@ -156,6 +175,10 @@ export function initSkillList({ onSelectSkill, onQuickSyncSkill, onRefreshAll })
     el.catTabs.forEach((tab) => {
       const cat = tab.getAttribute("data-category");
       tab.classList.toggle("active", cat === categoryFilter);
+    });
+    el.statPills?.forEach((pill) => {
+      const cat = pill.getAttribute("data-stat-category");
+      pill.classList.toggle("active", cat === categoryFilter);
     });
     el.btnTagScopeCurrent?.classList.toggle("active", tagScope === "current");
     el.btnTagScopeAll?.classList.toggle("active", tagScope === "all");
@@ -603,9 +626,15 @@ export function initSkillList({ onSelectSkill, onQuickSyncSkill, onRefreshAll })
       // Subtle ● Synced status badge on active synced skills
       if (!skill.is_catalog_only && skill.source_category !== "system") {
         const syncedBadge = document.createElement("span");
-        syncedBadge.className = "status-badge-synced-pill";
-        syncedBadge.title = "Currently active & synced across your installed AI providers";
-        syncedBadge.innerHTML = `<span class="synced-dot">●</span><span>Synced</span>`;
+        if (categoryFilter === "synced") {
+          syncedBadge.className = "status-badge-synced-pill live-synced-pulse";
+          syncedBadge.title = "Currently active & synchronized across your installed AI providers";
+          syncedBadge.innerHTML = `<span class="synced-dot">●</span><span>Live in Active & Synced</span>`;
+        } else {
+          syncedBadge.className = "status-badge-synced-pill";
+          syncedBadge.title = "Currently active & synced across your installed AI providers";
+          syncedBadge.innerHTML = `<span class="synced-dot">●</span><span>Synced</span>`;
+        }
         badgesWrap.appendChild(syncedBadge);
       }
 
@@ -630,11 +659,17 @@ export function initSkillList({ onSelectSkill, onQuickSyncSkill, onRefreshAll })
         card.appendChild(descEl);
       }
 
-      // 3. Trigger ("When to use")
-      if (skill.when_to_use) {
+      // 3. Compact Lightning Trigger Pill ("When to use")
+      if (skill.when_to_use && skill.when_to_use.trim()) {
         const trigEl = document.createElement("div");
-        trigEl.className = "library-card-trigger";
-        trigEl.innerHTML = `<strong>Trigger:</strong> ${highlightText(skill.when_to_use, q)}`;
+        trigEl.className = "card-trigger-pill";
+        trigEl.title = `Trigger: ${skill.when_to_use}`;
+        trigEl.innerHTML = `
+          <svg class="trigger-bolt" viewBox="0 0 24 24" fill="currentColor">
+            <polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2" />
+          </svg>
+          <span>${highlightText(skill.when_to_use, q)}</span>
+        `;
         card.appendChild(trigEl);
       }
 
@@ -730,7 +765,13 @@ export function initSkillList({ onSelectSkill, onQuickSyncSkill, onRefreshAll })
       footer.appendChild(providersWrap);
       card.appendChild(footer);
 
-      card.addEventListener("click", () => onSelectSkill(skill.name));
+      card.addEventListener("click", () => {
+        const cur = store.getState();
+        if (cur.selectedSkillName === skill.name && cur.activeScreen === "detail") {
+          return;
+        }
+        onSelectSkill(skill.name);
+      });
       el.libraryGrid.appendChild(card);
     });
   }
@@ -760,6 +801,13 @@ export function initSkillList({ onSelectSkill, onQuickSyncSkill, onRefreshAll })
   el.catTabs.forEach((tab) => {
     tab.addEventListener("click", () => {
       const category = tab.getAttribute("data-category") || "user";
+      store.update({ categoryFilter: category, originFilter: "" }, "skills:filterChanged");
+    });
+  });
+
+  el.statPills?.forEach((pill) => {
+    pill.addEventListener("click", () => {
+      const category = pill.getAttribute("data-stat-category") || "user";
       store.update({ categoryFilter: category, originFilter: "" }, "skills:filterChanged");
     });
   });

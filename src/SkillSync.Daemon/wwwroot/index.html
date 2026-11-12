@@ -7,9 +7,9 @@
     <meta http-equiv="Pragma" content="no-cache" />
     <meta http-equiv="Expires" content="0" />
     <title>SkillHub</title>
-    <link rel="stylesheet" href="/css/base.css?v=20261112-v6" />
-    <link rel="stylesheet" href="/css/layout.css?v=20261112-v6" />
-    <link rel="stylesheet" href="/css/components.css?v=20261112-v6" />
+    <link rel="stylesheet" href="/css/base.css?v=20261112-v7" />
+    <link rel="stylesheet" href="/css/layout.css?v=20261112-v7" />
+    <link rel="stylesheet" href="/css/components.css?v=20261112-v7" />
   </head>
   <body>
     <div class="desktop-app">
@@ -176,10 +176,45 @@
               </div>
             </div>
 
-            <!-- Subtle Summary & Tab Explanation Bar -->
-            <div id="library-tab-summary-bar" class="library-tab-summary-bar">
-              <span id="library-global-summary" class="library-global-summary">0 Personal · 0 Synced · 0 Built-in</span>
-              <span id="library-tab-explanation" class="library-tab-explanation">Loading skills...</span>
+            <!-- Interactive Library Overview Header & Stat Strip -->
+            <div id="library-overview-strip" class="library-overview-strip">
+              <div class="overview-top-row">
+                <div class="overview-total-badge" id="overview-total-badge" title="Total unique skills discovered and managed by SkillHub">
+                  <span class="overview-total-num" id="overview-total-count">0</span>
+                  <span class="overview-total-label">Total Unique Skills</span>
+                </div>
+                <div class="overview-stat-pills" id="overview-stat-pills">
+                  <button type="button" class="stat-pill active" data-stat-category="user" title="Skills authored by you or imported">
+                    <span class="stat-dot dot-user">●</span>
+                    <strong id="stat-count-personal">0</strong>
+                    <span>Personal</span>
+                  </button>
+                  <button type="button" class="stat-pill" data-stat-category="synced" title="All skills currently synchronized across your active AI providers">
+                    <span class="stat-dot dot-synced">●</span>
+                    <strong id="stat-count-synced">0</strong>
+                    <span>Live &amp; Synced</span>
+                    <span class="stat-subdetail" id="stat-subdetail-synced">(0 Personal + 0 Templates)</span>
+                  </button>
+                  <button type="button" class="stat-pill" data-stat-category="template" title="Built-in &amp; template skills from OpenAI Codex, Antigravity, Claude, Cursor">
+                    <span class="stat-dot dot-template">●</span>
+                    <strong id="stat-count-templates">0</strong>
+                    <span>Built-in &amp; Templates</span>
+                  </button>
+                  <button type="button" class="stat-pill" data-stat-category="plugin" title="Discovered third-party plugin skills">
+                    <span class="stat-dot dot-plugin">●</span>
+                    <strong id="stat-count-plugins">0</strong>
+                    <span>Plugin Catalog</span>
+                  </button>
+                  <button type="button" class="stat-pill" data-stat-category="system" title="System bootstrap &amp; meta-skills">
+                    <span class="stat-dot dot-system">●</span>
+                    <strong id="stat-count-system">0</strong>
+                    <span>System</span>
+                  </button>
+                </div>
+              </div>
+              <div class="overview-explanation-row">
+                <span id="library-tab-explanation" class="library-tab-explanation">Loading skills...</span>
+              </div>
             </div>
 
             <!-- Collapsible Filter & Custom Tag Drawer -->
@@ -253,15 +288,6 @@
                 <button id="btn-promote-skill" type="button" class="btn btn-primary btn-sm btn-nowrap hidden">
                   + Sync to My AIs
                 </button>
-                <button id="btn-unsync-template" type="button" class="btn btn-secondary btn-sm btn-nowrap hidden" title="Stop syncing this template to your AI providers">
-                  Disable Sync
-                </button>
-                <button id="btn-preview-from-read" type="button" class="btn btn-secondary btn-sm btn-nowrap" title="Inspect transpiled SKILL.md / .mdc files for each AI provider">
-                  Preview Provider Files
-                </button>
-                <button id="btn-export-skill" type="button" class="btn btn-secondary btn-sm btn-nowrap" title="Export portable SKILL.md file">
-                  Export .md
-                </button>
                 <button id="btn-edit-from-read" type="button" class="btn btn-primary btn-sm btn-nowrap">
                   <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2">
                     <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7" />
@@ -269,9 +295,36 @@
                   </svg>
                   <span id="btn-edit-from-read-label">Edit Skill</span>
                 </button>
-                <button id="btn-delete-from-read" type="button" class="btn btn-danger btn-sm btn-nowrap">
-                  Delete
-                </button>
+
+                <div class="doc-nav-actions-cluster">
+                  <button id="btn-preview-from-read" type="button" class="btn-icon" data-tooltip="Preview Transpiled Code (all AI tools)" aria-label="Preview Provider Files">
+                    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2">
+                      <polyline points="16 18 22 12 16 6" />
+                      <polyline points="8 6 2 12 8 18" />
+                    </svg>
+                  </button>
+                  <button id="btn-export-skill" type="button" class="btn-icon" data-tooltip="Export portable SKILL.md file" aria-label="Export .md">
+                    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2">
+                      <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+                      <polyline points="7 10 12 15 17 10" />
+                      <line x1="12" y1="15" x2="12" y2="3" />
+                    </svg>
+                  </button>
+                  <button id="btn-unsync-template" type="button" class="btn-icon btn-icon-warning hidden" data-tooltip="Stop syncing template across AI tools" aria-label="Disable Sync">
+                    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2">
+                      <circle cx="12" cy="12" r="10" />
+                      <line x1="4.93" y1="4.93" x2="19.07" y2="19.07" />
+                    </svg>
+                  </button>
+                  <button id="btn-delete-from-read" type="button" class="btn-icon btn-icon-danger" data-tooltip="Delete Skill" aria-label="Delete Skill">
+                    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2">
+                      <polyline points="3 6 5 6 21 6" />
+                      <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
+                      <line x1="10" y1="11" x2="10" y2="17" />
+                      <line x1="14" y1="11" x2="14" y2="17" />
+                    </svg>
+                  </button>
+                </div>
               </div>
             </div>
 
@@ -368,7 +421,11 @@
         <div class="edit-topbar">
           <div class="edit-topbar-left">
             <button id="btn-cancel-edit" type="button" class="btn btn-secondary btn-sm btn-nowrap">
-              &larr; Cancel
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2">
+                <line x1="19" y1="12" x2="5" y2="12" />
+                <polyline points="12 19 5 12 12 5" />
+              </svg>
+              <span>Cancel</span>
             </button>
             <div class="edit-title-group">
               <h1 id="editor-heading">Edit Skill</h1>
@@ -376,11 +433,20 @@
             </div>
           </div>
           <div class="edit-topbar-right">
-            <button id="btn-preview-from-edit" type="button" class="btn btn-secondary btn-sm btn-nowrap">
-              Preview Provider Files
+            <button id="btn-preview-from-edit" type="button" class="btn btn-secondary btn-sm btn-nowrap" data-tooltip="Preview provider files">
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2">
+                <polyline points="16 18 22 12 16 6" />
+                <polyline points="8 6 2 12 8 18" />
+              </svg>
+              <span>Preview Providers</span>
             </button>
             <button id="btn-save-skill" type="button" class="btn btn-primary btn-sm btn-nowrap">
-              Save &amp; Sync to My Skills
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2">
+                <path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z" />
+                <polyline points="17 21 17 13 7 13 7 21" />
+                <polyline points="7 3 7 8 15 8" />
+              </svg>
+              <span>Save &amp; Sync</span>
             </button>
           </div>
         </div>
@@ -588,24 +654,43 @@
         <div id="panel-import-browse" class="community-browser-body">
           <div class="community-browser-toolbar">
             <div class="community-repo-pills" id="community-repo-pills">
-              <span class="filter-drawer-label">Popular Repos:</span>
-              <button type="button" class="tag-chip active" data-community-repo="anthropics/skills">
-                anthropics/skills
+              <span class="filter-drawer-label">Source:</span>
+              <button type="button" class="tag-chip active" data-community-repo="featured/all">
+                ★ Featured Picks
+              </button>
+              <button type="button" class="tag-chip" data-community-repo="local/catalog">
+                ⚡ Local Plugin Catalog (500+)
+              </button>
+              <button type="button" class="tag-chip" data-community-repo="anthropics/skills">
+                Anthropic Official
               </button>
               <button type="button" class="tag-chip" data-community-repo="vercel-labs/agent-skills">
-                vercel-labs/agent-skills
+                Vercel Labs
+              </button>
+              <button type="button" class="tag-chip" data-community-repo="github/awesome-copilot">
+                GitHub Copilot
               </button>
             </div>
             <div class="community-search-bar">
               <input
                 id="community-search-input"
                 type="search"
-                placeholder="Search skills or enter any GitHub owner/repo (e.g. anthropics/skills)..."
+                placeholder="Search community skills, local catalog, or enter owner/repo..."
                 autocomplete="off"
               />
               <button id="btn-community-search" type="button" class="btn btn-secondary btn-sm btn-nowrap">
                 Search
               </button>
+            </div>
+            <div class="community-topic-chips" id="community-topic-chips">
+              <span class="filter-drawer-label">Topic:</span>
+              <button type="button" class="topic-chip active" data-community-topic="all">All Topics</button>
+              <button type="button" class="topic-chip" data-community-topic="coding">Coding &amp; Architecture</button>
+              <button type="button" class="topic-chip" data-community-topic="web">Web &amp; Frontend</button>
+              <button type="button" class="topic-chip" data-community-topic="data">Data &amp; AI</button>
+              <button type="button" class="topic-chip" data-community-topic="devops">DevOps &amp; Cloud</button>
+              <button type="button" class="topic-chip" data-community-topic="productivity">Productivity &amp; Docs</button>
+              <button type="button" class="topic-chip" data-community-topic="testing">Testing &amp; Security</button>
             </div>
           </div>
 
@@ -853,6 +938,6 @@
 
     <div id="toast-container" class="toast-container"></div>
 
-    <script type="module" src="/js/main.js?v=20261112-v6"></script>
+    <script type="module" src="/js/main.js?v=20261112-v7"></script>
   </body>
 </html>

@@ -36,7 +36,8 @@ public sealed record CommunitySkillSummary(
     [property: JsonPropertyName("path")] string Path,
     [property: JsonPropertyName("source")] string Source,
     [property: JsonPropertyName("description")] string Description,
-    [property: JsonPropertyName("is_installed")] bool IsInstalled
+    [property: JsonPropertyName("is_installed")] bool IsInstalled,
+    [property: JsonPropertyName("topic")] string Topic = "coding"
 );
 
 public sealed record CommunitySkillPreview(
@@ -81,24 +82,138 @@ public sealed class SkillImporterService
     public static IReadOnlyList<CommunityRepoSummary> GetCuratedRepositories() =>
     [
         new(
-            "vercel-labs/agent-skills",
-            "Vercel Labs • Agent Skills",
-            "React & Next.js performance patterns, web design guidelines, and Composition patterns."),
+            "featured/all",
+            "Featured • Curated Highlights",
+            "Top recommended agent skills across Anthropic, Vercel Labs, and your pre-installed local catalog."),
+        new(
+            "local/catalog",
+            "Featured • Local Plugin Catalog",
+            "500+ rich offline skills pre-indexed on your system: Stripe, Supabase, Cloudflare, Playwright, Figma, and more."),
         new(
             "anthropics/skills",
             "Anthropic • Official Skills",
             "Frontend design, MCP server builder, webapp testing, PDF/DOCX/XLSX document skills, and more."),
+        new(
+            "vercel-labs/agent-skills",
+            "Vercel Labs • Agent Skills",
+            "React & Next.js performance patterns, web design guidelines, and Composition patterns."),
         new(
             "github/awesome-copilot",
             "GitHub • Awesome Copilot & Agent Skills",
             "Community-curated coding workflows, architecture reviews, and testing rules.")
     ];
 
+    public static string InferTopic(string name, string? desc)
+    {
+        var text = $"{name} {desc}".ToLowerInvariant();
+        if (text.Contains("test") || text.Contains("playwright") || text.Contains("cypress") || text.Contains("audit") || text.Contains("security") || text.Contains("auth0") || text.Contains("auth") || text.Contains("qa"))
+            return "testing";
+        if (text.Contains("react") || text.Contains("next") || text.Contains("vue") || text.Contains("frontend") || text.Contains("css") || text.Contains("tailwind") || text.Contains("design") || text.Contains("ui") || text.Contains("ux") || text.Contains("figma") || text.Contains("canva") || text.Contains("browser"))
+            return "web";
+        if (text.Contains("data") || text.Contains("sql") || text.Contains("postgres") || text.Contains("supabase") || text.Contains("csv") || text.Contains("sheet") || text.Contains("database") || text.Contains("analytics") || text.Contains("gemini") || text.Contains("ai") || text.Contains("databricks") || text.Contains("lake") || text.Contains("spark"))
+            return "data";
+        if (text.Contains("docker") || text.Contains("cloud") || text.Contains("deploy") || text.Contains("aws") || text.Contains("azure") || text.Contains("gcp") || text.Contains("vercel") || text.Contains("cloudflare") || text.Contains("railway") || text.Contains("netlify") || text.Contains("ci") || text.Contains("cd") || text.Contains("linux") || text.Contains("server") || text.Contains("infra"))
+            return "devops";
+        if (text.Contains("doc") || text.Contains("pdf") || text.Contains("docx") || text.Contains("pptx") || text.Contains("notion") || text.Contains("linear") || text.Contains("jira") || text.Contains("slack") || text.Contains("mail") || text.Contains("gmail") || text.Contains("calendar") || text.Contains("dropbox") || text.Contains("workflow") || text.Contains("task") || text.Contains("todo"))
+            return "productivity";
+        return "coding";
+    }
+
     public async Task<IReadOnlyList<CommunitySkillSummary>> BrowseRepositorySkillsAsync(
         string repoInput,
         string? filterQuery = null,
         CancellationToken ct = default)
     {
+        if (string.Equals(repoInput, "local/catalog", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(repoInput, "local", StringComparison.OrdinalIgnoreCase))
+        {
+            var plugins = _engine.ListSkills(category: "plugin");
+            var localResults = new List<CommunitySkillSummary>();
+            foreach (var p in plugins)
+            {
+                var userCopy = _engine.GetSkill(p.Name);
+                var isUserInstalled = userCopy is not null &&
+                                      string.Equals(userCopy.SourceCategory, "user", StringComparison.OrdinalIgnoreCase) &&
+                                      !userCopy.IsCatalogOnly;
+
+                var topic = InferTopic(p.Name, p.Description);
+                localResults.Add(new CommunitySkillSummary(
+                    Slug: p.Name,
+                    Title: p.GetEffectiveTitle(),
+                    Repo: "local/catalog",
+                    GitRef: "LOCAL",
+                    Path: $"plugins/{p.Name}/SKILL.md",
+                    Source: $"local/catalog/{p.Name}",
+                    Description: p.Description ?? $"Offline catalog skill: {p.GetEffectiveTitle()}",
+                    IsInstalled: isUserInstalled,
+                    Topic: topic
+                ));
+            }
+
+            if (!string.IsNullOrWhiteSpace(filterQuery))
+            {
+                var q = filterQuery.Trim();
+                localResults = localResults
+                    .Where(s =>
+                        s.Title.Contains(q, StringComparison.OrdinalIgnoreCase) ||
+                        s.Slug.Contains(q, StringComparison.OrdinalIgnoreCase) ||
+                        s.Description.Contains(q, StringComparison.OrdinalIgnoreCase) ||
+                        s.Topic.Equals(q, StringComparison.OrdinalIgnoreCase))
+                    .ToList();
+            }
+
+            return localResults.OrderBy(s => s.Title, StringComparer.OrdinalIgnoreCase).ToList();
+        }
+
+        if (string.Equals(repoInput, "featured/all", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(repoInput, "all", StringComparison.OrdinalIgnoreCase))
+        {
+            var allHighlights = new List<CommunitySkillSummary>();
+            allHighlights.AddRange(GetFallbackCuratedSkills(string.Empty));
+
+            // Surface top popular local plugins (e.g. stripe, supabase, playwright, cloudflare, docker, figma, notion)
+            var localPlugins = _engine.ListSkills(category: "plugin");
+            var popularKeywords = new[] { "playwright", "stripe", "supabase", "cloudflare", "docker", "figma", "notion", "github", "react", "sql", "git" };
+            var featuredPlugins = localPlugins
+                .Where(p => popularKeywords.Any(k => p.Name.Contains(k, StringComparison.OrdinalIgnoreCase) || (p.Description ?? string.Empty).Contains(k, StringComparison.OrdinalIgnoreCase)))
+                .Take(25);
+
+            foreach (var p in featuredPlugins)
+            {
+                var userCopy = _engine.GetSkill(p.Name);
+                var isUserInstalled = userCopy is not null &&
+                                      string.Equals(userCopy.SourceCategory, "user", StringComparison.OrdinalIgnoreCase) &&
+                                      !userCopy.IsCatalogOnly;
+
+                allHighlights.Add(new CommunitySkillSummary(
+                    Slug: p.Name,
+                    Title: p.GetEffectiveTitle(),
+                    Repo: "local/catalog",
+                    GitRef: "LOCAL",
+                    Path: $"plugins/{p.Name}/SKILL.md",
+                    Source: $"local/catalog/{p.Name}",
+                    Description: p.Description ?? $"Offline catalog skill: {p.GetEffectiveTitle()}",
+                    IsInstalled: isUserInstalled,
+                    Topic: InferTopic(p.Name, p.Description)
+                ));
+            }
+
+            if (!string.IsNullOrWhiteSpace(filterQuery))
+            {
+                var q = filterQuery.Trim();
+                allHighlights = allHighlights
+                    .Where(s =>
+                        s.Title.Contains(q, StringComparison.OrdinalIgnoreCase) ||
+                        s.Slug.Contains(q, StringComparison.OrdinalIgnoreCase) ||
+                        s.Description.Contains(q, StringComparison.OrdinalIgnoreCase) ||
+                        s.Topic.Equals(q, StringComparison.OrdinalIgnoreCase) ||
+                        s.Repo.Contains(q, StringComparison.OrdinalIgnoreCase))
+                    .ToList();
+            }
+
+            return allHighlights;
+        }
+
         var cleaned = NormalizeCliAndSkillsShInput(repoInput, out _);
         var (owner, repo, gitRef, _) = ParseGitHubCoordinates(cleaned);
         var fullRepo = $"{owner}/{repo}";
@@ -129,6 +244,7 @@ public sealed class SkillImporterService
 
                 var existing = _engine.GetSkill(slug);
                 var isInstalled = existing is not null && !existing.IsCatalogOnly;
+                var desc = GetCuratedSkillHint(fullRepo, slug) ?? $"Community skill from {fullRepo} ({relPath})";
 
                 results.Add(new CommunitySkillSummary(
                     Slug: slug,
@@ -137,8 +253,9 @@ public sealed class SkillImporterService
                     GitRef: gitRef,
                     Path: relPath,
                     Source: sourceSpec,
-                    Description: GetCuratedSkillHint(fullRepo, slug) ?? $"Community skill from {fullRepo} ({relPath})",
-                    IsInstalled: isInstalled));
+                    Description: desc,
+                    IsInstalled: isInstalled,
+                    Topic: InferTopic(slug, desc)));
             }
         }
         catch
@@ -160,6 +277,7 @@ public sealed class SkillImporterService
                     s.Title.Contains(q, StringComparison.OrdinalIgnoreCase) ||
                     s.Slug.Contains(q, StringComparison.OrdinalIgnoreCase) ||
                     s.Description.Contains(q, StringComparison.OrdinalIgnoreCase) ||
+                    s.Topic.Equals(q, StringComparison.OrdinalIgnoreCase) ||
                     s.Repo.Contains(q, StringComparison.OrdinalIgnoreCase))
                 .ToList();
         }
@@ -174,7 +292,7 @@ public sealed class SkillImporterService
         var q = (query ?? string.Empty).Trim();
         if (string.IsNullOrWhiteSpace(q))
         {
-            return await BrowseRepositorySkillsAsync("anthropics/skills", null, ct).ConfigureAwait(false);
+            return await BrowseRepositorySkillsAsync("featured/all", null, ct).ConfigureAwait(false);
         }
 
         // If user entered an explicit owner/repo shorthand or GitHub URL, browse that repository directly
@@ -191,10 +309,21 @@ public sealed class SkillImporterService
             }
         }
 
-        // Search across the top curated repositories in parallel
-        var curatedRepos = new[] { "vercel-labs/agent-skills", "anthropics/skills" };
+        // Search across curated sources + local catalog in parallel
         var combined = new List<CommunitySkillSummary>();
 
+        // 1. Local catalog search
+        try
+        {
+            var localMatches = await BrowseRepositorySkillsAsync("local/catalog", q, ct).ConfigureAwait(false);
+            combined.AddRange(localMatches);
+        }
+        catch
+        {
+        }
+
+        // 2. Curated repos search
+        var curatedRepos = new[] { "vercel-labs/agent-skills", "anthropics/skills" };
         foreach (var repo in curatedRepos)
         {
             try
@@ -219,6 +348,41 @@ public sealed class SkillImporterService
         string gitRef = "HEAD",
         CancellationToken ct = default)
     {
+        if (string.Equals(repoInput, "local/catalog", StringComparison.OrdinalIgnoreCase) ||
+            repoInput.StartsWith("local", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(gitRef, "LOCAL", StringComparison.OrdinalIgnoreCase))
+        {
+            var rawSlug = Path.GetFileName(path.TrimEnd('/').Replace("/SKILL.md", "", StringComparison.OrdinalIgnoreCase));
+            if (string.IsNullOrWhiteSpace(rawSlug) || rawSlug.Equals("SKILL.md", StringComparison.OrdinalIgnoreCase))
+            {
+                rawSlug = Path.GetFileNameWithoutExtension(path);
+            }
+            var slug = ProviderDiscoveryService.NormalizeSlug(rawSlug);
+            var model = _engine.GetSkill(slug) ??
+                        _engine.ListSkills(category: "plugin").FirstOrDefault(s => s.Name.Equals(slug, StringComparison.OrdinalIgnoreCase) || s.Name.Contains(slug, StringComparison.OrdinalIgnoreCase));
+
+            if (model is null)
+            {
+                throw new InvalidOperationException($"Local skill '{slug}' not found in catalog.");
+            }
+
+            var existingUser = _engine.GetSkill(model.Name);
+            var isInstalled = existingUser is not null &&
+                              string.Equals(existingUser.SourceCategory, "user", StringComparison.OrdinalIgnoreCase) &&
+                              !existingUser.IsCatalogOnly;
+
+            return new CommunitySkillPreview(
+                Slug: model.Name,
+                Title: model.GetEffectiveTitle(),
+                Repo: "local/catalog",
+                Path: path,
+                Source: $"local/catalog/{model.Name}",
+                Description: model.Description ?? $"Offline catalog skill: {model.GetEffectiveTitle()}",
+                WhenToUse: model.WhenToUse ?? string.Empty,
+                InstructionsMarkdown: model.InstructionsMarkdown,
+                IsInstalled: isInstalled);
+        }
+
         var (owner, repo, parsedRef, _) = ParseGitHubCoordinates(repoInput);
         var effectiveRef = string.IsNullOrWhiteSpace(gitRef) ? parsedRef : gitRef;
         var cleanPath = path.TrimStart('/');
@@ -236,25 +400,25 @@ public sealed class SkillImporterService
             ? cleanPath[..cleanPath.LastIndexOf('/')]
             : string.Empty;
         var folderSlug = !string.IsNullOrEmpty(dirPrefix) ? Path.GetFileName(dirPrefix) : repo;
-        var model = ParseMarkdownToSkillModel(rawMarkdown, folderSlug, $"GitHub ({fullRepo})");
+        var parsedModel = ParseMarkdownToSkillModel(rawMarkdown, folderSlug, $"GitHub ({fullRepo})");
 
         var sourceSpec = !string.IsNullOrEmpty(dirPrefix)
             ? $"{fullRepo}/{dirPrefix}"
             : fullRepo;
 
-        var existing = _engine.GetSkill(model.Name);
-        var isInstalled = existing is not null && !existing.IsCatalogOnly;
+        var existing = _engine.GetSkill(parsedModel.Name);
+        var isSkillInstalled = existing is not null && !existing.IsCatalogOnly;
 
         return new CommunitySkillPreview(
-            Slug: model.Name,
-            Title: model.GetEffectiveTitle(),
+            Slug: parsedModel.Name,
+            Title: parsedModel.GetEffectiveTitle(),
             Repo: fullRepo,
             Path: cleanPath,
             Source: sourceSpec,
-            Description: model.Description,
-            WhenToUse: model.WhenToUse,
-            InstructionsMarkdown: model.InstructionsMarkdown,
-            IsInstalled: isInstalled);
+            Description: parsedModel.Description,
+            WhenToUse: parsedModel.WhenToUse,
+            InstructionsMarkdown: parsedModel.InstructionsMarkdown,
+            IsInstalled: isSkillInstalled);
     }
 
     private static async Task<List<string>> GetRepositoryBlobPathsAsync(
@@ -333,7 +497,8 @@ public sealed class SkillImporterService
                     Path: x.Path,
                     Source: $"{x.Repo}/{dirPrefix}",
                     Description: x.Desc,
-                    IsInstalled: existing is not null && !existing.IsCatalogOnly);
+                    IsInstalled: existing is not null && !existing.IsCatalogOnly,
+                    Topic: InferTopic(x.Slug, x.Desc));
             });
     }
 
@@ -370,8 +535,45 @@ public sealed class SkillImporterService
                 $"Imported '{saved.GetEffectiveTitle()}' and synced across your AI providers.");
         }
 
-        // 2. GitHub URL or skills.sh shorthand
+        // 2. Local Catalog Skill 1-Click Import
         var rawSource = (request.Source ?? string.Empty).Trim();
+        if (!string.IsNullOrWhiteSpace(rawSource) &&
+            (rawSource.StartsWith("local/catalog/", StringComparison.OrdinalIgnoreCase) ||
+             rawSource.StartsWith("local/", StringComparison.OrdinalIgnoreCase)))
+        {
+            var slug = rawSource[(rawSource.LastIndexOf('/') + 1)..].Trim();
+            var localSkill = _engine.GetSkill(slug) ?? _engine.GetSkill(ProviderDiscoveryService.NormalizeSlug(slug));
+            if (localSkill is null)
+            {
+                throw new InvalidOperationException($"Local catalog skill '{slug}' not found.");
+            }
+
+            var userSkill = new CanonicalSkillModel
+            {
+                Name = localSkill.Name,
+                Title = localSkill.Title,
+                Version = localSkill.Version,
+                Description = localSkill.Description,
+                WhenToUse = localSkill.WhenToUse,
+                SummaryShort = localSkill.SummaryShort,
+                SourceCategory = "user",
+                OriginProvider = "Local Catalog",
+                IsCatalogOnly = false,
+                Tags = new List<string>(localSkill.Tags),
+                Targets = localSkill.Targets,
+                Passthrough = new Dictionary<string, object?>(localSkill.Passthrough, StringComparer.Ordinal),
+                InstructionsMarkdown = localSkill.InstructionsMarkdown,
+                SupportingFiles = new Dictionary<string, string>(localSkill.SupportingFiles, StringComparer.Ordinal)
+            };
+
+            var saved = await _engine.UpsertSkillDirectAsync(userSkill, "webui:import-catalog", ct).ConfigureAwait(false);
+            return new SkillImportResult(
+                1,
+                [saved],
+                $"Imported '{saved.GetEffectiveTitle()}' from Local Catalog into My Skills and synced across your AI providers.");
+        }
+
+        // 3. GitHub URL or skills.sh shorthand
         if (string.IsNullOrWhiteSpace(rawSource))
         {
             throw new InvalidOperationException("Please provide a GitHub repository, skills.sh shorthand, or skill file.");

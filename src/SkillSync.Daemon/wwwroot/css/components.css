@@ -1993,44 +1993,257 @@ details[open] > .accordion-summary::before {
   font-size: 9px;
 }
 
-/* Multi-tab Overview Summary Bar & Explanation */
-.library-tab-summary-bar {
+/* ==========================================================================
+   Multi-tab Overview Header & Interactive Stat Strip
+   ========================================================================== */
+.library-overview-strip {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 10px;
+  padding: 10px 14px;
+  background: var(--bg-surface);
+  border: 1px solid var(--border-subtle);
+  border-radius: 10px;
+}
+
+.overview-top-row {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 14px;
-  margin-top: 10px;
-  padding: 7px 14px;
-  background: var(--bg-surface);
-  border: 1px solid var(--border-subtle);
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.overview-total-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 12px;
   border-radius: 8px;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-strong);
+  font-family: inherit;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.overview-total-num {
+  font-size: 15px;
+  font-weight: 800;
+  color: var(--text-primary);
+  font-family: var(--font-mono);
+}
+
+.overview-total-label {
   font-size: 12px;
+  font-weight: 600;
   color: var(--text-secondary);
 }
 
-.library-global-summary {
-  font-weight: 700;
-  color: var(--text-primary);
-  font-family: var(--font-mono);
+.overview-stat-pills {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.stat-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+  border-radius: 999px;
+  background: var(--bg-input);
+  border: 1px solid var(--border-subtle);
   font-size: 11.5px;
+  font-weight: 500;
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition: all 0.14s ease;
   white-space: nowrap;
 }
 
-.library-tab-explanation {
-  color: var(--text-muted);
-  line-height: 1.4;
-  text-align: right;
-  flex: 1;
+.stat-pill:hover {
+  border-color: var(--border-strong);
+  color: var(--text-primary);
+  background: var(--bg-elevated);
 }
 
-@media (max-width: 720px) {
-  .library-tab-summary-bar {
+.stat-pill.active {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-weight: 600;
+}
+
+.stat-dot {
+  font-size: 9px;
+  line-height: 1;
+}
+
+.dot-user {
+  color: var(--accent);
+}
+
+.dot-synced {
+  color: var(--success);
+}
+
+.dot-template {
+  color: var(--sky);
+}
+
+.dot-plugin {
+  color: var(--text-muted);
+}
+
+.dot-system {
+  color: var(--warning);
+}
+
+.stat-subdetail {
+  font-size: 10.5px;
+  color: var(--text-muted);
+  margin-left: 2px;
+}
+
+.stat-pill.active .stat-subdetail {
+  color: var(--accent);
+  opacity: 0.85;
+}
+
+.overview-explanation-row {
+  display: flex;
+  align-items: center;
+  font-size: 12px;
+  color: var(--text-muted);
+  line-height: 1.45;
+  border-top: 1px dashed var(--border-subtle);
+  padding-top: 6px;
+}
+
+.library-tab-explanation {
+  color: var(--text-secondary);
+}
+
+/* ==========================================================================
+   Compact Lightning Trigger Pill & Card Polish
+   ========================================================================== */
+.card-trigger-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11.5px;
+  color: var(--text-secondary);
+  background: var(--bg-app);
+  padding: 4px 9px;
+  border-radius: 6px;
+  border: 1px solid var(--border-subtle);
+  max-width: 100%;
+}
+
+.card-trigger-pill span {
+  display: -webkit-box;
+  -webkit-line-clamp: 1;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.trigger-bolt {
+  color: var(--warning);
+  flex-shrink: 0;
+  width: 12px;
+  height: 12px;
+}
+
+/* Active Synced Pulse Badge */
+.status-badge-synced-pill.live-synced-pulse {
+  background: var(--success-soft);
+  color: var(--success);
+  border: 1px solid rgba(16, 185, 129, 0.4);
+}
+
+.status-badge-synced-pill.live-synced-pulse .synced-dot {
+  color: var(--success);
+  animation: pulse-dot 2s infinite ease-in-out;
+}
+
+@keyframes pulse-dot {
+  0% { transform: scale(1); opacity: 1; }
+  50% { transform: scale(1.3); opacity: 0.6; }
+  100% { transform: scale(1); opacity: 1; }
+}
+
+/* ==========================================================================
+   Community Discovery Hub Topic Chips & Toolbar
+   ========================================================================== */
+.community-topic-chips {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  padding-top: 6px;
+  border-top: 1px dashed var(--border-subtle);
+}
+
+.topic-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 9px;
+  border-radius: 999px;
+  background: var(--bg-surface);
+  border: 1px solid var(--border-subtle);
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition: all 0.12s ease;
+}
+
+.topic-chip:hover {
+  border-color: var(--border-strong);
+  color: var(--text-primary);
+}
+
+.topic-chip.active {
+  background: var(--accent-soft);
+  border-color: var(--accent);
+  color: var(--accent);
+  font-weight: 600;
+}
+
+.community-skill-topic-badge {
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  padding: 1px 6px;
+  border-radius: 4px;
+  background: var(--bg-elevated);
+  color: var(--text-muted);
+  border: 1px solid var(--border-subtle);
+}
+
+/* Streamlined Document Action Cluster */
+.doc-nav-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.doc-nav-actions-cluster {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+@media (max-width: 760px) {
+  .overview-top-row {
     flex-direction: column;
     align-items: flex-start;
-    gap: 4px;
-  }
-  .library-tab-explanation {
-    text-align: left;
   }
 }
 

@@ -1,7 +1,7 @@
 /**
  * Provider Transpiler Output Preview Screen Component
  */
-import { store, humanizeSlug, showToast } from "../state.js?v=20261112-v6";
+import { store, humanizeSlug, showToast } from "../state.js?v=20261112-v7";
 
 export function initTranspilerPreview({ onClosePreview }) {
   const el = {

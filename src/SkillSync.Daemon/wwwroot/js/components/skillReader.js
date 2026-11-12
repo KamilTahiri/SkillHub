@@ -4,7 +4,7 @@
  * strips duplicate H1 headings, supports 1-click per-provider sync toggling,
  * interactive "+ Add tag" dropdown popover, and exports portable SKILL.md files.
  */
-import { api } from "../api.js?v=20261112-v6";
+import { api } from "../api.js?v=20261112-v7";
 import {
   store,
   slugifyTitle,
@@ -13,8 +13,8 @@ import {
   getProviderSvgIcon,
   showToast,
   showConfirmDialog
-} from "../state.js?v=20261112-v6";
-import { renderMarkdown, highlightText, escapeHtml } from "../markdown.js?v=20261112-v6";
+} from "../state.js?v=20261112-v7";
+import { renderMarkdown, highlightText, escapeHtml } from "../markdown.js?v=20261112-v7";
 
 export function initSkillReader({
   onBackToLibrary,
@@ -23,6 +23,7 @@ export function initSkillReader({
   onSkillPromoted,
   onSkillDeleted
 }) {
+  let lastRenderedKey = "";
   const el = {
     btnBackToLibrary: document.getElementById("btn-back-to-library"),
     readCategoryBadge: document.getElementById("read-category-badge"),
@@ -143,6 +144,12 @@ export function initSkillReader({
     if (!skill) return;
 
     const q = (searchQuery || "").trim();
+    const renderKey = `${skill.name}:${skill.instructions_markdown?.length || 0}:${(skill.tags || []).join(",")}:${q}:${skill.is_catalog_only}`;
+    if (renderKey === lastRenderedKey && el.readTitle.textContent) {
+      return;
+    }
+    lastRenderedKey = renderKey;
+
     const displayTitle = skill.title || humanizeSlug(skill.name);
     const badgeInfo = getBadgeVariant(skill);
     const installedProviders = getInstalledProviderSet();

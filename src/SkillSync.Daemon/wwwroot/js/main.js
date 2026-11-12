@@ -6,13 +6,13 @@
  *   - "edit":    Dedicated Cohesive Vertical Edit / Create View
  *   - "preview": Provider Transpiler Output Preview
  */
-import { api } from "./api.js?v=20261112-v6";
-import { store, showToast } from "./state.js?v=20261112-v6";
-import { initStatusBar } from "./components/statusBar.js?v=20261112-v6";
-import { initSkillList } from "./components/skillList.js?v=20261112-v6";
-import { initSkillReader } from "./components/skillReader.js?v=20261112-v6";
-import { initSkillEditor } from "./components/skillEditor.js?v=20261112-v6";
-import { initTranspilerPreview } from "./components/transpilerPreview.js?v=20261112-v6";
+import { api } from "./api.js?v=20261112-v7";
+import { store, showToast } from "./state.js?v=20261112-v7";
+import { initStatusBar } from "./components/statusBar.js?v=20261112-v7";
+import { initSkillList } from "./components/skillList.js?v=20261112-v7";
+import { initSkillReader } from "./components/skillReader.js?v=20261112-v7";
+import { initSkillEditor } from "./components/skillEditor.js?v=20261112-v7";
+import { initTranspilerPreview } from "./components/transpilerPreview.js?v=20261112-v7";
 
 const screens = {
   library: document.getElementById("screen-library"),
@@ -183,6 +183,20 @@ async function refreshSkillsAndProviders() {
 }
 
 async function selectSkillByName(name) {
+  const current = store.getState();
+  if (
+    current.selectedSkillName === name &&
+    current.currentSkillModel &&
+    current.activeScreen === "detail"
+  ) {
+    // Already selected and displaying in detail view! Immediate no-op!
+    return;
+  }
+  if (current.selectedSkillName === name && current.currentSkillModel) {
+    // Already loaded in state, no need to refetch from API
+    return;
+  }
+
   try {
     const data = await api.getSkill(name);
     store.update(

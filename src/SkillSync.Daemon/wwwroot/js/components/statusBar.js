@@ -3,9 +3,9 @@
  * Interactive Community Skill Browser (skills.sh / GitHub / Local .md),
  * Settings Modal & Activity Log Modal
  */
-import { api } from "../api.js?v=20261112-v6";
-import { store, getProviderSvgIcon, showToast, showConfirmDialog } from "../state.js?v=20261112-v6";
-import { renderMarkdown, escapeHtml } from "../markdown.js?v=20261112-v6";
+import { api } from "../api.js?v=20261112-v7";
+import { store, getProviderSvgIcon, showToast, showConfirmDialog } from "../state.js?v=20261112-v7";
+import { renderMarkdown, escapeHtml } from "../markdown.js?v=20261112-v7";
 
 export function initStatusBar({
   onRefreshAll,
@@ -32,8 +32,11 @@ export function initStatusBar({
     panelImportBrowse: document.getElementById("panel-import-browse"),
     panelImportDirect: document.getElementById("panel-import-direct"),
     communityRepoPills: document.getElementById("community-repo-pills"),
+    communityTopicChips: document.getElementById("community-topic-chips"),
     communitySearchInput: document.getElementById("community-search-input"),
     btnCommunitySearch: document.getElementById("btn-community-search"),
+    communityListTitle: document.getElementById("community-list-title"),
+    communityListCount: document.getElementById("community-list-count"),
     communitySkillsList: document.getElementById("community-skills-list"),
     communityPreviewEmpty: document.getElementById("community-preview-empty"),
     communityPreviewContent: document.getElementById("community-preview-content"),
@@ -74,7 +77,9 @@ export function initStatusBar({
     activityList: document.getElementById("activity-list")
   };
 
-  let activeCommunityRepo = "anthropics/skills";
+  let activeCommunityRepo = "featured/all";
+  let activeCommunityTopic = "all";
+  let cachedCommunitySkills = [];
   let currentPreviewedSkill = null;
   let communityLoadedOnce = false;
 
@@ -325,53 +330,87 @@ export function initStatusBar({
 
   async function loadCommunitySkills({ repo = "", q = "" } = {}) {
     if (!el.communitySkillsList) return;
-    el.communitySkillsList.innerHTML = `<div class="field-hint" style="padding:18px;">Loading community skills...</div>`;
+    el.communitySkillsList.innerHTML = `<div class="field-hint" style="padding:18px;">Loading discovery hub skills...</div>`;
 
     try {
       const res = await api.getCommunitySkills(repo, q);
-      const list = res.skills || [];
-      el.communitySkillsList.innerHTML = "";
-
-      if (list.length === 0) {
-        el.communitySkillsList.innerHTML = `<div class="field-hint" style="padding:18px;">No community skills matched your search. Try another keyword or paste a GitHub repository URL in the Direct URL tab.</div>`;
-        return;
-      }
-
-      list.forEach((item, idx) => {
-        const btn = document.createElement("button");
-        btn.type = "button";
-        btn.className = "community-skill-item";
-        btn.innerHTML = `
-          <div class="community-skill-item-top">
-            <span class="community-skill-item-title">${escapeHtml(item.title || item.slug)}</span>
-            <span class="community-skill-item-repo">${escapeHtml(item.repo)}</span>
-          </div>
-          <span class="community-skill-item-path">${escapeHtml(item.path)}</span>
-        `;
-
-        btn.addEventListener("click", () => {
-          el.communitySkillsList
-            .querySelectorAll(".community-skill-item")
-            .forEach((b) => b.classList.remove("active"));
-          btn.classList.add("active");
-          previewCommunitySkillItem(item);
-        });
-
-        el.communitySkillsList.appendChild(btn);
-
-        // Auto-preview the first item
-        if (idx === 0) {
-          btn.classList.add("active");
-          previewCommunitySkillItem(item);
-        }
-      });
+      cachedCommunitySkills = res.skills || [];
+      renderCommunitySkillsList();
     } catch (err) {
       el.communitySkillsList.innerHTML = `<div class="field-hint" style="padding:18px;">Could not load community skills: ${escapeHtml(err.message)}</div>`;
     }
   }
 
+  function renderCommunitySkillsList() {
+    if (!el.communitySkillsList) return;
+    let list = cachedCommunitySkills;
+
+    if (activeCommunityTopic && activeCommunityTopic !== "all") {
+      list = list.filter((item) => (item.topic || "coding").toLowerCase() === activeCommunityTopic.toLowerCase());
+    }
+
+    if (el.communityListCount) {
+      el.communityListCount.textContent = `${list.length} skill${list.length === 1 ? "" : "s"}`;
+    }
+
+    el.communitySkillsList.innerHTML = "";
+
+    if (list.length === 0) {
+      el.communitySkillsList.innerHTML = `<div class="field-hint" style="padding:18px;">No skills matched this filter. Try selecting another topic or repository above.</div>`;
+      return;
+    }
+
+    list.forEach((item, idx) => {
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = "community-skill-item";
+      if (currentPreviewedSkill && currentPreviewedSkill.repo === item.repo && currentPreviewedSkill.path === item.path) {
+        btn.classList.add("active");
+      }
+
+      const displayRepo = item.repo === "local/catalog" ? "Local Catalog" : item.repo;
+      btn.innerHTML = `
+        <div class="community-skill-item-top">
+          <span class="community-skill-item-title">${escapeHtml(item.title || item.slug)}</span>
+          <div style="display:flex;align-items:center;gap:5px;">
+            ${item.topic ? `<span class="community-skill-topic-badge">${escapeHtml(item.topic)}</span>` : ""}
+            <span class="community-skill-item-repo">${escapeHtml(displayRepo)}</span>
+          </div>
+        </div>
+        <div class="community-skill-item-desc">${escapeHtml(item.description || item.path)}</div>
+      `;
+
+      btn.addEventListener("click", () => {
+        el.communitySkillsList
+          .querySelectorAll(".community-skill-item")
+          .forEach((b) => b.classList.remove("active"));
+        btn.classList.add("active");
+        previewCommunitySkillItem(item);
+      });
+
+      el.communitySkillsList.appendChild(btn);
+
+      // Auto-preview the first item if nothing is previewed or preview changed
+      if (idx === 0 && (!currentPreviewedSkill || !list.some(s => s.repo === currentPreviewedSkill.repo && s.path === currentPreviewedSkill.path))) {
+        btn.classList.add("active");
+        previewCommunitySkillItem(item);
+      }
+    });
+  }
+
   async function previewCommunitySkillItem(item) {
     if (!el.communityPreviewContent || !el.communityPreviewEmpty) return;
+
+    // Redundant re-render guard: If clicking already-selected community skill, return immediately!
+    if (
+      currentPreviewedSkill &&
+      currentPreviewedSkill.repo === item.repo &&
+      currentPreviewedSkill.path === item.path &&
+      currentPreviewedSkill.instructions_markdown
+    ) {
+      return;
+    }
+
     el.communityPreviewEmpty.classList.add("hidden");
     el.communityPreviewContent.classList.remove("hidden");
 
@@ -380,14 +419,14 @@ export function initStatusBar({
     if (el.communityPreviewSource) {
       el.communityPreviewSource.textContent = fullPath;
     }
-    el.communityPreviewDesc.textContent = "Loading skill documentation from GitHub...";
+    el.communityPreviewDesc.textContent = "Loading skill documentation...";
     if (el.communityPreviewTriggerRow) {
       el.communityPreviewTriggerRow.classList.add("hidden");
     }
     el.communityPreviewMarkdown.innerHTML = `
       <div style="padding: 24px 0; text-align: center; color: var(--text-muted);">
         <span class="sync-dot online" style="margin-right: 8px;"></span>
-        Fetching <code>${escapeHtml(item.path)}</code> from GitHub...
+        Fetching <code>${escapeHtml(item.path)}</code>...
       </div>
     `;
     currentPreviewedSkill = item;
@@ -422,7 +461,7 @@ export function initStatusBar({
       el.communityPreviewDesc.textContent = `Could not load preview: ${err.message}`;
       el.communityPreviewMarkdown.innerHTML = `
         <div class="field-hint" style="padding: 16px 0;">
-          Failed to fetch documentation from GitHub (<code>${escapeHtml(fullPath)}</code>).
+          Failed to fetch documentation (<code>${escapeHtml(fullPath)}</code>).
           You can still click <strong>+ Import to My Skills</strong> to import it directly.
         </div>
       `;
@@ -431,13 +470,21 @@ export function initStatusBar({
 
   el.communityRepoPills?.querySelectorAll("[data-community-repo]").forEach((pill) => {
     pill.addEventListener("click", () => {
-      const repo = pill.getAttribute("data-community-repo") || "anthropics/skills";
+      const repo = pill.getAttribute("data-community-repo") || "featured/all";
       activeCommunityRepo = repo;
       if (el.communitySearchInput) el.communitySearchInput.value = "";
       el.communityRepoPills
         .querySelectorAll("[data-community-repo]")
         .forEach((p) => p.classList.toggle("active", p === pill));
       loadCommunitySkills({ repo, q: "" });
+    });
+  });
+
+  document.querySelectorAll("[data-community-topic]").forEach((chip) => {
+    chip.addEventListener("click", () => {
+      activeCommunityTopic = chip.getAttribute("data-community-topic") || "all";
+      document.querySelectorAll("[data-community-topic]").forEach((c) => c.classList.toggle("active", c === chip));
+      renderCommunitySkillsList();
     });
   });
 

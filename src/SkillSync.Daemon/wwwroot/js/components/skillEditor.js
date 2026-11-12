@@ -1,9 +1,9 @@
 /**
  * Dedicated Cohesive Vertical Skill Editor (Write / Live Formatted Markdown Preview)
  */
-import { api } from "../api.js?v=20261112-v6";
-import { store, slugifyTitle, humanizeSlug, showToast } from "../state.js?v=20261112-v6";
-import { renderMarkdown, escapeHtml } from "../markdown.js?v=20261112-v6";
+import { api } from "../api.js?v=20261112-v7";
+import { store, slugifyTitle, humanizeSlug, showToast } from "../state.js?v=20261112-v7";
+import { renderMarkdown, escapeHtml } from "../markdown.js?v=20261112-v7";
 
 export function initSkillEditor({ onCancelEdit, onPreviewFromEdit, onSkillSaved }) {
   const el = {
