@@ -1,0 +1,341 @@
+using System.Text.Json.Nodes;
+
+namespace SkillSync.Daemon.Mcp;
+
+public static class McpToolDefinitions
+{
+    private static readonly JsonArray CachedToolsArray = BuildToolsArray();
+
+    public static JsonArray GetToolsJsonArray() => JsonNode.Parse(CachedToolsArray.ToJsonString())!.AsArray();
+
+    private static JsonArray BuildToolsArray()
+    {
+        const string schemaJson =
+            """
+            [
+              {
+                "name": "list_skills",
+                "description": "Lists all AI agent skills stored in the central SkillHub repository across Claude, Gemini/Antigravity, OpenAI Codex, and Cursor. Always call this before creating a skill to check if a relevant skill already exists.",
+                "inputSchema": {
+                  "type": "object",
+                  "properties": {
+                    "query": {
+                      "type": "string",
+                      "description": "Optional case-insensitive substring filter matching skill name, title, description, instructions, or tags."
+                    },
+                    "tag": {
+                      "type": "string",
+                      "description": "Optional tag filter."
+                    },
+                    "category": {
+                      "type": "string",
+                      "enum": ["all", "user", "synced", "template", "system", "plugin"],
+                      "description": "Optional category filter ('user' for personal skills, 'synced' for all active synced skills, 'template' for built-in templates)."
+                    },
+                    "include_disabled": {
+                      "type": "boolean",
+                      "description": "Whether to include skills disabled for specific providers. Defaults to true.",
+                      "default": true
+                    }
+                  },
+                  "additionalProperties": false
+                }
+              },
+              {
+                "name": "get_skill",
+                "description": "Retrieves the full canonical metadata, provider-specific configurations, Markdown instructions, and list of bundled script/resource files for a specific skill.",
+                "inputSchema": {
+                  "type": "object",
+                  "properties": {
+                    "name": {
+                      "type": "string",
+                      "pattern": "^[a-z0-9]+(-[a-z0-9]+)*$",
+                      "description": "The kebab-case identifier (slug) of the skill, e.g., 'git-commit-helper'."
+                    },
+                    "include_supporting_files": {
+                      "type": "boolean",
+                      "description": "If true, returns the text contents of files inside scripts/, resources/, examples/, and references/.",
+                      "default": false
+                    }
+                  },
+                  "required": ["name"],
+                  "additionalProperties": false
+                }
+              },
+              {
+                "name": "create_skill",
+                "description": "Creates a new canonical AI skill in SkillHub and automatically transpiles and syncs it to all installed AI providers (Claude, Gemini/Antigravity, OpenAI Codex, Cursor). Always use this tool instead of writing directly to ~/.claude/skills, ~/.gemini/skills, ~/.codex/skills, ~/.agents/skills, or .cursor/rules.",
+                "inputSchema": {
+                  "type": "object",
+                  "properties": {
+                    "name": {
+                      "type": "string",
+                      "pattern": "^[a-z0-9]+(-[a-z0-9]+)*$",
+                      "minLength": 2,
+                      "maxLength": 64,
+                      "description": "Unique kebab-case skill name (e.g., 'docker-debugger'). Must match folder naming rules."
+                    },
+                    "title": {
+                      "type": "string",
+                      "maxLength": 100,
+                      "description": "Optional human-friendly display title (e.g., 'Docker Debugger')."
+                    },
+                    "description": {
+                      "type": "string",
+                      "minLength": 10,
+                      "maxLength": 500,
+                      "description": "Clear explanation of what the skill does and the capabilities it provides."
+                    },
+                    "when_to_use": {
+                      "type": "string",
+                      "maxLength": 500,
+                      "description": "Specific trigger conditions and user intents that should activate this skill."
+                    },
+                    "summary_short": {
+                      "type": "string",
+                      "maxLength": 160,
+                      "description": "Ultra-concise (<160 chars) description optimized for strict token budgets (used by OpenAI Codex)."
+                    },
+                    "instructions_markdown": {
+                      "type": "string",
+                      "minLength": 1,
+                      "description": "The full Markdown body of the skill (excluding YAML frontmatter)."
+                    },
+                    "tags": {
+                      "type": "array",
+                      "items": { "type": "string" },
+                      "description": "Optional categorization tags."
+                    },
+                    "allowed_tools": {
+                      "type": "array",
+                      "items": { "type": "string" },
+                      "description": "Optional list of pre-approved tool patterns for Claude (e.g., ['Bash(git:*)', 'Read'])."
+                    },
+                    "cursor_globs": {
+                      "type": "array",
+                      "items": { "type": "string" },
+                      "description": "Optional file glob patterns for Cursor rules (defaults to ['**/*'])."
+                    },
+                    "cursor_always_apply": {
+                      "type": "boolean",
+                      "default": false,
+                      "description": "Whether Cursor should always inject this rule regardless of context."
+                    },
+                    "supporting_files": {
+                      "type": "array",
+                      "description": "Optional helper scripts, templates, or reference files to bundle inside the skill folder.",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "relative_path": {
+                            "type": "string",
+                            "pattern": "^(scripts|resources|references|examples)/[a-zA-Z0-9._/-]+$",
+                            "description": "Relative path inside the skill folder, restricted to scripts/, resources/, references/, or examples/."
+                          },
+                          "content": {
+                            "type": "string",
+                            "description": "UTF-8 file content."
+                          }
+                        },
+                        "required": ["relative_path", "content"],
+                        "additionalProperties": false
+                      }
+                    }
+                  },
+                  "required": ["name", "description", "instructions_markdown"],
+                  "additionalProperties": false
+                }
+              },
+              {
+                "name": "update_skill",
+                "description": "Updates an existing skill in the canonical SkillHub store and propagates transpiled updates to all enabled AI providers. Omitted optional fields preserve their existing canonical values (non-destructive partial update).",
+                "inputSchema": {
+                  "type": "object",
+                  "properties": {
+                    "name": {
+                      "type": "string",
+                      "pattern": "^[a-z0-9]+(-[a-z0-9]+)*$",
+                      "description": "The kebab-case name of the existing skill to update."
+                    },
+                    "title": {
+                      "type": "string",
+                      "description": "Updated human-friendly title (omit to keep existing)."
+                    },
+                    "description": {
+                      "type": "string",
+                      "description": "Updated description (omit to keep existing)."
+                    },
+                    "when_to_use": {
+                      "type": "string",
+                      "description": "Updated trigger conditions (omit to keep existing)."
+                    },
+                    "summary_short": {
+                      "type": "string",
+                      "maxLength": 160,
+                      "description": "Updated short summary for OpenAI Codex (omit to keep existing)."
+                    },
+                    "instructions_markdown": {
+                      "type": "string",
+                      "description": "Updated Markdown body (omit to keep existing)."
+                    },
+                    "tags": {
+                      "type": "array",
+                      "items": { "type": "string" }
+                    },
+                    "allowed_tools": {
+                      "type": "array",
+                      "items": { "type": "string" }
+                    },
+                    "cursor_globs": {
+                      "type": "array",
+                      "items": { "type": "string" }
+                    },
+                    "cursor_always_apply": {
+                      "type": "boolean"
+                    },
+                    "upsert_supporting_files": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "relative_path": {
+                            "type": "string",
+                            "pattern": "^(scripts|resources|references|examples)/[a-zA-Z0-9._/-]+$"
+                          },
+                          "content": { "type": "string" }
+                        },
+                        "required": ["relative_path", "content"],
+                        "additionalProperties": false
+                      }
+                    },
+                    "delete_supporting_files": {
+                      "type": "array",
+                      "items": { "type": "string" },
+                      "description": "Relative paths of supporting files to remove."
+                    }
+                  },
+                  "required": ["name"],
+                  "additionalProperties": false
+                }
+              },
+              {
+                "name": "delete_skill",
+                "description": "Deletes a skill from the canonical SkillHub repository and removes its transpiled counterparts from all connected AI providers (Claude, Gemini, Codex, Cursor). System bootstrap skills ('00-skillhub-bootstrap') are protected and cannot be deleted.",
+                "inputSchema": {
+                  "type": "object",
+                  "properties": {
+                    "name": {
+                      "type": "string",
+                      "pattern": "^[a-z0-9]+(-[a-z0-9]+)*$",
+                      "description": "The kebab-case name of the skill to delete."
+                    }
+                  },
+                  "required": ["name"],
+                  "additionalProperties": false
+                }
+              },
+              {
+                "name": "manage_skill_tags",
+                "description": "Lists, adds, removes, renames, or deletes tags across skills in SkillHub.",
+                "inputSchema": {
+                  "type": "object",
+                  "properties": {
+                    "action": {
+                      "type": "string",
+                      "enum": ["list", "add", "remove", "rename", "delete"],
+                      "description": "Tag operation to perform."
+                    },
+                    "skill_name": {
+                      "type": "string",
+                      "description": "Skill slug (required when action is 'add' or 'remove')."
+                    },
+                    "tags": {
+                      "type": "array",
+                      "items": { "type": "string" },
+                      "description": "Tags to add, remove, or delete."
+                    },
+                    "old_tag": {
+                      "type": "string",
+                      "description": "Existing tag name to rename (when action is 'rename')."
+                    },
+                    "new_tag": {
+                      "type": "string",
+                      "description": "New tag name (when action is 'rename')."
+                    }
+                  },
+                  "required": ["action"],
+                  "additionalProperties": false
+                }
+              },
+              {
+                "name": "toggle_skill_provider",
+                "description": "Enables or disables syncing a specific skill (or built-in template) to an AI provider (claude, gemini, codex, cursor).",
+                "inputSchema": {
+                  "type": "object",
+                  "properties": {
+                    "name": {
+                      "type": "string",
+                      "description": "The kebab-case skill name."
+                    },
+                    "provider": {
+                      "type": "string",
+                      "enum": ["claude", "gemini", "codex", "cursor"],
+                      "description": "Target AI provider."
+                    },
+                    "enabled": {
+                      "type": "boolean",
+                      "description": "True to enable syncing to this provider, false to disable."
+                    }
+                  },
+                  "required": ["name", "provider", "enabled"],
+                  "additionalProperties": false
+                }
+              },
+              {
+                "name": "search_community_skills",
+                "description": "Browses or searches open-source community skills from GitHub and skills.sh repositories (e.g., 'vercel-labs/agent-skills', 'anthropics/skills') before importing.",
+                "inputSchema": {
+                  "type": "object",
+                  "properties": {
+                    "query": {
+                      "type": "string",
+                      "description": "Search keyword or owner/repo shorthand."
+                    },
+                    "repo": {
+                      "type": "string",
+                      "description": "Optional GitHub repository to browse (e.g., 'vercel-labs/agent-skills' or 'anthropics/skills')."
+                    }
+                  },
+                  "additionalProperties": false
+                }
+              },
+              {
+                "name": "import_community_skill",
+                "description": "Imports an open-source skill from GitHub or skills.sh (e.g., 'vercel-labs/agent-skills/skills/react-best-practices' or 'anthropics/skills/skills/frontend-design') into SkillHub and syncs it across all enabled AI providers.",
+                "inputSchema": {
+                  "type": "object",
+                  "properties": {
+                    "source": {
+                      "type": "string",
+                      "description": "GitHub URL, owner/repo/path shorthand, or skills.sh command."
+                    }
+                  },
+                  "required": ["source"],
+                  "additionalProperties": false
+                }
+              },
+              {
+                "name": "get_sync_status",
+                "description": "Returns the current status of SkillHub, including installed AI providers, skill directory paths, synced skill counts, and recent synchronization events.",
+                "inputSchema": {
+                  "type": "object",
+                  "properties": {},
+                  "additionalProperties": false
+                }
+              }
+            ]
+            """;
+
+        return JsonNode.Parse(schemaJson)!.AsArray();
+    }
+}

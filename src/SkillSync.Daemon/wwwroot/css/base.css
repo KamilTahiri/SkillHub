@@ -1,0 +1,337 @@
+/* ==========================================================================
+   SkillHub Design Tokens, Theme Variables, Typography & Custom Scrollbars
+   ========================================================================== */
+
+:root,
+[data-theme="dark"] {
+  --bg-app: #0b0e14;
+  --bg-sidebar: #0f131d;
+  --bg-surface: #151a26;
+  --bg-elevated: #1c2232;
+  --bg-input: #111520;
+  --bg-hover: rgba(255, 255, 255, 0.045);
+  --bg-active: rgba(99, 102, 241, 0.14);
+  --border-subtle: rgba(255, 255, 255, 0.08);
+  --border-strong: rgba(255, 255, 255, 0.16);
+  --border-focus: #6366f1;
+  --text-primary: #f3f4f6;
+  --text-secondary: #9ca3af;
+  --text-muted: #6b7280;
+  --accent: #6366f1;
+  --accent-hover: #4f46e5;
+  --accent-soft: rgba(99, 102, 241, 0.15);
+  --success: #10b981;
+  --success-soft: rgba(16, 185, 129, 0.14);
+  --warning: #f59e0b;
+  --warning-soft: rgba(245, 158, 11, 0.15);
+  --sky: #0ea5e9;
+  --sky-soft: rgba(14, 165, 233, 0.15);
+  --purple: #a855f7;
+  --purple-soft: rgba(168, 85, 247, 0.15);
+  --danger: #ef4444;
+  --danger-soft: rgba(239, 68, 68, 0.12);
+  --mark-bg: rgba(250, 204, 21, 0.28);
+  --mark-text: #fef08a;
+  --shadow-card: 0 4px 16px rgba(0, 0, 0, 0.26);
+  --shadow-modal: 0 24px 48px rgba(0, 0, 0, 0.55);
+  --scrollbar-thumb: rgba(255, 255, 255, 0.14);
+  --scrollbar-thumb-hover: rgba(255, 255, 255, 0.26);
+}
+
+/* Soft, Warm Stone-Slate Light Mode Palette (Zero Harsh Glare) */
+[data-theme="light"] {
+  --bg-app: #edf1f7;
+  --bg-sidebar: #e4eaf2;
+  --bg-surface: #f8fafc;
+  --bg-elevated: #e6ecf4;
+  --bg-input: #f2f5f9;
+  --bg-hover: rgba(15, 23, 42, 0.045);
+  --bg-active: rgba(79, 70, 229, 0.1);
+  --border-subtle: #d5dee9;
+  --border-strong: #bac7d8;
+  --border-focus: #4f46e5;
+  --text-primary: #1e293b;
+  --text-secondary: #475569;
+  --text-muted: #64748b;
+  --accent: #4f46e5;
+  --accent-hover: #4338ca;
+  --accent-soft: rgba(79, 70, 229, 0.11);
+  --success: #047857;
+  --success-soft: rgba(5, 150, 105, 0.13);
+  --warning: #b45309;
+  --warning-soft: rgba(217, 119, 6, 0.13);
+  --sky: #0369a1;
+  --sky-soft: rgba(2, 132, 199, 0.13);
+  --purple: #7e22ce;
+  --purple-soft: rgba(147, 51, 234, 0.13);
+  --danger: #dc2626;
+  --danger-soft: rgba(220, 38, 38, 0.09);
+  --mark-bg: rgba(250, 204, 21, 0.42);
+  --mark-text: #713f12;
+  --shadow-card: 0 2px 10px rgba(15, 23, 42, 0.06);
+  --shadow-modal: 0 20px 44px rgba(15, 23, 42, 0.18);
+  --scrollbar-thumb: rgba(15, 23, 42, 0.18);
+  --scrollbar-thumb-hover: rgba(15, 23, 42, 0.3);
+}
+
+:root {
+  --font-sans: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  --font-mono: "JetBrains Mono", "Cascadia Code", Consolas, monospace;
+}
+
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+button {
+  font-family: inherit;
+  font-size: inherit;
+  line-height: inherit;
+  color: inherit;
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  -webkit-appearance: none;
+  appearance: none;
+}
+
+/* Ultra-thin, subtle custom scrollbars everywhere */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--scrollbar-thumb) transparent;
+}
+
+*::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+*::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+*::-webkit-scrollbar-thumb {
+  background-color: var(--scrollbar-thumb);
+  border-radius: 999px;
+}
+
+*::-webkit-scrollbar-thumb:hover {
+  background-color: var(--scrollbar-thumb-hover);
+}
+
+body {
+  background-color: var(--bg-app);
+  color: var(--text-primary);
+  font-family: var(--font-sans);
+  font-size: 13.5px;
+  line-height: 1.55;
+  height: 100vh;
+  overflow: hidden;
+  -webkit-font-smoothing: antialiased;
+  transition: background-color 0.15s ease, color 0.15s ease;
+}
+
+code,
+pre {
+  font-family: var(--font-mono);
+}
+
+[hidden],
+.hidden {
+  display: none !important;
+}
+
+/* Search Highlight Mark */
+mark.search-mark {
+  background-color: var(--mark-bg);
+  color: var(--mark-text);
+  padding: 0 3px;
+  border-radius: 4px;
+  font-weight: 600;
+}
+
+/* Base Form Elements */
+label {
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+input[type="text"],
+input[type="search"],
+textarea {
+  width: 100%;
+  background: var(--bg-input);
+  border: 1px solid var(--border-subtle);
+  border-radius: 8px;
+  padding: 9px 12px;
+  color: var(--text-primary);
+  font-family: inherit;
+  font-size: 13.5px;
+  line-height: 1.5;
+  outline: none;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+
+input[type="text"]:focus,
+input[type="search"]:focus,
+textarea:focus {
+  border-color: var(--border-focus);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+
+input.input-lg {
+  font-size: 15px;
+  font-weight: 600;
+  padding: 10px 13px;
+}
+
+textarea.auto-resize {
+  resize: none;
+  overflow-y: hidden;
+  min-height: 68px;
+}
+
+/* Strict Button Visual Hierarchy */
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  cursor: pointer;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  padding: 7px 14px;
+  font-size: 12.5px;
+  font-weight: 600;
+  font-family: inherit;
+  transition: all 0.14s ease;
+  white-space: nowrap;
+}
+
+.btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.btn-sm {
+  padding: 5px 11px;
+  font-size: 12px;
+  border-radius: 6px;
+}
+
+.btn-full {
+  width: 100%;
+}
+
+.btn-primary {
+  background: var(--accent);
+  color: #ffffff;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.2);
+}
+
+.btn-primary:hover:not(:disabled) {
+  background: var(--accent-hover);
+}
+
+.btn-secondary {
+  background: var(--bg-elevated);
+  color: var(--text-primary);
+  border-color: var(--border-subtle);
+}
+
+.btn-secondary:hover:not(:disabled) {
+  border-color: var(--border-strong);
+  background: var(--bg-hover);
+}
+
+.btn-ghost-danger {
+  background: transparent;
+  color: var(--text-muted);
+  border-color: transparent;
+}
+
+.btn-ghost-danger:hover:not(:disabled) {
+  background: var(--danger-soft);
+  color: var(--danger);
+}
+
+.icon-btn,
+.btn-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  border-radius: 8px;
+  border: 1px solid var(--border-subtle);
+  background: var(--bg-elevated);
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition: all 0.14s ease;
+  flex-shrink: 0;
+  box-sizing: border-box;
+  padding: 0;
+}
+
+.icon-btn:hover,
+.btn-icon:hover {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+  border-color: var(--border-strong);
+}
+
+/* Modal Close (✕) Icon Button */
+.modal-close-btn,
+.modal-header .btn-icon,
+.modal-header .icon-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  border-radius: 8px;
+  border: 1px solid var(--border-subtle);
+  background: var(--bg-elevated);
+  color: var(--text-secondary);
+  font-size: 18px;
+  font-weight: 500;
+  line-height: 1;
+  cursor: pointer;
+  transition: all 0.14s ease;
+  flex-shrink: 0;
+  padding: 0;
+}
+
+.modal-close-btn:hover,
+.modal-header .btn-icon:hover,
+.modal-header .icon-btn:hover {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+  border-color: var(--border-strong);
+}
+
+/* Toast Notifications */
+.toast-container {
+  position: fixed;
+  bottom: 20px;
+  right: 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  z-index: 300;
+}
+
+.toast {
+  background: var(--bg-surface);
+  border: 1px solid var(--border-strong);
+  border-left: 4px solid var(--accent);
+  color: var(--text-primary);
+  padding: 10px 15px;
+  border-radius: 8px;
+  box-shadow: var(--shadow-modal);
+  font-size: 12.5px;
+  font-weight: 500;
+}
