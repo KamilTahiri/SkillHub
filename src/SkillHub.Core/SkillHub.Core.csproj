@@ -10,6 +10,7 @@
              LinkBase="Core" />
     <Compile Include="..\SkillSync.Daemon\Watchers\ProviderDiscoveryService.cs" Link="ProviderDiscoveryService.cs" />
     <InternalsVisibleTo Include="SkillHub" />
+    <InternalsVisibleTo Include="SkillSync.Tests" />
     <PackageReference Include="YamlDotNet" Version="16.1.3" />
   </ItemGroup>
 </Project>

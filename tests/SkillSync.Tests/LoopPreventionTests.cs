@@ -164,24 +164,8 @@ public sealed class LoopPreventionTests : IDisposable
         var externallyEditedGemini = geminiDisk.Replace("Inspect container logs first.", "Inspect `docker inspect` state first.", StringComparison.Ordinal);
         await File.WriteAllTextAsync(geminiPath, externallyEditedGemini);
 
-        engine.EnqueueFileSystemEvent(ProviderType.Gemini, "docker-healthcheck", SyncChangeKind.CreatedOrModified, geminiPath);
-
-        for (var i = 0; i < 30; i++)
-        {
-            try
-            {
-                await using var stream = new FileStream(claudePath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
-                using var reader = new StreamReader(stream);
-                if ((await reader.ReadToEndAsync()).Contains("Inspect `docker inspect` state first.", StringComparison.Ordinal))
-                    break;
-            }
-            catch (IOException) when (i < 29)
-            {
-                // Windows can briefly deny a read while the atomic rename is in progress.
-            }
-
-            await Task.Delay(50);
-        }
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(15));
+        await engine.ObserveFileSystemChangesAsync([geminiPath], timeout.Token);
 
         var updatedClaudeDisk = await File.ReadAllTextAsync(claudePath);
         Assert.Contains("Inspect `docker inspect` state first.", updatedClaudeDisk);
