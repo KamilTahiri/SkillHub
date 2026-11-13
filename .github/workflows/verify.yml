@@ -1,0 +1,53 @@
+
+name: Verify
+
+on: [push, pull_request]
+
+permissions:
+  contents: read
+
+jobs:
+  core:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+      - run: dotnet test tests/SkillHub.Core.Tests -c Release -warnaserror
+
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: dotnet build SkillSync.sln -c Release -warnaserror
+      - run: dotnet test SkillSync.sln -c Release --no-build
+      - run: node --test tests/SkillSync.Frontend/workbench.test.mjs
+      - name: Set up the pinned installer compiler
+        shell: pwsh
+        run: |
+          $setup = Join-Path $env:RUNNER_TEMP 'inno-setup.exe'
+          $compiler = Join-Path $env:RUNNER_TEMP 'inno'
+          Invoke-WebRequest -Uri 'https://github.com/jrsoftware/issrc/releases/download/is-6_7_4/innosetup-6.7.4.exe' -OutFile $setup
+          if ((Get-FileHash $setup).Hash -ne 'A549929319F9120716677C685535CA4671E4B937B5FDC87E2585F32D8EB30E8C') { throw 'Installer compiler checksum mismatch.' }
+          $result = Start-Process $setup -ArgumentList '/VERYSILENT','/CURRENTUSER','/NORESTART',("/DIR=""$compiler""") -Wait -PassThru
+          if ($result.ExitCode) { throw "Installer compiler setup failed ($($result.ExitCode))." }
+          "SKILLHUB_ISCC=$compiler\ISCC.exe" | Add-Content $env:GITHUB_ENV
+      - name: Package and exercise the installer
+        shell: pwsh
+        run: |
+          ./build-installer.ps1
+          ./build-installer.ps1 -TestPackage -OutputDirectory ./dist/setup-test
+          ./tests/packaging/Smoke-Setup.ps1 -Setup ./dist/setup-test/SkillHub-Setup.exe
+      - uses: actions/upload-artifact@v4
+        with:
+          name: skillhub-windows-preview
+          path: |
+            dist/SkillHub-Setup.exe
+            dist/SkillHub-Setup.exe.sha256

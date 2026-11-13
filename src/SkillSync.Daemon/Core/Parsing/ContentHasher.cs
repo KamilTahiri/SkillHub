@@ -33,6 +33,9 @@ public static class ContentHasher
         return Convert.ToHexString(hash).ToLowerInvariant();
     }
 
+    public static string ComputeFileRevisionHash(string content) =>
+        Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(NormalizeLineEndings(content)))).ToLowerInvariant();
+
     public static string ComputeRawFileHash(ReadOnlySpan<byte> rawBytes)
     {
         // Strip UTF-8 BOM bytes (0xEF, 0xBB, 0xBF) if present
@@ -45,11 +48,24 @@ public static class ContentHasher
         return ComputeRawFileHash(text);
     }
 
+    private static object? NormalizeMetadata(JsonElement element) => element.ValueKind switch
+    {
+        JsonValueKind.Object => element.EnumerateObject()
+            .OrderBy(property => property.Name, StringComparer.Ordinal)
+            .ToDictionary(property => property.Name, property => NormalizeMetadata(property.Value), StringComparer.Ordinal),
+        JsonValueKind.Array => element.EnumerateArray().Select(NormalizeMetadata).ToArray(),
+        _ => element
+    };
+
     public static string ComputeSemanticHash(CanonicalSkillModel model)
     {
         var canonicalProjection = new
         {
             name = (model.Name ?? string.Empty).Trim().ToLowerInvariant(),
+            title = model.Title,
+            source_category = model.SourceCategory,
+            origin_provider = model.OriginProvider,
+            passthrough = NormalizeMetadata(JsonSerializer.SerializeToElement(model.Passthrough)),
             version = (model.Version ?? "1.0.0").Trim(),
             description = FrontmatterParser.CleanSingleLine(model.Description),
             when_to_use = FrontmatterParser.CleanSingleLine(model.WhenToUse),
@@ -90,13 +106,13 @@ public static class ContentHasher
                     always_apply = model.Targets.Cursor.AlwaysApply
                 }
             },
-            instructions = NormalizeLineEndings(model.InstructionsMarkdown ?? string.Empty).Trim(),
+            instructions = NormalizeLineEndings(model.InstructionsMarkdown ?? string.Empty),
             supporting_files = (model.SupportingFiles ?? new Dictionary<string, string>())
                 .OrderBy(kvp => kvp.Key.Replace('\\', '/'), StringComparer.Ordinal)
                 .Select(kvp => new
                 {
                     path = kvp.Key.Replace('\\', '/'),
-                    hash = ComputeRawFileHash(kvp.Value)
+                    hash = ComputeFileRevisionHash(kvp.Value)
                 })
                 .ToArray()
         };

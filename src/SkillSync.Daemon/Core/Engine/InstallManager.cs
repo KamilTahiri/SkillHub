@@ -3,10 +3,7 @@ using System.Runtime.InteropServices;
 using System.Runtime.Versioning;
 using System.Text;
 using System.Text.Json;
-using System.Text.Json.Nodes;
-using System.Text.RegularExpressions;
 using Microsoft.Win32;
-using SkillSync.Daemon.Core.Parsing;
 
 namespace SkillSync.Daemon.Core.Engine;
 
@@ -16,7 +13,8 @@ public sealed record McpClientConfigTarget(
     string ConfigFilePath,
     bool ParentDirectoryExists,
     bool ConfigFileExists,
-    bool IsSkillHubRegistered
+    bool IsSkillHubRegistered,
+    string? Error = null
 );
 
 public sealed record InstallStatusReport(
@@ -38,23 +36,20 @@ public sealed partial class InstallManager
     private const string MacLaunchAgentFileName = "com.skillhub.daemon.plist";
     private const string LinuxSystemdServiceName = "skillhub.service";
 
-    private static readonly JsonSerializerOptions PrettyJsonOptions = new()
-    {
-        WriteIndented = true,
-        TypeInfoResolver = new System.Text.Json.Serialization.Metadata.DefaultJsonTypeInfoResolver()
-    };
-
     private readonly string _userHomeRoot;
     private readonly string _appDataRoot;
+    private readonly bool _hasCustomHome;
 
     public InstallManager(string? customUserHomeRoot = null, string? customAppDataRoot = null)
     {
-        _userHomeRoot = string.IsNullOrWhiteSpace(customUserHomeRoot)
+        _hasCustomHome = !string.IsNullOrWhiteSpace(customUserHomeRoot);
+        _userHomeRoot = !_hasCustomHome
             ? Environment.GetFolderPath(Environment.SpecialFolder.UserProfile)
-            : Path.GetFullPath(customUserHomeRoot);
+            : Path.GetFullPath(customUserHomeRoot!);
 
         _appDataRoot = string.IsNullOrWhiteSpace(customAppDataRoot)
-            ? Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData)
+            ? _hasCustomHome ? Path.Combine(_userHomeRoot, "AppData", "Roaming") :
+                Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData)
             : Path.GetFullPath(customAppDataRoot);
     }
 
@@ -107,10 +102,10 @@ public sealed partial class InstallManager
             return Path.GetFullPath(currentProcess);
         }
 
-        var entryAssemblyLocation = System.Reflection.Assembly.GetEntryAssembly()?.Location;
-        if (!string.IsNullOrWhiteSpace(entryAssemblyLocation))
+        var entryAssemblyLocation = Path.Combine(AppContext.BaseDirectory, "SkillHub.dll");
+        if (File.Exists(entryAssemblyLocation))
         {
-            var dir = Path.GetDirectoryName(entryAssemblyLocation)!;
+            var dir = AppContext.BaseDirectory;
             var exeName = OperatingSystem.IsWindows() ? "SkillHub.exe" : "SkillHub";
             var candidateExe = Path.Combine(dir, exeName);
             if (File.Exists(candidateExe))
@@ -127,23 +122,21 @@ public sealed partial class InstallManager
     public (string Command, string[] Args) BuildMcpStdioCommandSpec(string? overrideExecutablePath = null)
     {
         var resolved = ResolveExecutablePath(overrideExecutablePath);
-        if (resolved.EndsWith(".dll", StringComparison.OrdinalIgnoreCase))
-        {
-            return ("dotnet", [resolved, "mcp-stdio"]);
-        }
-
-        return (resolved, ["mcp-stdio"]);
+        string[] args = _hasCustomHome ? ["mcp-stdio", "--home", _userHomeRoot] : ["mcp-stdio"];
+        return resolved.EndsWith(".dll", StringComparison.OrdinalIgnoreCase)
+            ? ("dotnet", [resolved, .. args]) : (resolved, args);
     }
 
     public string BuildDaemonLaunchCommandLine(string? overrideExecutablePath = null, int port = 45880)
     {
         var resolved = ResolveExecutablePath(overrideExecutablePath);
+        var homeFlag = _hasCustomHome ? $" --home \"{_userHomeRoot}\"" : "";
         if (resolved.EndsWith(".dll", StringComparison.OrdinalIgnoreCase))
         {
-            return $"dotnet \"{resolved}\" --background --port {port}";
+            return $"dotnet \"{resolved}\" --background --port {port}{homeFlag}";
         }
 
-        return $"\"{resolved}\" --background --port {port}";
+        return $"\"{resolved}\" --background --port {port}{homeFlag}";
     }
 
     public IReadOnlyList<McpClientConfigTarget> DiscoverMcpClientConfigTargets()
@@ -201,12 +194,51 @@ public sealed partial class InstallManager
         return results;
     }
 
+    public bool CanConfigure(McpClientConfigTarget target) =>
+        target.ConfigFileExists || (target.ClientId == "claude-code"
+            ? Directory.Exists(Path.Combine(_userHomeRoot, ".claude"))
+            : target.ParentDirectoryExists);
+
+    public McpClientConfigTarget ConfigureClient(string id, string action)
+    {
+        if (action is not ("connect" or "repair" or "remove"))
+        {
+            throw new ArgumentException("Choose connect, repair, or remove.");
+        }
+        var target = DiscoverMcpClientConfigTargets().SingleOrDefault(item => item.ClientId == id)
+            ?? throw new KeyNotFoundException("This AI client is unknown.");
+        if (!CanConfigure(target))
+        {
+            throw new KeyNotFoundException("This AI client was not detected.");
+        }
+        try
+        {
+            if (action == "remove")
+            {
+                if (id == "codex") RemoveSkillHubMcpEntryFromCodexToml(target.ConfigFilePath);
+                else RemoveSkillHubMcpEntryFromFile(target.ConfigFilePath);
+            }
+            else
+            {
+                var (command, args) = BuildMcpStdioCommandSpec();
+                if (id == "codex") InjectSkillHubMcpEntryIntoCodexToml(target.ConfigFilePath, command, args);
+                else InjectSkillHubMcpEntryIntoFile(target.ConfigFilePath, command, args);
+            }
+            return DiscoverMcpClientConfigTargets().Single(item => item.ClientId == id);
+        }
+        catch (Exception exception) when (IsConfigError(exception))
+        {
+            return target with { Error = exception.Message };
+        }
+    }
+
     public IReadOnlyList<McpClientConfigTarget> InjectMcpConfigIntoAllDetectedClients(
         string? overrideExecutablePath = null,
         bool createIfParentExists = true)
     {
         var (command, args) = BuildMcpStdioCommandSpec(overrideExecutablePath);
         var targets = DiscoverMcpClientConfigTargets();
+        var errors = new Dictionary<string, string>(StringComparer.Ordinal);
 
         foreach (var target in targets)
         {
@@ -223,288 +255,89 @@ public sealed partial class InstallManager
                 continue;
             }
 
-            if (string.Equals(target.ClientId, "codex", StringComparison.OrdinalIgnoreCase))
+            try
             {
-                InjectSkillHubMcpEntryIntoCodexToml(target.ConfigFilePath, command, args);
+                if (target.ClientId == "codex")
+                {
+                    InjectSkillHubMcpEntryIntoCodexToml(target.ConfigFilePath, command, args);
+                }
+                else
+                {
+                    InjectSkillHubMcpEntryIntoFile(target.ConfigFilePath, command, args);
+                }
             }
-            else
+            catch (Exception exception) when (IsConfigError(exception))
             {
-                InjectSkillHubMcpEntryIntoFile(target.ConfigFilePath, command, args);
+                errors[target.ClientId] = exception.Message;
             }
         }
-
-        return DiscoverMcpClientConfigTargets();
+        return DiscoverMcpClientConfigTargets().Select(target => target with { Error = errors.GetValueOrDefault(target.ClientId) }).ToArray();
     }
 
     public IReadOnlyList<McpClientConfigTarget> RemoveMcpConfigFromAllClients()
     {
-        foreach (var target in DiscoverMcpClientConfigTargets())
+        var errors = new Dictionary<string, string>(StringComparer.Ordinal);
+        foreach (var target in DiscoverMcpClientConfigTargets().Where(target => target.ConfigFileExists))
         {
-            if (!target.ConfigFileExists)
+            try
             {
-                continue;
-            }
-
-            if (string.Equals(target.ClientId, "codex", StringComparison.OrdinalIgnoreCase))
-            {
-                RemoveSkillHubMcpEntryFromCodexToml(target.ConfigFilePath);
-            }
-            else
-            {
-                RemoveSkillHubMcpEntryFromFile(target.ConfigFilePath);
-            }
-        }
-
-        return DiscoverMcpClientConfigTargets();
-    }
-
-    /// <summary>
-    /// Non-destructively merges `"mcpServers": { "skillhub": { "command": ..., "args": [...] } }`
-    /// into an existing or new JSON configuration file while preserving all other properties and servers,
-    /// and cleans up any legacy `"skillsync"` entry.
-    /// </summary>
-    public static void InjectSkillHubMcpEntryIntoFile(string configFilePath, string command, IReadOnlyList<string> args)
-    {
-        var directory = Path.GetDirectoryName(configFilePath);
-        if (!string.IsNullOrEmpty(directory))
-        {
-            Directory.CreateDirectory(directory);
-        }
-
-        JsonObject rootObj;
-        if (File.Exists(configFilePath))
-        {
-            var raw = File.ReadAllText(configFilePath);
-            if (string.IsNullOrWhiteSpace(raw))
-            {
-                rootObj = new JsonObject();
-            }
-            else
-            {
-                var parsed = JsonNode.Parse(
-                    raw,
-                    nodeOptions: null,
-                    documentOptions: new JsonDocumentOptions
-                    {
-                        CommentHandling = JsonCommentHandling.Skip,
-                        AllowTrailingCommas = true
-                    });
-
-                rootObj = parsed as JsonObject ?? new JsonObject();
-            }
-        }
-        else
-        {
-            rootObj = new JsonObject();
-        }
-
-        if (rootObj["mcpServers"] is not JsonObject mcpServersObj)
-        {
-            mcpServersObj = new JsonObject();
-            rootObj["mcpServers"] = mcpServersObj;
-        }
-
-        // Remove legacy "skillsync" entry if present
-        mcpServersObj.Remove(LegacyMcpServerKey);
-
-        var argsArray = new JsonArray();
-        foreach (var a in args)
-        {
-            argsArray.Add(a);
-        }
-
-        mcpServersObj[McpServerKey] = new JsonObject
-        {
-            ["command"] = command,
-            ["args"] = argsArray
-        };
-
-        var updatedJson = ContentHasher.NormalizeLineEndings(rootObj.ToJsonString(PrettyJsonOptions)) + "\n";
-        var tempFile = Path.Combine(directory ?? ".", $".{Path.GetFileName(configFilePath)}.{Guid.NewGuid():N}.skillsync-tmp");
-        File.WriteAllText(tempFile, updatedJson, new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
-        File.Move(tempFile, configFilePath, overwrite: true);
-    }
-
-    /// <summary>
-    /// Non-destructively removes `"skillhub"` (and legacy `"skillsync"`) from `"mcpServers"` in the given JSON file,
-    /// leaving all other MCP servers and settings untouched.
-    /// </summary>
-    public static bool RemoveSkillHubMcpEntryFromFile(string configFilePath)
-    {
-        if (!File.Exists(configFilePath))
-        {
-            return false;
-        }
-
-        try
-        {
-            var raw = File.ReadAllText(configFilePath);
-            if (string.IsNullOrWhiteSpace(raw))
-            {
-                return false;
-            }
-
-            var parsed = JsonNode.Parse(
-                raw,
-                nodeOptions: null,
-                documentOptions: new JsonDocumentOptions
+                if (target.ClientId == "codex")
                 {
-                    CommentHandling = JsonCommentHandling.Skip,
-                    AllowTrailingCommas = true
-                });
-
-            if (parsed is not JsonObject rootObj || rootObj["mcpServers"] is not JsonObject mcpServersObj)
-            {
-                return false;
-            }
-
-            var removedHub = mcpServersObj.Remove(McpServerKey);
-            var removedLegacy = mcpServersObj.Remove(LegacyMcpServerKey);
-            if (!removedHub && !removedLegacy)
-            {
-                return false;
-            }
-
-            var directory = Path.GetDirectoryName(configFilePath);
-            var updatedJson = ContentHasher.NormalizeLineEndings(rootObj.ToJsonString(PrettyJsonOptions)) + "\n";
-            var tempFile = Path.Combine(directory ?? ".", $".{Path.GetFileName(configFilePath)}.{Guid.NewGuid():N}.skillsync-tmp");
-            File.WriteAllText(tempFile, updatedJson, new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
-            File.Move(tempFile, configFilePath, overwrite: true);
-            return true;
-        }
-        catch
-        {
-            return false;
-        }
-    }
-
-    public static bool IsSkillHubPresentInJsonFile(string configFilePath)
-    {
-        if (!File.Exists(configFilePath))
-        {
-            return false;
-        }
-
-        try
-        {
-            var raw = File.ReadAllText(configFilePath);
-            if (string.IsNullOrWhiteSpace(raw))
-            {
-                return false;
-            }
-
-            var parsed = JsonNode.Parse(
-                raw,
-                nodeOptions: null,
-                documentOptions: new JsonDocumentOptions
+                    RemoveSkillHubMcpEntryFromCodexToml(target.ConfigFilePath);
+                }
+                else
                 {
-                    CommentHandling = JsonCommentHandling.Skip,
-                    AllowTrailingCommas = true
-                });
-
-            return parsed is JsonObject rootObj
-                && rootObj["mcpServers"] is JsonObject mcpServers
-                && mcpServers[McpServerKey] is JsonObject;
-        }
-        catch
-        {
-            return false;
-        }
-    }
-
-    /// <summary>
-    /// Non-destructively injects `[mcp_servers.skillhub]` into OpenAI Codex's `~/.codex/config.toml`
-    /// while preserving all existing TOML tables and settings.
-    /// </summary>
-    public static void InjectSkillHubMcpEntryIntoCodexToml(string tomlFilePath, string command, IReadOnlyList<string> args)
-    {
-        var directory = Path.GetDirectoryName(tomlFilePath);
-        if (!string.IsNullOrEmpty(directory))
-        {
-            Directory.CreateDirectory(directory);
-        }
-
-        var existingToml = File.Exists(tomlFilePath)
-            ? ContentHasher.NormalizeLineEndings(File.ReadAllText(tomlFilePath))
-            : string.Empty;
-
-        var cleaned = StripCodexMcpTomlSection(existingToml, "skillhub");
-        cleaned = StripCodexMcpTomlSection(cleaned, "skillsync").TrimEnd();
-
-        var formattedArgs = string.Join(", ", args.Select(a => $"\"{a.Replace("\\", "\\\\", StringComparison.Ordinal).Replace("\"", "\\\"", StringComparison.Ordinal)}\""));
-        var section = $"\n\n[mcp_servers.skillhub]\ncommand = '{command}'\nargs = [{formattedArgs}]\n";
-
-        var finalToml = string.IsNullOrWhiteSpace(cleaned)
-            ? section.TrimStart()
-            : cleaned + section;
-
-        var tempFile = Path.Combine(directory ?? ".", $".{Path.GetFileName(tomlFilePath)}.{Guid.NewGuid():N}.skillsync-tmp");
-        File.WriteAllText(tempFile, finalToml, new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
-        File.Move(tempFile, tomlFilePath, overwrite: true);
-    }
-
-    public static bool RemoveSkillHubMcpEntryFromCodexToml(string tomlFilePath)
-    {
-        if (!File.Exists(tomlFilePath))
-        {
-            return false;
-        }
-
-        try
-        {
-            var existingToml = ContentHasher.NormalizeLineEndings(File.ReadAllText(tomlFilePath));
-            var cleaned = StripCodexMcpTomlSection(existingToml, "skillhub");
-            cleaned = StripCodexMcpTomlSection(cleaned, "skillsync");
-
-            if (string.Equals(existingToml, cleaned, StringComparison.Ordinal))
-            {
-                return false;
+                    RemoveSkillHubMcpEntryFromFile(target.ConfigFilePath);
+                }
             }
-
-            var directory = Path.GetDirectoryName(tomlFilePath);
-            var tempFile = Path.Combine(directory ?? ".", $".{Path.GetFileName(tomlFilePath)}.{Guid.NewGuid():N}.skillsync-tmp");
-            File.WriteAllText(tempFile, cleaned.TrimEnd() + "\n", new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
-            File.Move(tempFile, tomlFilePath, overwrite: true);
-            return true;
+            catch (Exception exception) when (IsConfigError(exception))
+            {
+                errors[target.ClientId] = exception.Message;
+            }
         }
-        catch
-        {
-            return false;
-        }
+        return DiscoverMcpClientConfigTargets().Select(target => target with { Error = errors.GetValueOrDefault(target.ClientId) }).ToArray();
     }
 
-    public static bool IsSkillHubPresentInCodexToml(string tomlFilePath)
-    {
-        if (!File.Exists(tomlFilePath))
-        {
-            return false;
-        }
+    public static void InjectSkillHubMcpEntryIntoFile(string configFilePath, string command, IReadOnlyList<string> args) =>
+        ConfigFileEditor.Edit(configFilePath, text => JsonMcpConfigEditor.Update(text, command, args));
 
+    public static bool RemoveSkillHubMcpEntryFromFile(string configFilePath) =>
+        ConfigFileEditor.Edit(configFilePath, JsonMcpConfigEditor.RemoveRegistration);
+
+    public static bool IsSkillHubPresentInJsonFile(string configFilePath) =>
+        IsPresent(configFilePath, JsonMcpConfigEditor.Contains);
+
+    public static void InjectSkillHubMcpEntryIntoCodexToml(string tomlFilePath, string command, IReadOnlyList<string> args) =>
+        ConfigFileEditor.Edit(tomlFilePath, text => TomlMcpConfigEditor.Update(text, command, args));
+
+    public static bool RemoveSkillHubMcpEntryFromCodexToml(string tomlFilePath) =>
+        ConfigFileEditor.Edit(tomlFilePath, TomlMcpConfigEditor.Remove);
+
+    public static bool IsSkillHubPresentInCodexToml(string tomlFilePath) =>
+        IsPresent(tomlFilePath, TomlMcpConfigEditor.Contains);
+
+    private static bool IsPresent(string path, Func<string, bool> probe)
+    {
         try
         {
-            var text = File.ReadAllText(tomlFilePath);
-            return text.Contains("[mcp_servers.skillhub]", StringComparison.OrdinalIgnoreCase);
+            return probe(ConfigFileEditor.Read(path));
         }
-        catch
+        catch (Exception exception) when (IsConfigError(exception))
         {
             return false;
         }
     }
 
-    private static string StripCodexMcpTomlSection(string tomlContent, string serverName)
-    {
-        if (string.IsNullOrWhiteSpace(tomlContent))
-        {
-            return string.Empty;
-        }
-
-        var pattern = $@"(?ms)^\[mcp_servers\.{Regex.Escape(serverName)}\]\s*\n(?:(?!^\[).*\n?)*";
-        return Regex.Replace(tomlContent, pattern, string.Empty);
-    }
+    private static bool IsConfigError(Exception exception) =>
+        exception is IOException or UnauthorizedAccessException or ArgumentException or InvalidOperationException or JsonException;
 
     public (bool Success, string Method, string Details) RegisterOsAutoStart(string? overrideExecutablePath = null, int port = 45880)
     {
         var exePath = ResolveExecutablePath(overrideExecutablePath);
+        if (_hasCustomHome && OperatingSystem.IsWindows())
+        {
+            return (false, "Windows Registry", "Auto-start was skipped for the custom home.");
+        }
 
         if (OperatingSystem.IsWindows())
         {
@@ -521,6 +354,10 @@ public sealed partial class InstallManager
 
     public (bool Success, string Details) UnregisterOsAutoStart()
     {
+        if (_hasCustomHome && OperatingSystem.IsWindows())
+        {
+            return (false, "Auto-start was skipped for the custom home.");
+        }
         if (OperatingSystem.IsWindows())
         {
             return UnregisterWindowsAutoStart();
@@ -665,7 +502,7 @@ public sealed partial class InstallManager
             clients);
     }
 
-    public static bool SpawnDetachedBackgroundDaemon(string? overrideExecutablePath = null, int port = 45880, bool showWindow = false)
+    public static bool SpawnDetachedBackgroundDaemon(string? overrideExecutablePath = null, int port = 45880, bool showWindow = false, string? home = null)
     {
         try
         {
@@ -680,8 +517,8 @@ public sealed partial class InstallManager
             if (processPath.EndsWith("dotnet", StringComparison.OrdinalIgnoreCase) ||
                 processPath.EndsWith("dotnet.exe", StringComparison.OrdinalIgnoreCase))
             {
-                var entryAssembly = System.Reflection.Assembly.GetEntryAssembly()?.Location;
-                if (!string.IsNullOrEmpty(entryAssembly))
+                var entryAssembly = Path.Combine(AppContext.BaseDirectory, "SkillHub.dll");
+                if (File.Exists(entryAssembly))
                 {
                     args = $"\"{entryAssembly}\" daemon {modeFlag}--port {port}";
                 }
@@ -704,7 +541,9 @@ public sealed partial class InstallManager
                 RedirectStandardError = false
             };
 
-            var proc = Process.Start(startInfo);
+            if (!string.IsNullOrWhiteSpace(home))
+                startInfo.Arguments += $" --home \"{Path.GetFullPath(home)}\"";
+            using var proc = Process.Start(startInfo);
             return proc is not null;
         }
         catch
@@ -937,6 +776,10 @@ public sealed partial class InstallManager
 
     private (bool IsRegistered, string Method, string Target) CheckAutoStartRegistration()
     {
+        if (_hasCustomHome && OperatingSystem.IsWindows())
+        {
+            return (false, "Windows Registry", "Not checked for the custom home");
+        }
         if (OperatingSystem.IsWindows())
         {
             try

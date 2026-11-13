@@ -1,4 +1,6 @@
+using System.IO.Compression;
 using System.Text.Json;
+using Microsoft.AspNetCore.Mvc;
 using System.Threading.Channels;
 using SkillSync.Daemon.Core.Engine;
 using SkillSync.Daemon.Core.Models;
@@ -12,12 +14,34 @@ public static class SkillRestEndpoints
     private static readonly JsonSerializerOptions WebJsonOptions = new()
     {
         PropertyNamingPolicy = JsonNamingPolicy.SnakeCaseLower,
-        WriteIndented = true
+        WriteIndented = false
     };
 
-    public static void MapSkillRestApi(this WebApplication app, int listenPort)
+    public static void MapSkillRestApi(this WebApplication app)
     {
-        var api = app.MapGroup("/api/v1");
+        var api = app.MapGroup("/api/v1").AddEndpointFilter(async (context, next) =>
+        {
+            try
+            {
+                return await next(context).ConfigureAwait(false);
+            }
+            catch (CommunitySourceException exception)
+            {
+                return Results.Json(new { error = exception.Message }, statusCode: exception.StatusCode);
+            }
+            catch (SkillConflictException exception)
+            {
+                return Results.Conflict(new { error = exception.Message });
+            }
+            catch (KeyNotFoundException exception)
+            {
+                return Results.NotFound(new { error = exception.Message });
+            }
+            catch (Exception exception) when (exception is ArgumentException or InvalidDataException or JsonException)
+            {
+                return Results.BadRequest(new { error = exception.Message });
+            }
+        });
 
         // 0. Native Desktop Window Focus & Theme Endpoints
         api.MapPost("/window/show", (SkillHubWindowController windowController) =>
@@ -26,42 +50,83 @@ public static class SkillRestEndpoints
             return Results.Ok(new { status = "shown" });
         });
 
-        api.MapPost("/window/theme", (WindowThemeRequest req, SkillHubWindowController windowController) =>
+        api.MapGet("/preferences", ([FromServices] DesktopPreferencesStore preferences, InstallManager install) =>
         {
-            var isDark = !string.Equals(req.Theme, "light", StringComparison.OrdinalIgnoreCase);
-            windowController.RequestSetTheme(isDark);
-            return Results.Ok(new { status = "applied", theme = isDark ? "dark" : "light" });
+            var settings = preferences.Read();
+            return Results.Ok(new { theme = settings.Theme, close_to_tray = settings.CloseToTray, auto_start = install.GetStatusReport().IsAutoStartRegistered });
         });
+        api.MapPut("/preferences", (DesktopPreferenceRequest request, [FromServices] DesktopPreferencesStore preferences,
+            InstallManager install, HttpContext context) =>
+        {
+            if (request.Theme is not ("system" or "light" or "dark")) throw new ArgumentException("Choose a valid theme.");
+            var registered = install.GetStatusReport().IsAutoStartRegistered;
+            if (registered != request.AutoStart)
+            {
+                if (request.AutoStart)
+                {
+                    var update = install.RegisterOsAutoStart(port: context.Connection.LocalPort);
+                    if (!update.Success) throw new ArgumentException(update.Details);
+                }
+                else
+                {
+                    var update = install.UnregisterOsAutoStart();
+                    if (!update.Success) throw new ArgumentException(update.Details);
+                }
+            }
+            var settings = preferences.SetOptions(request.Theme, request.CloseToTray);
+            return Results.Ok(new { theme = settings.Theme, close_to_tray = settings.CloseToTray, auto_start = request.AutoStart });
+        });
+
+        api.MapPost("/mcp-clients/{id}", (string id, ClientConfigurationRequest request, InstallManager install) =>
+            Results.Json(install.ConfigureClient(id, request.Action), WebJsonOptions));
+        api.MapGet("/readiness", (MultiRootFileWatcher watcher) =>
+        {
+            var health = watcher.GetHealth();
+            return Results.Json(new { ready = health.Running, watched_roots = health.Roots, error = health.LastError },
+                statusCode: health.Running ? StatusCodes.Status200OK : StatusCodes.Status503ServiceUnavailable);
+        });
+
+        api.MapGet("/diagnostics", async (SyncEngine engine, MultiRootFileWatcher watcher, CancellationToken ct) =>
+        {
+            var data = await engine.GetDiagnosticsAsync(ct).ConfigureAwait(false);
+            var health = watcher.GetHealth();
+            return Results.Json(new
+            {
+                watcher = new { running = health.Running, roots = health.Roots, last_error = health.LastError },
+                conflicts = data.Conflicts,
+                trash = data.Trash,
+                recent_activity = engine.GetRecentActivity().Reverse().Take(40)
+            }, WebJsonOptions);
+        });
+        api.MapPost("/diagnostics/conflicts/recover", async (ConflictRecoveryRequest request, SyncEngine engine, CancellationToken ct) =>
+            SkillResult(engine, await engine.RecoverConflictCopyAsync(request.Id, request.Revision, ct).ConfigureAwait(false)));
 
         // 1. Daemon Status, Install Status & MCP Configuration Snippets
         api.MapGet("/status", (
+            HttpContext context,
             ProviderDiscoveryService discovery,
             InstallManager installManager,
-            SyncEngine engine,
-            TunnelSupervisorService tunnel) =>
+            SyncEngine engine) =>
         {
             var (stdioCmd, stdioArgs) = installManager.BuildMcpStdioCommandSpec();
             var report = installManager.GetStatusReport();
-            var allSkills = engine.ListSkills();
-            var userSkillCount = allSkills.Count(s => string.Equals(s.SourceCategory, "user", StringComparison.OrdinalIgnoreCase));
-            var templateSkillCount = allSkills.Count(s => string.Equals(s.SourceCategory, "template", StringComparison.OrdinalIgnoreCase));
-            var systemSkillCount = allSkills.Count(s => string.Equals(s.SourceCategory, "system", StringComparison.OrdinalIgnoreCase));
-            var pluginSkillCount = allSkills.Count(s => string.Equals(s.SourceCategory, "plugin", StringComparison.OrdinalIgnoreCase));
+            var counts = engine.CountSkills();
+            var listenPort = context.Connection.LocalPort;
 
             return Results.Ok(new
             {
                 status = "online",
                 product = "SkillHub",
-                version = "1.0.0",
+                version = ProductVersion.Current,
                 listen_port = listenPort,
                 canonical_root = discovery.CanonicalSkillsRoot,
                 ledger_path = discovery.LedgerFilePath,
                 conflicts_root = discovery.ConflictsRoot,
-                skill_count = userSkillCount,
-                template_skill_count = templateSkillCount,
-                system_skill_count = systemSkillCount,
-                plugin_skill_count = pluginSkillCount,
-                total_skill_count = allSkills.Count,
+                skill_count = counts.GetValueOrDefault("user"),
+                template_skill_count = counts.GetValueOrDefault("template"),
+                system_skill_count = counts.GetValueOrDefault("system"),
+                plugin_skill_count = counts.GetValueOrDefault("plugin"),
+                total_skill_count = counts.Values.Sum(),
                 install = new
                 {
                     is_auto_start_registered = report.IsAutoStartRegistered,
@@ -75,7 +140,9 @@ public static class SkillRestEndpoints
                         config_path = c.ConfigFilePath,
                         parent_exists = c.ParentDirectoryExists,
                         file_exists = c.ConfigFileExists,
-                        is_registered = c.IsSkillHubRegistered
+                        is_registered = c.IsSkillHubRegistered,
+                        detected = installManager.CanConfigure(c),
+                        error = c.Error
                     })
                 },
                 mcp_endpoints = new
@@ -85,35 +152,26 @@ public static class SkillRestEndpoints
                     stdio_command = stdioCmd,
                     stdio_args = stdioArgs
                 },
-                tunnel = new
-                {
-                    status = tunnel.Status,
-                    public_base_url = tunnel.PublicBaseUrl,
-                    public_mcp_url = tunnel.PublicMcpUrl,
-                    last_error = tunnel.LastError
-                },
+                tunnel = new { status = "disabled" },
                 recent_activity = engine.GetRecentActivity().OrderByDescending(a => a.TimestampUtc).Take(30)
             });
         });
 
-        // 1b. Inject SkillHub MCP Server into all detected AI client config files & register OS Auto-Start
+        // Repair client registrations independently of the login startup setting.
         api.MapPost("/mcp-clients/inject", (InstallManager installManager) =>
         {
             var updatedClients = installManager.InjectMcpConfigIntoAllDetectedClients();
-            var (autoOk, method, details) = installManager.RegisterOsAutoStart(port: listenPort);
 
             return Results.Ok(new
             {
                 status = "injected",
-                auto_start_registered = autoOk,
-                auto_start_method = method,
-                auto_start_details = details,
                 mcp_clients = updatedClients.Select(c => new
                 {
                     client_id = c.ClientId,
                     display_name = c.DisplayName,
                     config_path = c.ConfigFilePath,
-                    is_registered = c.IsSkillHubRegistered
+                    is_registered = c.IsSkillHubRegistered,
+                    error = c.Error
                 })
             });
         });
@@ -142,7 +200,7 @@ public static class SkillRestEndpoints
             CancellationToken ct) =>
         {
             if (!Enum.TryParse<ProviderType>(providerName, ignoreCase: true, out var provider) ||
-                provider == ProviderType.Canonical)
+                !Enum.IsDefined(provider) || provider == ProviderType.Canonical)
             {
                 return Results.BadRequest(new { error = $"Invalid provider '{providerName}'." });
             }
@@ -163,9 +221,15 @@ public static class SkillRestEndpoints
             string? query,
             string? tag,
             string? category,
+            int? offset,
+            int? limit,
             SyncEngine engine) =>
         {
-            var skills = engine.ListSkills(query, tag, includeDisabled: true, category: category);
+            if (offset is < 0 || limit is < 1 or > 500)
+            {
+                return Results.BadRequest(new { error = "Provide a nonnegative offset and a page size from 1 through 500." });
+            }
+            var skills = engine.ListSkillSummaries(query, tag, category, offset ?? 0, limit ?? int.MaxValue);
             return Results.Ok(skills);
         });
 
@@ -186,6 +250,23 @@ public static class SkillRestEndpoints
             });
         });
 
+        api.MapGet("/skills/{name}/bundle", async (string name, SyncEngine engine, CancellationToken ct) =>
+        {
+            var skill = engine.GetSkill(name) ?? throw new KeyNotFoundException("Skill not found.");
+            using var buffer = new MemoryStream();
+            using (var archive = new ZipArchive(buffer, ZipArchiveMode.Create, leaveOpen: true))
+            {
+                var files = new Dictionary<string, string> { ["SKILL.md"] = engine.PreviewAllTranspilations(skill)["canonical"] };
+                foreach (var (path, content) in skill.SupportingFiles) files.Add(SkillPaths.SupportingPath(path), content);
+                foreach (var (path, content) in files)
+                {
+                    await using var writer = new StreamWriter(archive.CreateEntry(path).Open());
+                    await writer.WriteAsync(content.AsMemory(), ct).ConfigureAwait(false);
+                }
+            }
+            return Results.File(buffer.ToArray(), "application/zip", $"{skill.Name}.zip");
+        });
+
         // 5. Create or Upsert Skill
         api.MapPost("/skills", async (
             CanonicalSkillModel model,
@@ -202,7 +283,7 @@ public static class SkillRestEndpoints
                 model.Name = ProviderDiscoveryService.NormalizeSlug(model.Title);
             }
 
-            var saved = await engine.UpsertSkillDirectAsync(model, "webui:save", ct).ConfigureAwait(false);
+            var saved = await engine.CreateSkillAsync(model, "webui:save", ct).ConfigureAwait(false);
             var previews = engine.PreviewAllTranspilations(saved);
             return Results.Ok(new
             {
@@ -210,6 +291,12 @@ public static class SkillRestEndpoints
                 transpiled_previews = previews
             });
         });
+
+        api.MapPost("/imports/prepare", async (SkillImportSelection selection, SkillImporterService importer, CancellationToken ct) =>
+            Results.Json(await importer.PrepareImportAsync(selection, ct).ConfigureAwait(false), WebJsonOptions));
+        api.MapPost("/imports/{id:guid}/apply", async (Guid id, SkillImportApplyRequest request, SkillImporterService importer,
+            SyncEngine engine, CancellationToken ct) =>
+            SkillResult(engine, await importer.ApplyImportAsync(id, request, ct).ConfigureAwait(false)));
 
         // 5b. Import Skill from GitHub / skills.sh or Local File
         api.MapPost("/skills/import", async (
@@ -245,116 +332,81 @@ public static class SkillRestEndpoints
         });
 
         // 5d. Browse or Search Community Skills in GitHub / skills.sh
-        api.MapGet("/community/skills", async (
-            string? repo,
-            string? q,
-            SkillImporterService importer,
-            CancellationToken ct) =>
+        api.MapGet("/community/skills", async (string? repo, string? q, SkillImporterService importer, CancellationToken ct) =>
         {
-            try
+            var skills = string.IsNullOrWhiteSpace(repo) || repo == "featured/all" && !string.IsNullOrWhiteSpace(q)
+                ? await importer.SearchCommunitySkillsAsync(q, ct).ConfigureAwait(false)
+                : await importer.BrowseRepositorySkillsAsync(repo, q, ct).ConfigureAwait(false);
+            return Results.Ok(new { count = skills.Count, skills });
+        });
+
+        api.MapGet("/community/preview", async (string repo, string path, string? git_ref,
+            SkillImporterService importer, CancellationToken ct) =>
+            Results.Ok(await importer.PreviewCommunitySkillAsync(repo, path, git_ref ?? "HEAD", ct).ConfigureAwait(false)));
+
+        api.MapGet("/tags", (SyncEngine engine) => Results.Json(engine.ListTags(), WebJsonOptions));
+        api.MapPost("/tags", async (TagDeleteRequest request, SyncEngine engine, CancellationToken ct) =>
+            Results.Ok(new { tag = await engine.CreateTagAsync(request.Tag, ct).ConfigureAwait(false) }));
+        api.MapPost("/tags/rename", async (TagRenameRequest request, SyncEngine engine, CancellationToken ct) =>
+            Results.Json(await engine.ChangeTagAsync(request.OldTag, request.NewTag, ct).ConfigureAwait(false), WebJsonOptions));
+        api.MapPost("/tags/delete", async (TagDeleteRequest request, SyncEngine engine, CancellationToken ct) =>
+            Results.Json(await engine.ChangeTagAsync(request.Tag, null, ct).ConfigureAwait(false), WebJsonOptions));
+        api.MapPost("/tags/undo/{id:guid}", async (Guid id, SyncEngine engine, CancellationToken ct) =>
+            Results.Ok(new { updated_skills = await engine.UndoTagChangeAsync(id, ct).ConfigureAwait(false) }));
+        api.MapPatch("/skills/{name}/tags", async (string name, SkillTagPatch request, SyncEngine engine, CancellationToken ct) =>
+            SkillResult(engine, await engine.SetSkillTagsAsync(name, request.Tag, request.Add, ct).ConfigureAwait(false)));
+
+        api.MapPut("/skills/{name}", async (string name, JsonElement body, SyncEngine engine, CancellationToken ct) =>
+        {
+            var model = body.Deserialize<CanonicalSkillModel>(new JsonSerializerOptions(JsonSerializerDefaults.Web))
+                ?? throw new ArgumentException("A skill object is required.");
+            if (model.Revision <= 0)
             {
-                IReadOnlyList<CommunitySkillSummary> skills;
-                if (!string.IsNullOrWhiteSpace(repo))
+                throw new SkillConflictException("A current skill revision is required.");
+            }
+            var saved = await engine.EditSkillAsync(name, current =>
+            {
+                if (body.TryGetProperty("title", out _)) current.Title = model.Title;
+                if (body.TryGetProperty("description", out _)) current.Description = model.Description;
+                if (body.TryGetProperty("when_to_use", out _)) current.WhenToUse = model.WhenToUse;
+                if (body.TryGetProperty("summary_short", out _)) current.SummaryShort = model.SummaryShort;
+                if (body.TryGetProperty("instructions_markdown", out _)) current.InstructionsMarkdown = model.InstructionsMarkdown;
+                if (body.TryGetProperty("tags", out _)) current.Tags = model.Tags;
+                if (body.TryGetProperty("supporting_files", out _)) current.SupportingFiles = model.SupportingFiles;
+                if (body.TryGetProperty("targets", out var targets))
                 {
-                    skills = await importer.BrowseRepositorySkillsAsync(repo, q, ct).ConfigureAwait(false);
+                    if (targets.ValueKind != JsonValueKind.Object ||
+                        targets.EnumerateObject().Any(target => target.Value.ValueKind != JsonValueKind.Object))
+                    {
+                        throw new ArgumentException("Each target must be a JSON object.");
+                    }
+                    if (targets.TryGetProperty("claude", out var claude))
+                    {
+                        if (claude.TryGetProperty("enabled", out _)) current.Targets.Claude.Enabled = model.Targets.Claude.Enabled;
+                        if (claude.TryGetProperty("allowed_tools", out _)) current.Targets.Claude.AllowedTools = model.Targets.Claude.AllowedTools;
+                        if (claude.TryGetProperty("model", out _)) current.Targets.Claude.Model = model.Targets.Claude.Model;
+                    }
+                    if (targets.TryGetProperty("gemini", out var gemini) && gemini.TryGetProperty("enabled", out _))
+                        current.Targets.Gemini.Enabled = model.Targets.Gemini.Enabled;
+                    if (targets.TryGetProperty("codex", out var codex) && codex.TryGetProperty("enabled", out _))
+                        current.Targets.Codex.Enabled = model.Targets.Codex.Enabled;
+                    if (targets.TryGetProperty("cursor", out var cursor))
+                    {
+                        if (cursor.TryGetProperty("enabled", out _)) current.Targets.Cursor.Enabled = model.Targets.Cursor.Enabled;
+                        if (cursor.TryGetProperty("globs", out _)) current.Targets.Cursor.Globs = model.Targets.Cursor.Globs;
+                        if (cursor.TryGetProperty("always_apply", out _)) current.Targets.Cursor.AlwaysApply = model.Targets.Cursor.AlwaysApply;
+                    }
                 }
-                else
-                {
-                    skills = await importer.SearchCommunitySkillsAsync(q, ct).ConfigureAwait(false);
-                }
-
-                return Results.Ok(new
-                {
-                    count = skills.Count,
-                    skills
-                });
-            }
-            catch (Exception ex)
-            {
-                return Results.BadRequest(new { error = ex.Message });
-            }
+            }, "webui:update", ct, model.Revision).ConfigureAwait(false);
+            return SkillResult(engine, saved);
         });
 
-        // 5e. Preview a Community Skill's Full Markdown Before Importing
-        api.MapGet("/community/preview", async (
-            string repo,
-            string path,
-            string? git_ref,
-            SkillImporterService importer,
-            CancellationToken ct) =>
-        {
-            try
-            {
-                var preview = await importer.PreviewCommunitySkillAsync(
-                    repo,
-                    path,
-                    string.IsNullOrWhiteSpace(git_ref) ? "HEAD" : git_ref,
-                    ct).ConfigureAwait(false);
-                return Results.Ok(preview);
-            }
-            catch (Exception ex)
-            {
-                return Results.BadRequest(new { error = ex.Message });
-            }
-        });
-
-        // 5f. Rename a Tag Across All Skills
-        api.MapPost("/tags/rename", async (
-            TagRenameRequest req,
-            SyncEngine engine,
-            CancellationToken ct) =>
-        {
-            if (string.IsNullOrWhiteSpace(req.OldTag) || string.IsNullOrWhiteSpace(req.NewTag))
-            {
-                return Results.BadRequest(new { error = "Both old_tag and new_tag are required." });
-            }
-
-            var updatedCount = await engine.RenameTagAcrossSkillsAsync(req.OldTag, req.NewTag, ct).ConfigureAwait(false);
-            return Results.Ok(new
-            {
-                status = "renamed",
-                old_tag = req.OldTag.Trim().TrimStart('#').ToLowerInvariant(),
-                new_tag = ProviderDiscoveryService.NormalizeSlug(req.NewTag),
-                updated_skills = updatedCount
-            });
-        });
-
-        // 5g. Delete a Tag Across All Skills
-        api.MapPost("/tags/delete", async (
-            TagDeleteRequest req,
-            SyncEngine engine,
-            CancellationToken ct) =>
-        {
-            if (string.IsNullOrWhiteSpace(req.Tag))
-            {
-                return Results.BadRequest(new { error = "Parameter 'tag' is required." });
-            }
-
-            var updatedCount = await engine.DeleteTagAcrossSkillsAsync(req.Tag, ct).ConfigureAwait(false);
-            return Results.Ok(new
-            {
-                status = "deleted",
-                tag = req.Tag.Trim().TrimStart('#').ToLowerInvariant(),
-                updated_skills = updatedCount
-            });
-        });
-
-        // 6. Update Skill
-        api.MapPut("/skills/{name}", async (
-            string name,
-            CanonicalSkillModel model,
-            SyncEngine engine,
-            CancellationToken ct) =>
-        {
-            model.Name = ProviderDiscoveryService.NormalizeSlug(name);
-            var saved = await engine.UpsertSkillDirectAsync(model, "webui:update", ct).ConfigureAwait(false);
-            var previews = engine.PreviewAllTranspilations(saved);
-            return Results.Ok(new
-            {
-                skill = saved,
-                transpiled_previews = previews
-            });
-        });
+        api.MapPost("/catalog/{id}/activate", async (string id, SyncEngine engine, CancellationToken ct) =>
+            SkillResult(engine, await engine.MaterializeCatalogSkillAsync(id, null, activate: true, "webui:activate", ct).ConfigureAwait(false)));
+        api.MapPost("/catalog/{id}/clone", async (string id, CanonicalSkillModel draft, SyncEngine engine, CancellationToken ct) =>
+            SkillResult(engine, await engine.MaterializeCatalogSkillAsync(id, draft, activate: false, "webui:clone", ct).ConfigureAwait(false)));
+        api.MapPost("/skills/{name}/restore", async (string name, SyncEngine engine, CancellationToken ct) =>
+            SkillResult(engine, await engine.RestoreSkillAsync(name, ct).ConfigureAwait(false)));
 
         // 7. Toggle Provider Enablement for a Skill
         api.MapPatch("/skills/{name}/providers/{providerName}", async (
@@ -364,25 +416,27 @@ public static class SkillRestEndpoints
             SyncEngine engine,
             CancellationToken ct) =>
         {
-            var existing = engine.GetSkill(name);
-            if (existing is null)
-            {
-                return Results.NotFound(new { error = $"Skill '{name}' not found." });
-            }
-
             if (!Enum.TryParse<ProviderType>(providerName, ignoreCase: true, out var provider) ||
-                provider == ProviderType.Canonical)
+                !Enum.IsDefined(provider) || provider == ProviderType.Canonical)
             {
                 return Results.BadRequest(new { error = $"Invalid provider '{providerName}'." });
             }
-
-            existing.SetEnabledFor(provider, body.Enabled);
-            var saved = await engine.UpsertSkillDirectAsync(existing, $"webui:toggle-{provider.ToString().ToLowerInvariant()}", ct).ConfigureAwait(false);
+            var saved = await engine.SetProviderAsync(name, provider, body.Enabled, $"webui:toggle-{providerName}", ct).ConfigureAwait(false);
             return Results.Ok(new
             {
                 skill = saved,
                 transpiled_previews = engine.PreviewAllTranspilations(saved)
             });
+        });
+
+        api.MapPost("/skills/{name}/providers/{providerName}/repair", async (string name, string providerName,
+            SyncEngine engine, CancellationToken ct) =>
+        {
+            if (!Enum.TryParse<ProviderType>(providerName, ignoreCase: true, out var provider))
+            {
+                throw new ArgumentException("An external provider is required.");
+            }
+            return SkillResult(engine, await engine.RepairProviderAsync(name, provider, ct).ConfigureAwait(false));
         });
 
         // 8. Delete Skill
@@ -391,20 +445,9 @@ public static class SkillRestEndpoints
             SyncEngine engine,
             CancellationToken ct) =>
         {
-            try
-            {
-                var deleted = await engine.DeleteSkillDirectAsync(name, "webui:delete", allowBootstrapDelete: false, ct).ConfigureAwait(false);
-                if (!deleted)
-                {
-                    return Results.NotFound(new { error = $"Skill '{name}' not found." });
-                }
-
-                return Results.Ok(new { status = "deleted", name });
-            }
-            catch (InvalidOperationException ex)
-            {
-                return Results.BadRequest(new { error = ex.Message });
-            }
+            var deleted = await engine.DeleteSkillDirectAsync(name, "webui:delete", ct: ct).ConfigureAwait(false);
+            return deleted ? Results.Ok(new { status = "deleted", name }) :
+                Results.NotFound(new { error = $"Skill '{name}' not found." });
         });
 
         // 9. Live Transpilation Preview
@@ -416,7 +459,7 @@ public static class SkillRestEndpoints
             }
 
             var previews = engine.PreviewAllTranspilations(draft);
-            return Results.Ok(new { transpiled_previews = previews });
+            return Results.Ok(new { transpiled_previews = previews, effective_paths = engine.PreviewDestinationPaths(draft) });
         });
 
         // 10. Force Full Resync
@@ -426,37 +469,12 @@ public static class SkillRestEndpoints
             CancellationToken ct) =>
         {
             watcher.RefreshProviderWatchers();
-            await engine.SynchronizeAllAsync(ct).ConfigureAwait(false);
-            var userCount = engine.ListSkills().Count(s => !string.Equals(s.Name, SyncEngine.BootstrapSkillName, StringComparison.OrdinalIgnoreCase));
-            return Results.Ok(new { status = "resynced", count = userCount });
+            var report = await engine.SynchronizeAllAsync(ct).ConfigureAwait(false);
+            return Results.Ok(new { status = "resynced", count = report.ManagedSkills, report });
         });
 
-        // 11. Toggle Cloudflare Quick Tunnel
-        api.MapPost("/tunnel/toggle", (TunnelToggleRequest req, TunnelSupervisorService tunnel) =>
-        {
-            if (req.Enable)
-            {
-                var (started, msg) = tunnel.TryStartTunnel();
-                return Results.Ok(new
-                {
-                    started,
-                    message = msg,
-                    status = tunnel.Status,
-                    public_mcp_url = tunnel.PublicMcpUrl,
-                    last_error = tunnel.LastError
-                });
-            }
-            else
-            {
-                tunnel.StopTunnel();
-                return Results.Ok(new
-                {
-                    started = false,
-                    message = "Cloudflare Quick Tunnel stopped.",
-                    status = tunnel.Status
-                });
-            }
-        });
+        api.MapPost("/tunnel/toggle", () => Results.Problem(
+            "Public Quick Tunnel access is disabled.", statusCode: StatusCodes.Status410Gone));
 
         // 12. Real-time Server-Sent Events Stream (/api/v1/events)
         api.MapGet("/events", async (
@@ -468,7 +486,11 @@ public static class SkillRestEndpoints
             context.Response.Headers.CacheControl = "no-cache";
             context.Response.Headers.Connection = "keep-alive";
 
-            var channel = Channel.CreateUnbounded<SyncActivityNotification>();
+            var channel = Channel.CreateBounded<SyncActivityNotification>(new BoundedChannelOptions(64)
+            {
+                SingleReader = true,
+                FullMode = BoundedChannelFullMode.DropOldest
+            });
             void Handler(SyncActivityNotification notification) => channel.Writer.TryWrite(notification);
 
             engine.ActivityPublished += Handler;
@@ -477,11 +499,37 @@ public static class SkillRestEndpoints
                 await context.Response.WriteAsync("event: connected\ndata: {\"status\":\"listening\"}\n\n", ct).ConfigureAwait(false);
                 await context.Response.Body.FlushAsync(ct).ConfigureAwait(false);
 
+                var last = 0L;
+                if (long.TryParse(context.Request.Headers["Last-Event-ID"], out var after) && after > 0)
+                {
+                    var history = engine.GetRecentActivity();
+                    if (history.Count == 0 || after > history.Max(item => item.Sequence) || after < history.Min(item => item.Sequence) - 1)
+                    {
+                        await context.Response.WriteAsync("event: reset\ndata: {}\n\n", ct).ConfigureAwait(false);
+                    }
+                    else
+                    {
+                        foreach (var item in history.Where(item => item.Sequence > after).OrderBy(item => item.Sequence))
+                        {
+                            await WriteActivityAsync(context, item, ct).ConfigureAwait(false);
+                            last = item.Sequence;
+                        }
+                    }
+                    await context.Response.Body.FlushAsync(ct).ConfigureAwait(false);
+                }
                 await foreach (var item in channel.Reader.ReadAllAsync(ct).ConfigureAwait(false))
                 {
-                    var json = JsonSerializer.Serialize(item, WebJsonOptions);
-                    await context.Response.WriteAsync($"event: activity\ndata: {json}\n\n", ct).ConfigureAwait(false);
+                    if (item.Sequence <= last)
+                    {
+                        continue;
+                    }
+                    if (last > 0 && item.Sequence > last + 1)
+                    {
+                        await context.Response.WriteAsync("event: reset\ndata: {}\n\n", ct).ConfigureAwait(false);
+                    }
+                    await WriteActivityAsync(context, item, ct).ConfigureAwait(false);
                     await context.Response.Body.FlushAsync(ct).ConfigureAwait(false);
+                    last = item.Sequence;
                 }
             }
             catch (OperationCanceledException)
@@ -494,13 +542,25 @@ public static class SkillRestEndpoints
             }
         });
     }
+
+    private static Task WriteActivityAsync(HttpContext context, SyncActivityNotification item, CancellationToken ct)
+    {
+        var json = JsonSerializer.Serialize(item, WebJsonOptions);
+        return context.Response.WriteAsync($"id: {item.Sequence}\nevent: activity\ndata: {json}\n\n", ct);
+    }
+
+    private static IResult SkillResult(SyncEngine engine, CanonicalSkillModel skill) =>
+        Results.Ok(new { skill, transpiled_previews = engine.PreviewAllTranspilations(skill) });
 }
 
 public sealed record ProviderToggleRequest(bool Enabled);
-public sealed record TunnelToggleRequest(bool Enable);
-public sealed record WindowThemeRequest(string Theme);
+public sealed record ClientConfigurationRequest(string Action);
+public sealed record ConflictRecoveryRequest(string Id, string Revision);
 public sealed record TagRenameRequest(
     [property: System.Text.Json.Serialization.JsonPropertyName("old_tag")] string OldTag,
     [property: System.Text.Json.Serialization.JsonPropertyName("new_tag")] string NewTag);
 public sealed record TagDeleteRequest(
     [property: System.Text.Json.Serialization.JsonPropertyName("tag")] string Tag);
+
+
+public sealed record SkillTagPatch(string Tag, bool Add);

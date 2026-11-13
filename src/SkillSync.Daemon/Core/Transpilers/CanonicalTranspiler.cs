@@ -28,11 +28,6 @@ public sealed class CanonicalTranspiler : ISkillTranspiler
             clone.OriginProvider = "My Skill";
         }
 
-        if (clone.Targets.Cursor.Globs.Count == 0)
-        {
-            clone.Targets.Cursor.Globs.Add("**/*");
-        }
-
         return FrontmatterParser.SerializeToDocument(clone, clone.InstructionsMarkdown);
     }
 
@@ -52,11 +47,14 @@ public sealed class CanonicalTranspiler : ISkillTranspiler
         var dict = FrontmatterParser.ParseYamlToDictionary(yaml);
 
         var merged = existingCanonical?.Clone() ?? new CanonicalSkillModel();
-        merged.Name = !string.IsNullOrWhiteSpace(parsed.Name) ? parsed.Name.Trim().ToLowerInvariant() : skillSlug.ToLowerInvariant();
+        merged.Name = skillSlug.ToLowerInvariant();
         merged.Title = dict.ContainsKey("title") && !string.IsNullOrWhiteSpace(parsed.Title)
             ? parsed.Title.Trim()
             : (string.IsNullOrWhiteSpace(merged.Title) ? CanonicalSkillModel.HumanizeSlug(merged.Name) : merged.Title);
-        merged.Version = !string.IsNullOrWhiteSpace(parsed.Version) ? parsed.Version.Trim() : (merged.Version ?? "1.0.0");
+        if (dict.ContainsKey("version") && !string.IsNullOrWhiteSpace(parsed.Version))
+        {
+            merged.Version = parsed.Version.Trim();
+        }
 
         if (dict.ContainsKey("source_category") && !string.IsNullOrWhiteSpace(parsed.SourceCategory))
         {
@@ -103,10 +101,27 @@ public sealed class CanonicalTranspiler : ISkillTranspiler
 
         if (dict.ContainsKey("targets"))
         {
-            merged.Targets = parsed.Targets ?? new SkillTargetsConfig();
-            if (merged.Targets.Cursor.Globs.Count == 0)
+            if (dict["targets"] is not Dictionary<string, object?> targetFields || parsed.Targets is null)
             {
-                merged.Targets.Cursor.Globs.Add("**/*");
+                throw new ArgumentException("Skill targets must be a mapping.");
+            }
+            var fields = targetFields.ToDictionary(pair => pair.Key, pair =>
+                pair.Value as Dictionary<string, object?> ?? throw new ArgumentException("Each target must be a mapping."));
+            if (fields.TryGetValue("claude", out var claude))
+            {
+                if (claude.ContainsKey("enabled")) merged.Targets.Claude.Enabled = parsed.Targets.Claude.Enabled;
+                if (claude.ContainsKey("allowed_tools")) merged.Targets.Claude.AllowedTools = parsed.Targets.Claude.AllowedTools ?? [];
+                if (claude.ContainsKey("model")) merged.Targets.Claude.Model = parsed.Targets.Claude.Model;
+            }
+            if (fields.TryGetValue("gemini", out var gemini) && gemini.ContainsKey("enabled"))
+                merged.Targets.Gemini.Enabled = parsed.Targets.Gemini.Enabled;
+            if (fields.TryGetValue("codex", out var codex) && codex.ContainsKey("enabled"))
+                merged.Targets.Codex.Enabled = parsed.Targets.Codex.Enabled;
+            if (fields.TryGetValue("cursor", out var cursor))
+            {
+                if (cursor.ContainsKey("enabled")) merged.Targets.Cursor.Enabled = parsed.Targets.Cursor.Enabled;
+                if (cursor.ContainsKey("globs")) merged.Targets.Cursor.Globs = parsed.Targets.Cursor.Globs ?? [];
+                if (cursor.ContainsKey("always_apply")) merged.Targets.Cursor.AlwaysApply = parsed.Targets.Cursor.AlwaysApply;
             }
         }
 
@@ -122,6 +137,16 @@ public sealed class CanonicalTranspiler : ISkillTranspiler
         if (dict.ContainsKey("x_passthrough") && parsed.Passthrough is not null)
         {
             merged.Passthrough = parsed.Passthrough;
+        }
+
+        foreach (var (key, value) in dict)
+        {
+            if (key is not ("name" or "title" or "version" or "description" or "when_to_use" or
+                "summary_short" or "source_category" or "origin_provider" or "tags" or "targets" or
+                "allowed-tools" or "allowed_tools" or "x_passthrough"))
+            {
+                merged.Passthrough[key] = value;
+            }
         }
 
         merged.InstructionsMarkdown = body;

@@ -1,0 +1,15 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="..\SkillSync.Daemon\Core\**\*.cs"
+             Exclude="..\SkillSync.Daemon\Core\Engine\InstallManager.cs;..\SkillSync.Daemon\Core\Engine\ConfigFileEditor.cs;..\SkillSync.Daemon\Core\Engine\JsonMcpConfigEditor.cs;..\SkillSync.Daemon\Core\Engine\TomlMcpConfigEditor.cs"
+             LinkBase="Core" />
+    <Compile Include="..\SkillSync.Daemon\Watchers\ProviderDiscoveryService.cs" Link="ProviderDiscoveryService.cs" />
+    <InternalsVisibleTo Include="SkillHub" />
+    <PackageReference Include="YamlDotNet" Version="16.1.3" />
+  </ItemGroup>
+</Project>

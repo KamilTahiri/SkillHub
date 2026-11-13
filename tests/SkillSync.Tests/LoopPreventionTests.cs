@@ -168,10 +168,16 @@ public sealed class LoopPreventionTests : IDisposable
 
         for (var i = 0; i < 30; i++)
         {
-            var currentClaude = await File.ReadAllTextAsync(claudePath);
-            if (currentClaude.Contains("Inspect `docker inspect` state first.", StringComparison.Ordinal))
+            try
             {
-                break;
+                await using var stream = new FileStream(claudePath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
+                using var reader = new StreamReader(stream);
+                if ((await reader.ReadToEndAsync()).Contains("Inspect `docker inspect` state first.", StringComparison.Ordinal))
+                    break;
+            }
+            catch (IOException) when (i < 29)
+            {
+                // Windows can briefly deny a read while the atomic rename is in progress.
             }
 
             await Task.Delay(50);
@@ -189,7 +195,7 @@ public sealed class LoopPreventionTests : IDisposable
         await using var engine = new SyncEngine(discovery);
         await BootstrapManager.EnsureBootstrapSkillSeededAsync(engine);
 
-        var rpc = new McpJsonRpcHandler(engine);
+        var rpc = new McpJsonRpcHandler(engine, discovery: discovery);
 
         // 1. initialize
         var initResp = await rpc.ProcessMessageAsync("""{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05"}}""");
@@ -327,7 +333,7 @@ public sealed class LoopPreventionTests : IDisposable
         Assert.DoesNotContain("analytics", engine.GetSkill("artifact-template-kpi-tracker")!.Tags);
 
         // Test new MCP tools: manage_skill_tags, toggle_skill_provider, get_sync_status
-        var rpc = new McpJsonRpcHandler(engine);
+        var rpc = new McpJsonRpcHandler(engine, discovery: discovery);
         var tagResp = await rpc.ProcessMessageAsync("""
         {
           "jsonrpc": "2.0",

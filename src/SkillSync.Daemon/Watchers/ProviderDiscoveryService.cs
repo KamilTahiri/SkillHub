@@ -1,3 +1,6 @@
+using System.Security.Cryptography;
+using System.Text;
+using SkillSync.Daemon.Core.Engine;
 using SkillSync.Daemon.Core.Models;
 
 namespace SkillSync.Daemon.Watchers;
@@ -16,7 +19,9 @@ public sealed record CatalogSkillDescriptor(
     string SkillMdPath,
     string SourceCategory,
     string OriginProvider,
-    IReadOnlyList<string> SuggestedTags
+    IReadOnlyList<string> SuggestedTags,
+    string Id,
+    Version? CacheVersion
 );
 
 public sealed class ProviderDiscoveryService
@@ -38,11 +43,7 @@ public sealed class ProviderDiscoveryService
             ? Path.Combine(_userHomeRoot, ".skillhub")
             : Path.GetFullPath(customSkillHubRoot);
 
-        Directory.CreateDirectory(_skillHubRoot);
-        Directory.CreateDirectory(CanonicalSkillsRoot);
-        Directory.CreateDirectory(ConflictsRoot);
 
-        MigrateLegacySkillSyncIfPresent();
     }
 
     public string UserHomeRoot => _userHomeRoot;
@@ -51,6 +52,15 @@ public sealed class ProviderDiscoveryService
     public string CanonicalSkillsRoot => Path.Combine(_skillHubRoot, "skills");
     public string ConflictsRoot => Path.Combine(_skillHubRoot, "conflicts");
     public string LedgerFilePath => Path.Combine(_skillHubRoot, ".sync-ledger.json");
+    public string TrashRoot => Path.Combine(_skillHubRoot, "trash");
+
+    private static readonly EnumerationOptions CatalogScan = new()
+    {
+        RecurseSubdirectories = true,
+        IgnoreInaccessible = true,
+        AttributesToSkip = FileAttributes.ReparsePoint,
+        MaxRecursionDepth = 24
+    };
 
     public IReadOnlyList<ProviderDirectoryInfo> DiscoverProviders()
     {
@@ -110,10 +120,18 @@ public sealed class ProviderDiscoveryService
     public IReadOnlyList<CatalogSkillDescriptor> DiscoverExternalCatalogSkills()
     {
         var results = new List<CatalogSkillDescriptor>();
-        var seenSlugs = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var seenPaths = new HashSet<string>(SkillPaths.Comparer);
 
         void TryAddSkillFile(string skillMdPath, string sourceCategory, string originProvider, IEnumerable<string>? tags = null)
         {
+            try
+            {
+                SkillPaths.AssertNoReparsePoints(skillMdPath);
+            }
+            catch (IOException)
+            {
+                return;
+            }
             if (!File.Exists(skillMdPath))
             {
                 return;
@@ -137,7 +155,7 @@ public sealed class ProviderDiscoveryService
             var slug = NormalizeSlug(folderName);
             if (string.IsNullOrEmpty(slug) ||
                 string.Equals(slug, LegacyBootstrapSkillName, StringComparison.OrdinalIgnoreCase) ||
-                !seenSlugs.Add(slug))
+                !seenPaths.Add(skillMdPath))
             {
                 return;
             }
@@ -155,7 +173,18 @@ public sealed class ProviderDiscoveryService
                 }
             }
 
-            results.Add(new CatalogSkillDescriptor(slug, skillMdPath, sourceCategory, originProvider, tagList));
+            var relative = Path.GetRelativePath(_userHomeRoot, skillMdPath).Replace('\\', '/');
+            var segments = relative.Split('/').ToList();
+            Version? cacheVersion = null;
+            if (segments.Count > 7 && segments[0] == ".codex" && segments[1] == "plugins" && segments[2] == "cache" &&
+                Version.TryParse(segments[5].Split('-')[0], out cacheVersion))
+            {
+                segments.RemoveAt(5);
+                relative = string.Join('/', segments);
+            }
+            var identity = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(
+                OperatingSystem.IsWindows() ? relative.ToLowerInvariant() : relative))).ToLowerInvariant();
+            results.Add(new CatalogSkillDescriptor(slug, skillMdPath, sourceCategory, originProvider, tagList, $"catalog-{identity}", cacheVersion));
         }
 
         // 1. Codex System Skills (~/.codex/skills/.system/<slug>/SKILL.md and ~/.agents/skills/.system/<slug>/SKILL.md)
@@ -172,7 +201,7 @@ public sealed class ProviderDiscoveryService
 
             try
             {
-                foreach (var dir in Directory.EnumerateDirectories(sysRoot))
+                foreach (var dir in EnumerateCatalogDirectories(sysRoot))
                 {
                     TryAddSkillFile(Path.Combine(dir, "SKILL.md"), "system", "Codex System");
                 }
@@ -188,7 +217,7 @@ public sealed class ProviderDiscoveryService
         {
             try
             {
-                foreach (var file in Directory.EnumerateFiles(openAiTemplatesRoot, "SKILL.md", SearchOption.AllDirectories))
+                foreach (var file in EnumerateCatalogFiles(openAiTemplatesRoot))
                 {
                     TryAddSkillFile(file, "template", "OpenAI Template");
                 }
@@ -209,7 +238,7 @@ public sealed class ProviderDiscoveryService
 
             try
             {
-                foreach (var pluginDir in Directory.EnumerateDirectories(cacheDir))
+                foreach (var pluginDir in EnumerateCatalogDirectories(cacheDir))
                 {
                     var pluginName = Path.GetFileName(pluginDir);
                     if (string.Equals(pluginName, "openai-templates", StringComparison.OrdinalIgnoreCase))
@@ -217,7 +246,7 @@ public sealed class ProviderDiscoveryService
                         continue;
                     }
 
-                    foreach (var file in Directory.EnumerateFiles(pluginDir, "SKILL.md", SearchOption.AllDirectories))
+                    foreach (var file in EnumerateCatalogFiles(pluginDir))
                     {
                         TryAddSkillFile(file, "template", "OpenAI Built-in");
                     }
@@ -234,9 +263,9 @@ public sealed class ProviderDiscoveryService
         {
             try
             {
-                foreach (var pluginDir in Directory.EnumerateDirectories(bundledMarketplaceRoot))
+                foreach (var pluginDir in EnumerateCatalogDirectories(bundledMarketplaceRoot))
                 {
-                    foreach (var file in Directory.EnumerateFiles(pluginDir, "SKILL.md", SearchOption.AllDirectories))
+                    foreach (var file in EnumerateCatalogFiles(pluginDir))
                     {
                         TryAddSkillFile(file, "template", "OpenAI Built-in");
                     }
@@ -258,7 +287,7 @@ public sealed class ProviderDiscoveryService
 
             try
             {
-                foreach (var dir in Directory.EnumerateDirectories(agBuiltin))
+                foreach (var dir in EnumerateCatalogDirectories(agBuiltin))
                 {
                     TryAddSkillFile(Path.Combine(dir, "SKILL.md"), "template", "Antigravity Built-in");
                 }
@@ -273,7 +302,7 @@ public sealed class ProviderDiscoveryService
         {
             try
             {
-                foreach (var dir in Directory.EnumerateDirectories(geminiSysRoot))
+                foreach (var dir in EnumerateCatalogDirectories(geminiSysRoot))
                 {
                     TryAddSkillFile(Path.Combine(dir, "SKILL.md"), "system", "Gemini System");
                 }
@@ -297,7 +326,7 @@ public sealed class ProviderDiscoveryService
 
             try
             {
-                foreach (var file in Directory.EnumerateFiles(pluginRoot, "SKILL.md", SearchOption.AllDirectories))
+                foreach (var file in EnumerateCatalogFiles(pluginRoot))
                 {
                     TryAddSkillFile(file, "template", originLabel);
                 }
@@ -314,7 +343,7 @@ public sealed class ProviderDiscoveryService
         {
             try
             {
-                foreach (var pluginDir in Directory.EnumerateDirectories(codexPluginsCatalog))
+                foreach (var pluginDir in EnumerateCatalogDirectories(codexPluginsCatalog))
                 {
                     var pluginName = Path.GetFileName(pluginDir);
                     var skillsSubDir = Path.Combine(pluginDir, "skills");
@@ -323,7 +352,7 @@ public sealed class ProviderDiscoveryService
                         continue;
                     }
 
-                    foreach (var file in Directory.EnumerateFiles(skillsSubDir, "SKILL.md", SearchOption.AllDirectories))
+                    foreach (var file in EnumerateCatalogFiles(skillsSubDir))
                     {
                         TryAddSkillFile(file, "plugin", $"Plugin: {CanonicalSkillModel.HumanizeSlug(pluginName)}");
                     }
@@ -334,7 +363,25 @@ public sealed class ProviderDiscoveryService
             }
         }
 
-        return results;
+        return results.GroupBy(item => item.Id, StringComparer.Ordinal)
+            .Select(group => group.OrderByDescending(item => item.CacheVersion)
+                .ThenBy(item => item.SkillMdPath, SkillPaths.Comparer).First()).ToArray();
+    }
+
+    private static IEnumerable<string> EnumerateCatalogDirectories(string root)
+    {
+        SkillPaths.AssertNoReparsePoints(root);
+        return Directory.EnumerateDirectories(root, "*", new EnumerationOptions
+        {
+            IgnoreInaccessible = true,
+            AttributesToSkip = FileAttributes.ReparsePoint
+        });
+    }
+
+    private static IEnumerable<string> EnumerateCatalogFiles(string root)
+    {
+        SkillPaths.AssertNoReparsePoints(root);
+        return Directory.EnumerateFiles(root, "SKILL.md", CatalogScan);
     }
 
     /// <summary>
@@ -493,102 +540,87 @@ public sealed class ProviderDiscoveryService
         return Path.Combine(antigravityRoot, "skills", cleanSlug);
     }
 
+    public IReadOnlyList<(ProviderType Provider, string Root)> GetObservableRoots() =>
+    [
+        (ProviderType.Canonical, CanonicalSkillsRoot),
+        (ProviderType.Claude, Path.Combine(_userHomeRoot, ".claude", "skills")),
+        (ProviderType.Claude, Path.Combine(_userHomeRoot, ".claude", "commands")),
+        (ProviderType.Gemini, Path.Combine(_userHomeRoot, ".gemini", "skills")),
+        (ProviderType.Gemini, Path.Combine(_userHomeRoot, ".gemini", "antigravity", "skills")),
+        (ProviderType.Codex, Path.Combine(_userHomeRoot, ".codex", "skills")),
+        (ProviderType.Codex, Path.Combine(_userHomeRoot, ".agents", "skills")),
+        (ProviderType.Cursor, Path.Combine(_userHomeRoot, ".cursor", "skills")),
+        (ProviderType.Cursor, Path.Combine(_userHomeRoot, ".cursor", "rules"))
+    ];
+
     public bool TryResolveSkillFromFilePath(string fullPath, out ProviderType provider, out string skillSlug)
     {
-        provider = ProviderType.Canonical;
-        skillSlug = string.Empty;
+        var location = ResolveObservedPath(fullPath);
+        provider = location?.Provider ?? ProviderType.Canonical;
+        skillSlug = location?.Slug ?? string.Empty;
+        return location is not null;
+    }
 
-        if (string.IsNullOrWhiteSpace(fullPath))
+    public ObservedSkillPath? ResolveObservedPath(string fullPath)
+    {
+        if (string.IsNullOrWhiteSpace(fullPath) || AtomicFileWriter.IsTemporaryOrIgnoredPath(fullPath))
         {
-            return false;
+            return null;
         }
 
-        var normalizedFullPath = Path.GetFullPath(fullPath);
-        var comparison = OperatingSystem.IsWindows()
-            ? StringComparison.OrdinalIgnoreCase
-            : StringComparison.Ordinal;
-
-        var candidateRoots = new List<(ProviderType Provider, string RootDir)>
+        var path = Path.GetFullPath(fullPath);
+        foreach (var (provider, root) in GetObservableRoots())
         {
-            (ProviderType.Canonical, CanonicalSkillsRoot),
-            (ProviderType.Claude, Path.Combine(_userHomeRoot, ".claude", "skills")),
-            (ProviderType.Gemini, Path.Combine(_userHomeRoot, ".gemini", "skills")),
-            (ProviderType.Gemini, Path.Combine(_userHomeRoot, ".gemini", "antigravity", "skills")),
-            (ProviderType.Codex, Path.Combine(_userHomeRoot, ".codex", "skills")),
-            (ProviderType.Codex, Path.Combine(_userHomeRoot, ".agents", "skills")),
-            (ProviderType.Cursor, Path.Combine(_userHomeRoot, ".cursor", "skills")),
-            (ProviderType.Cursor, Path.Combine(_userHomeRoot, ".cursor", "rules"))
-        };
-
-        foreach (var (candProvider, rootDir) in candidateRoots)
-        {
-            var rootWithSep = Path.GetFullPath(rootDir).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar)
-                              + Path.DirectorySeparatorChar;
-
-            if (!normalizedFullPath.StartsWith(rootWithSep, comparison))
+            if (!SkillPaths.IsInside(root, path))
             {
                 continue;
             }
 
-            var relative = normalizedFullPath[rootWithSep.Length..];
-            var segments = relative.Split([Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar], StringSplitOptions.RemoveEmptyEntries);
-            if (segments.Length == 0)
+            var segments = SkillPaths.NormalizeRelative(Path.GetRelativePath(root, path)).Split('/');
+            if (segments.Any(segment => segment.StartsWith('.')))
             {
-                return false;
+                return null;
             }
 
-            if (candProvider == ProviderType.Cursor && rootDir.EndsWith("rules", StringComparison.OrdinalIgnoreCase))
+            var flatExtension = root.EndsWith($"{Path.DirectorySeparatorChar}rules", StringComparison.OrdinalIgnoreCase)
+                ? ".mdc"
+                : root.EndsWith($"{Path.DirectorySeparatorChar}commands", StringComparison.OrdinalIgnoreCase) ? ".md" : null;
+            if (flatExtension != ".mdc")
             {
-                var file = segments[0];
-                if (!file.EndsWith(".mdc", StringComparison.OrdinalIgnoreCase))
+                for (var index = 1; index < segments.Length - 1; index++)
                 {
-                    return false;
+                    if (SkillPaths.IsSupportingFolder(segments[index]))
+                    {
+                        var primary = SkillPaths.Resolve(root, string.Join('/', segments.Take(index).Append("SKILL.md")));
+                        return Observed(provider, segments[index - 1], primary, string.Join('/', segments.Skip(index)));
+                    }
                 }
 
-                provider = ProviderType.Cursor;
-                skillSlug = NormalizeSlug(Path.GetFileNameWithoutExtension(file));
-                return !string.IsNullOrEmpty(skillSlug);
+                if (segments.Length >= 2 && segments[^1].Equals("SKILL.md", StringComparison.OrdinalIgnoreCase))
+                {
+                    return Observed(provider, segments[^2], path, null);
+                }
             }
-            else
+
+            if (flatExtension is not null && Path.GetExtension(path).Equals(flatExtension, StringComparison.OrdinalIgnoreCase))
             {
-                if (segments.Length < 2)
-                {
-                    return false;
-                }
-
-                var candidateSlug = segments[0];
-                if (candidateSlug.StartsWith('.'))
-                {
-                    return false;
-                }
-
-                var secondSegment = segments[1];
-                var isSkillMd = segments.Length == 2 && string.Equals(secondSegment, "SKILL.md", StringComparison.OrdinalIgnoreCase);
-                var isSupportingFile = segments.Length >= 3 && IsAllowedSupportingFolder(secondSegment);
-
-                if (!isSkillMd && !isSupportingFile)
-                {
-                    return false;
-                }
-
-                provider = candProvider;
-                skillSlug = NormalizeSlug(candidateSlug);
-                return !string.IsNullOrEmpty(skillSlug);
+                return Observed(provider, Path.GetFileNameWithoutExtension(path), path, null);
             }
+            return null;
         }
 
-        return false;
+        return null;
     }
 
-    public static bool IsAllowedSupportingFolder(string folderName)
+    private static ObservedSkillPath? Observed(ProviderType provider, string slug, string primary, string? supporting)
     {
-        return string.Equals(folderName, "scripts", StringComparison.OrdinalIgnoreCase)
-            || string.Equals(folderName, "resources", StringComparison.OrdinalIgnoreCase)
-            || string.Equals(folderName, "references", StringComparison.OrdinalIgnoreCase)
-            || string.Equals(folderName, "examples", StringComparison.OrdinalIgnoreCase)
-            || string.Equals(folderName, "agents", StringComparison.OrdinalIgnoreCase)
-            || string.Equals(folderName, "assets", StringComparison.OrdinalIgnoreCase);
+        var normalized = NormalizeSlug(slug);
+        return normalized.Length == 0 || normalized == LegacyBootstrapSkillName
+            ? null
+            : new ObservedSkillPath(provider, normalized, primary, supporting);
     }
+
+    public static bool IsAllowedSupportingFolder(string folderName) => SkillPaths.IsSupportingFolder(folderName);
 
     public static string NormalizeSlug(string slugOrTitle)
     {
@@ -613,75 +645,11 @@ public sealed class ProviderDiscoveryService
         return joined.Trim('-');
     }
 
-    private void MigrateLegacySkillSyncIfPresent()
+    public void EnsureStorage()
     {
-        try
-        {
-            var legacyRoot = Path.Combine(_userHomeRoot, ".skillsync");
-            var legacySkillsDir = Path.Combine(legacyRoot, "skills");
-            if (Directory.Exists(legacySkillsDir))
-            {
-                foreach (var dir in Directory.EnumerateDirectories(legacySkillsDir))
-                {
-                    var folderName = Path.GetFileName(dir);
-                    if (string.IsNullOrEmpty(folderName) ||
-                        string.Equals(folderName, LegacyBootstrapSkillName, StringComparison.OrdinalIgnoreCase))
-                    {
-                        continue;
-                    }
-
-                    var targetDir = Path.Combine(CanonicalSkillsRoot, folderName);
-                    if (!Directory.Exists(targetDir))
-                    {
-                        CopyDirectoryRecursive(dir, targetDir);
-                    }
-                }
-            }
-
-            // Clean up legacy 00-skillsync-bootstrap from all provider folders
-            var legacyDirsToDelete = new[]
-            {
-                Path.Combine(CanonicalSkillsRoot, LegacyBootstrapSkillName),
-                Path.Combine(_userHomeRoot, ".claude", "skills", LegacyBootstrapSkillName),
-                Path.Combine(_userHomeRoot, ".gemini", "skills", LegacyBootstrapSkillName),
-                Path.Combine(_userHomeRoot, ".gemini", "antigravity", "skills", LegacyBootstrapSkillName),
-                Path.Combine(_userHomeRoot, ".codex", "skills", LegacyBootstrapSkillName),
-                Path.Combine(_userHomeRoot, ".agents", "skills", LegacyBootstrapSkillName)
-            };
-
-            foreach (var d in legacyDirsToDelete)
-            {
-                if (Directory.Exists(d))
-                {
-                    try { Directory.Delete(d, recursive: true); } catch { }
-                }
-            }
-
-            var legacyCursorRule = Path.Combine(_userHomeRoot, ".cursor", "rules", $"{LegacyBootstrapSkillName}.mdc");
-            if (File.Exists(legacyCursorRule))
-            {
-                try { File.Delete(legacyCursorRule); } catch { }
-            }
-        }
-        catch
-        {
-        }
-    }
-
-    private static void CopyDirectoryRecursive(string sourceDir, string destinationDir)
-    {
-        Directory.CreateDirectory(destinationDir);
-        foreach (var file in Directory.EnumerateFiles(sourceDir))
-        {
-            var destFile = Path.Combine(destinationDir, Path.GetFileName(file));
-            File.Copy(file, destFile, overwrite: false);
-        }
-
-        foreach (var subDir in Directory.EnumerateDirectories(sourceDir))
-        {
-            var destSub = Path.Combine(destinationDir, Path.GetFileName(subDir));
-            CopyDirectoryRecursive(subDir, destSub);
-        }
+        SkillPaths.AssertNoReparsePoints(_skillHubRoot);
+        SkillPaths.AssertNoReparsePoints(CanonicalSkillsRoot);
+        Directory.CreateDirectory(CanonicalSkillsRoot);
     }
 
     private static ProviderDirectoryInfo BuildInfo(
@@ -706,3 +674,5 @@ public sealed class ProviderDiscoveryService
             patternDesc);
     }
 }
+
+public sealed record ObservedSkillPath(ProviderType Provider, string Slug, string PrimaryPath, string? SupportingPath);

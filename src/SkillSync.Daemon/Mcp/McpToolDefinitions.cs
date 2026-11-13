@@ -1,4 +1,7 @@
+using System.Text;
+using System.Text.Json;
 using System.Text.Json.Nodes;
+using System.Text.RegularExpressions;
 
 namespace SkillSync.Daemon.Mcp;
 
@@ -7,6 +10,67 @@ public static class McpToolDefinitions
     private static readonly JsonArray CachedToolsArray = BuildToolsArray();
 
     public static JsonArray GetToolsJsonArray() => JsonNode.Parse(CachedToolsArray.ToJsonString())!.AsArray();
+
+    private static readonly Dictionary<string, JsonObject> InputSchemas = CachedToolsArray
+        .OfType<JsonObject>().ToDictionary(tool => tool["name"]!.GetValue<string>(), tool => tool["inputSchema"]!.AsObject());
+
+    internal static string? ValidateArguments(string name, JsonObject args) =>
+        InputSchemas.TryGetValue(name, out var schema) ? ValidateValue(args, schema, "arguments") : $"Unknown tool '{name}'.";
+
+    private static string? ValidateValue(JsonNode? value, JsonObject schema, string path)
+    {
+        var type = schema["type"]!.GetValue<string>();
+        var kind = value?.GetValueKind();
+        var valid = type switch
+        {
+            "object" => kind == JsonValueKind.Object,
+            "array" => kind == JsonValueKind.Array,
+            "string" => kind == JsonValueKind.String,
+            "boolean" => kind is JsonValueKind.True or JsonValueKind.False,
+            "integer" => kind == JsonValueKind.Number && ((JsonValue)value!).TryGetValue<long>(out _),
+            _ => false
+        };
+        if (!valid) return $"{path} must be of type {type}.";
+        if (schema["enum"] is JsonArray choices && !choices.Any(choice => JsonNode.DeepEquals(value, choice)))
+            return $"{path} is not one of the supported values.";
+
+        if (value is JsonObject obj)
+        {
+            if (schema["required"] is JsonArray required)
+                foreach (var field in required)
+                    if (!obj.ContainsKey(field!.GetValue<string>())) return $"{path}.{field.GetValue<string>()} is required.";
+            var properties = schema["properties"] as JsonObject;
+            foreach (var (key, field) in obj)
+            {
+                if (properties?[key] is JsonObject property)
+                {
+                    if (ValidateValue(field, property, $"{path}.{key}") is { } error) return error;
+                }
+                else if (schema["additionalProperties"]?.GetValue<bool>() == false)
+                    return $"{path}.{key} is not supported.";
+            }
+        }
+        if (value is JsonArray array && schema["items"] is JsonObject items)
+        {
+            for (var index = 0; index < array.Count; index++)
+                if (ValidateValue(array[index], items, $"{path}[{index}]") is { } error) return error;
+        }
+        if (type == "string")
+        {
+            var input = value!.GetValue<string>();
+            var length = input.EnumerateRunes().Count();
+            if (schema["minLength"] is JsonValue min && length < min.GetValue<int>() ||
+                schema["maxLength"] is JsonValue max && length > max.GetValue<int>())
+                return $"{path} is outside the allowed length.";
+            if (schema["pattern"] is JsonValue pattern &&
+                !Regex.IsMatch(input, pattern.GetValue<string>(), RegexOptions.CultureInvariant | RegexOptions.NonBacktracking))
+                return $"{path} does not match the required format.";
+        }
+        if (type == "integer" && schema["minimum"] is JsonValue minimum &&
+            value!.GetValue<long>() < minimum.GetValue<long>())
+            return $"{path} is below the allowed minimum.";
+        return null;
+    }
 
     private static JsonArray BuildToolsArray()
     {
@@ -193,7 +257,12 @@ public static class McpToolDefinitions
                     "cursor_always_apply": {
                       "type": "boolean"
                     },
-                    "upsert_supporting_files": {
+                    "revision": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "description": "Expected canonical revision from get_skill. Use it for edits based on a previously read document."
+                },
+                "upsert_supporting_files": {
                       "type": "array",
                       "items": {
                         "type": "object",
@@ -242,9 +311,12 @@ public static class McpToolDefinitions
                   "properties": {
                     "action": {
                       "type": "string",
-                      "enum": ["list", "add", "remove", "rename", "delete"],
+                      "enum": ["list", "create", "add", "remove", "rename", "delete", "undo"],
                       "description": "Tag operation to perform."
                     },
+                    "tag": { "type": "string" },
+                    "name": { "type": "string", "description": "Alias for skill_name." },
+                    "undo_id": { "type": "string" },
                     "skill_name": {
                       "type": "string",
                       "description": "Skill slug (required when action is 'add' or 'remove')."
@@ -269,7 +341,7 @@ public static class McpToolDefinitions
               },
               {
                 "name": "toggle_skill_provider",
-                "description": "Enables or disables syncing a specific skill (or built-in template) to an AI provider (claude, gemini, codex, cursor).",
+                "description": "Enables or disables syncing a managed skill to an AI provider (claude, gemini, codex, cursor).",
                 "inputSchema": {
                   "type": "object",
                   "properties": {
@@ -310,6 +382,37 @@ public static class McpToolDefinitions
                 }
               },
               {
+                "name": "prepare_skill_import",
+                "description": "Review one exact skill, including its source, revision, license, files, and name collision, before importing.",
+                "inputSchema": {
+                  "type": "object",
+                  "properties": {
+                    "source": { "type": "string" },
+                    "repo": { "type": "string" },
+                    "path": { "type": "string" },
+                    "git_ref": { "type": "string" },
+                    "raw_markdown": { "type": "string" },
+                    "file_name": { "type": "string" }
+                  },
+                  "additionalProperties": false
+                }
+              },
+              {
+                "name": "apply_skill_import",
+                "description": "Import the reviewed revision. Defaults to a local copy with no provider deployments.",
+                "inputSchema": {
+                  "type": "object",
+                  "properties": {
+                    "plan_id": { "type": "string" },
+                    "revision": { "type": "string" },
+                    "name": { "type": "string" },
+                    "providers": { "type": "array", "items": { "type": "string", "enum": ["claude", "gemini", "codex", "cursor"] } }
+                  },
+                  "required": ["plan_id", "revision"],
+                  "additionalProperties": false
+                }
+              },
+              {
                 "name": "import_community_skill",
                 "description": "Imports an open-source skill from GitHub or skills.sh (e.g., 'vercel-labs/agent-skills/skills/react-best-practices' or 'anthropics/skills/skills/frontend-design') into SkillHub and syncs it across all enabled AI providers.",
                 "inputSchema": {
@@ -321,6 +424,36 @@ public static class McpToolDefinitions
                     }
                   },
                   "required": ["source"],
+                  "additionalProperties": false
+                }
+              },
+              {
+                "name": "activate_catalog_skill",
+                "description": "Create a managed deployment from a read-only catalog entry.",
+                "inputSchema": {
+                  "type": "object",
+                  "properties": { "catalog_id": { "type": "string" } },
+                  "required": ["catalog_id"],
+                  "additionalProperties": false
+                }
+              },
+              {
+                "name": "clone_catalog_skill",
+                "description": "Create a personal, disabled copy of a read-only catalog entry.",
+                "inputSchema": {
+                  "type": "object",
+                  "properties": { "catalog_id": { "type": "string" } },
+                  "required": ["catalog_id"],
+                  "additionalProperties": false
+                }
+              },
+              {
+                "name": "restore_skill",
+                "description": "Restore a managed skill from SkillHub trash.",
+                "inputSchema": {
+                  "type": "object",
+                  "properties": { "name": { "type": "string" } },
+                  "required": ["name"],
                   "additionalProperties": false
                 }
               },

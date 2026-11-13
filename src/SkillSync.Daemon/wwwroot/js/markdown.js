@@ -1,308 +1,128 @@
-/**
- * Zero-Dependency Markdown Renderer & Search Highlighting Engine for SkillHub
- */
+import { h, copy } from './ui.js?v=20261112-v9';
 
-export function escapeHtml(str) {
-  return String(str ?? "")
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;");
+export function highlighted(text, query = '') {
+  const fragment = document.createDocumentFragment();
+  const term = query.trim();
+  if (!term) return document.createTextNode(text);
+  const expression = new RegExp(term.replace(/[.*+?^$(){}|[\]\\]/g, '\\$&'), 'giu');
+  let offset = 0;
+  for (const match of text.matchAll(expression)) {
+    fragment.append(text.slice(offset, match.index), h('mark', {}, match[0]));
+    offset = match.index + match[0].length;
+  }
+  fragment.append(text.slice(offset));
+  return fragment;
 }
 
-function escapeRegExp(str) {
-  return String(str).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+function inline(text, options, depth = 0) {
+  if (depth >= 6) return highlighted(text, options.query);
+  const result = document.createDocumentFragment();
+  const tokens = /(\x60+)([^\n]+?)\1|\[([^\]\n]+)\]\((<?(?:[^()\s]|\([^()\n]*\))+>?)\)|(\*\*|__)(.+?)\5|(\*|_)([^\n]+?)\7/g;
+  let end = 0;
+  for (const match of text.matchAll(tokens)) {
+    result.append(highlighted(text.slice(end, match.index), options.query));
+    if (match[1]) result.append(h('code', {}, highlighted(match[2], options.query)));
+    else if (match[3]) {
+      const url = match[4].replace(/^<|>$/g, '');
+      const label = inline(match[3], options, depth + 1);
+      if (/^https?:\/\//i.test(url)) {
+        result.append(h('a', { class: 'md-link', href: url, title: 'Copy link', onclick: event => {
+          event.preventDefault();
+          copy(url);
+        } }, label));
+      } else if (options.openFile && /^(?:\.\/)?(?:scripts|assets|references|resources|agents|examples)\//i.test(url)) {
+        result.append(h('button', { type: 'button', class: 'md-link', onclick: () => options.openFile(url.replace(/^\.\//, '')) }, label));
+      } else result.append(label);
+    } else result.append(h(match[5] ? 'strong' : 'em', {}, inline(match[6] ?? match[8], options, depth + 1)));
+    end = match.index + match[0].length;
+  }
+  result.append(highlighted(text.slice(end), options.query));
+  return result;
 }
 
-function buildSearchRegex(query) {
-  const q = String(query ?? "").trim();
-  if (!q) return null;
+const cells = line => line.trim().replace(/^\||(?<!\\)\|$/g, '').split(/(?<!\\)\|/).map(cell => cell.trim().replace(/\\\|/g, '|'));
+const listPattern = /^(\s*)([-+*]|\d+[.)])\s+(.*)$/;
+const headingPattern = /^\s*(#{1,6})\s+(.+?)\s*#*\s*$/;
+const plainHeading = text => text.replace(/[\x60*_]/g, '').trim().replace(/\s+/g, ' ').toLowerCase();
+const separator = line => line && line.includes('|') && cells(line).every(cell => /^:?-{3,}:?$/.test(cell));
 
-  // Match full phrase first, then individual tokens >= 2 chars
-  const tokens = q
-    .split(/\s+/)
-    .map((t) => t.trim())
-    .filter((t) => t.length >= 2);
+export function renderMarkdown(source, options = {}) {
+  const fragment = document.createDocumentFragment();
+  const lines = String(source ?? '').replace(/\r\n?/g, '\n').split('\n');
+  let index = 0;
+  let first = true;
+  const headingIds = new Map();
 
-  const patterns = [escapeRegExp(q)];
-  tokens.forEach((t) => {
-    const esc = escapeRegExp(t);
-    if (!patterns.includes(esc)) {
-      patterns.push(esc);
-    }
-  });
-
-  return new RegExp(`(${patterns.join("|")})`, "gi");
-}
-
-/**
- * Escapes HTML and wraps any matches of `query` in <mark class="search-mark">
- */
-export function highlightText(text, query) {
-  const raw = String(text ?? "");
-  if (!raw) return "";
-  const regex = buildSearchRegex(query);
-  if (!regex) return escapeHtml(raw);
-
-  const parts = raw.split(regex);
-  return parts
-    .map((part, idx) => {
-      // Capturing group splits place matched substrings at odd indices
-      if (idx % 2 === 1) {
-        return `<mark class="search-mark">${escapeHtml(part)}</mark>`;
+  function list(indent, ordered, depth) {
+    const firstMatch = listPattern.exec(lines[index]);
+    const start = ordered ? Number.parseInt(firstMatch[2], 10) : undefined;
+    const node = h(ordered ? 'ol' : 'ul', { start: start === 1 ? undefined : start });
+    while (index < lines.length) {
+      const match = listPattern.exec(lines[index]);
+      if (!match || match[1].length !== indent || /^\d/.test(match[2]) !== ordered) break;
+      index++;
+      const item = h('li', {}, inline(match[3], options));
+      node.append(item);
+      while (index < lines.length) {
+        const next = listPattern.exec(lines[index]);
+        if (!next || next[1].length <= indent || depth >= 12) break;
+        item.append(list(next[1].length, /^\d/.test(next[2]), depth + 1));
       }
-      return escapeHtml(part);
-    })
-    .join("");
-}
-
-/**
- * Extracts a contextual snippet around the first match inside Markdown instructions
- */
-export function extractInstructionMatchSnippet(markdown, query, maxLength = 190) {
-  const raw = String(markdown ?? "").trim();
-  const q = String(query ?? "").trim();
-  if (!raw || !q) return null;
-
-  const lowerRaw = raw.toLowerCase();
-  const lowerQ = q.toLowerCase();
-
-  let matchIndex = lowerRaw.indexOf(lowerQ);
-  if (matchIndex < 0) {
-    const tokens = lowerQ.split(/\s+/).filter((t) => t.length >= 2);
-    for (const token of tokens) {
-      matchIndex = lowerRaw.indexOf(token);
-      if (matchIndex >= 0) break;
     }
+    return node;
   }
 
-  if (matchIndex < 0) return null;
-
-  // Clean markdown syntax gently around the match window
-  const start = Math.max(0, matchIndex - 55);
-  const end = Math.min(raw.length, matchIndex + maxLength - 55);
-  let slice = raw
-    .slice(start, end)
-    .replace(/```[\s\S]*?```/g, " ")
-    .replace(/^#+\s+/gm, "")
-    .replace(/[*_`>-]+/g, " ")
-    .replace(/\s+/g, " ")
-    .trim();
-
-  if (start > 0) slice = "…" + slice;
-  if (end < raw.length) slice = slice + "…";
-
-  return highlightText(slice, q);
-}
-
-/**
- * Renders inline Markdown formatting (inline code, bold, italic, links) + optional search highlight
- */
-function renderInline(text, query = "") {
-  if (!text) return "";
-
-  // Split by inline code spans first so code spans are not mangled
-  const segments = String(text).split(/(`[^`]+`)/g);
-  return segments
-    .map((seg) => {
-      if (seg.startsWith("`") && seg.endsWith("`") && seg.length >= 2) {
-        const inner = seg.slice(1, -1);
-        return `<code class="md-inline-code">${highlightText(inner, query)}</code>`;
+  while (index < lines.length) {
+    const line = lines[index];
+    if (!line.trim()) { index++; continue; }
+    const fence = /^\s*(\x60{3,}|~{3,})/.exec(line);
+    const title = headingPattern.exec(line);
+    const item = listPattern.exec(line);
+    if (fence) {
+      const content = [];
+      index++;
+      while (index < lines.length && !lines[index].trim().startsWith(fence[1])) content.push(lines[index++]);
+      index++;
+      fragment.append(h('pre', { tabindex: '0' }, h('code', {}, highlighted(content.join('\n'), options.query))));
+    } else if (title) {
+      const level = title[1].length;
+      if (!(first && level === 1 && options.title && plainHeading(title[2]) === plainHeading(options.title))) {
+        const base = plainHeading(title[2]).replace(/[^\p{L}\p{Nd}-]+/gu, '-');
+        const count = (headingIds.get(base) ?? 0) + 1;
+        headingIds.set(base, count);
+        fragment.append(h('h' + level, { id: 'md-' + base + (count > 1 ? '-' + count : '') }, inline(title[2], options)));
       }
-
-      // Process links, bold, italic on non-code text
-      let html = highlightText(seg, query);
-
-      // Markdown links: [text](url)
-      html = html.replace(
-        /\[([^\]]+)\]\(([^)]+)\)/g,
-        (_, label, href) => `<span class="md-link" title="${href}">${label}</span>`
-      );
-
-      // Bold + Italic: ***text***
-      html = html.replace(/\*\*\*([^*]+)\*\*\*/g, "<strong><em>$1</em></strong>");
-      // Bold: **text**
-      html = html.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
-      // Italic: *text*
-      html = html.replace(/(^|[\s(])\*([^*\n]+)\*(?=[\s.,;:!?)]|$)/g, "$1<em>$2</em>");
-
-      return html;
-    })
-    .join("");
-}
-
-/**
- * Full Markdown-to-HTML document renderer for SkillHub Reading View
- */
-export function renderMarkdown(markdown, query = "", options = { stripLeadingH1: true }) {
-  const normalized = String(markdown ?? "").replace(/\r\n/g, "\n").trim();
-  if (!normalized) {
-    return `<p class="md-empty">No instructions provided for this skill.</p>`;
-  }
-
-  const lines = normalized.split("\n");
-  const out = [];
-  let i = 0;
-
-  // Strip leading # H1 title so it never duplicates the page's main document heading
-  if (options?.stripLeadingH1 !== false) {
-    while (i < lines.length && !lines[i].trim()) {
-      i++;
-    }
-    if (i < lines.length && /^#\s+.+$/.test(lines[i].trim())) {
-      i++;
-    }
-  }
-
-  while (i < lines.length) {
-    const line = lines[i];
-    const trimmed = line.trim();
-
-    // 1. Empty line
-    if (!trimmed) {
-      i++;
-      continue;
-    }
-
-    // 2. Fenced Code Block (```lang ... ```)
-    if (trimmed.startsWith("```")) {
-      const lang = trimmed.slice(3).trim() || "text";
-      const codeLines = [];
-      i++;
-      while (i < lines.length && !lines[i].trim().startsWith("```")) {
-        codeLines.push(lines[i]);
-        i++;
+      index++;
+    } else if (line.includes('|') && separator(lines[index + 1]) && cells(line).length === cells(lines[index + 1]).length) {
+      const header = cells(line);
+      const table = h('table', {}, h('thead', {}, h('tr', {}, header.map(cell => h('th', { scope: 'col' }, inline(cell, options))))));
+      const body = h('tbody');
+      index += 2;
+      while (index < lines.length && lines[index].trim() && lines[index].includes('|')) {
+        const row = cells(lines[index++]);
+        body.append(h('tr', {}, header.map((_, column) => h('td', {}, inline(row[column] ?? '', options)))));
       }
-      if (i < lines.length) i++; // skip closing ```
-      const rawCode = codeLines.join("\n");
-      const highlightedCode = highlightText(rawCode, query);
-      out.push(
-        `<div class="md-code-block">` +
-          `<div class="md-code-header">` +
-            `<span class="md-code-lang">${escapeHtml(lang)}</span>` +
-            `<button type="button" class="md-code-copy" data-copy-code="${escapeHtml(rawCode)}">Copy</button>` +
-          `</div>` +
-          `<pre><code>${highlightedCode}</code></pre>` +
-        `</div>`
-      );
-      continue;
-    }
-
-    // 3. Horizontal Rule
-    if (/^(-{3,}|\*{3,}|_{3,})$/.test(trimmed)) {
-      out.push(`<hr class="md-hr" />`);
-      i++;
-      continue;
-    }
-
-    // 4. Headings (# to ####)
-    const headingMatch = trimmed.match(/^(#{1,4})\s+(.+)$/);
-    if (headingMatch) {
-      const level = headingMatch[1].length;
-      const content = renderInline(headingMatch[2], query);
-      out.push(`<h${level} class="md-h${level}">${content}</h${level}>`);
-      i++;
-      continue;
-    }
-
-    // 5. Markdown Table (| ... |)
-    if (
-      trimmed.startsWith("|") &&
-      trimmed.endsWith("|") &&
-      i + 1 < lines.length &&
-      /^\s*\|[\s:-]+\|\s*$/.test(lines[i + 1].replace(/[^|\s:-]/g, ""))
-    ) {
-      const parseCells = (rowStr) =>
-        rowStr
-          .trim()
-          .replace(/^\||\|$/g, "")
-          .split("|")
-          .map((c) => c.trim());
-
-      const headers = parseCells(trimmed);
-      i += 2; // skip header and separator row
-      const rows = [];
-      while (i < lines.length && lines[i].trim().startsWith("|")) {
-        rows.push(parseCells(lines[i]));
-        i++;
-      }
-
-      const thead =
-        `<thead><tr>` +
-        headers.map((h) => `<th>${renderInline(h, query)}</th>`).join("") +
-        `</tr></thead>`;
-      const tbody =
-        `<tbody>` +
-        rows
-          .map(
-            (r) =>
-              `<tr>` + r.map((c) => `<td>${renderInline(c, query)}</td>`).join("") + `</tr>`
-          )
-          .join("") +
-        `</tbody>`;
-      out.push(`<div class="md-table-wrap"><table class="md-table">${thead}${tbody}</table></div>`);
-      continue;
-    }
-
-    // 6. Blockquote (> ...)
-    if (trimmed.startsWith(">")) {
-      const quoteLines = [];
-      while (i < lines.length && lines[i].trim().startsWith(">")) {
-        quoteLines.push(lines[i].trim().replace(/^>\s?/, ""));
-        i++;
-      }
-      out.push(`<blockquote class="md-blockquote">${renderInline(quoteLines.join(" "), query)}</blockquote>`);
-      continue;
-    }
-
-    // 7. Unordered List (- or * )
-    if (/^[-*]\s+/.test(trimmed)) {
-      const items = [];
-      while (i < lines.length && /^\s*[-*]\s+/.test(lines[i])) {
-        const itemText = lines[i].replace(/^\s*[-*]\s+/, "").trim();
-        items.push(`<li>${renderInline(itemText, query)}</li>`);
-        i++;
-      }
-      out.push(`<ul class="md-list">${items.join("")}</ul>`);
-      continue;
-    }
-
-    // 8. Ordered List (1. )
-    if (/^\d+\.\s+/.test(trimmed)) {
-      const items = [];
-      while (i < lines.length && /^\s*\d+\.\s+/.test(lines[i])) {
-        const itemText = lines[i].replace(/^\s*\d+\.\s+/, "").trim();
-        items.push(`<li>${renderInline(itemText, query)}</li>`);
-        i++;
-      }
-      out.push(`<ol class="md-list md-list-ordered">${items.join("")}</ol>`);
-      continue;
-    }
-
-    // 9. Standard Paragraph (merge consecutive plain lines)
-    const paraLines = [];
-    while (
-      i < lines.length &&
-      lines[i].trim() !== "" &&
-      !lines[i].trim().startsWith("```") &&
-      !lines[i].trim().startsWith("#") &&
-      !lines[i].trim().startsWith(">") &&
-      !/^[-*]\s+/.test(lines[i].trim()) &&
-      !/^\d+\.\s+/.test(lines[i].trim()) &&
-      !/^(-{3,}|\*{3,}|_{3,})$/.test(lines[i].trim()) &&
-      !(lines[i].trim().startsWith("|") && lines[i].trim().endsWith("|"))
-    ) {
-      paraLines.push(lines[i].trim());
-      i++;
-    }
-
-    if (paraLines.length > 0) {
-      out.push(`<p class="md-p">${renderInline(paraLines.join(" "), query)}</p>`);
+      table.append(body);
+      fragment.append(h('div', { class: 'table-scroll', tabindex: '0', role: 'region', 'aria-label': 'Table' }, table));
+    } else if (item) {
+      fragment.append(list(item[1].length, /^\d/.test(item[2]), 0));
+    } else if (/^\s*>/.test(line)) {
+      const quote = [];
+      while (index < lines.length && /^\s*>/.test(lines[index])) quote.push(lines[index++].replace(/^\s*>\s?/, ''));
+      fragment.append(h('blockquote', {}, inline(quote.join(' '), options)));
+    } else if (/^\s*(?:---+|\*\*\*+|___+)\s*$/.test(line)) {
+      fragment.append(h('hr'));
+      index++;
     } else {
-      i++;
+      const paragraph = [lines[index++].trim()];
+      while (index < lines.length && lines[index].trim() && !headingPattern.test(lines[index]) &&
+        !listPattern.test(lines[index]) && !/^\s*(?:\x60{3,}|~{3,}|>|---+)/.test(lines[index]) &&
+        !(lines[index].includes('|') && separator(lines[index + 1]))) {
+        paragraph.push(lines[index++].trim());
+      }
+      fragment.append(h('p', {}, inline(paragraph.join(' '), options)));
     }
+    first = false;
   }
-
-  return out.join("\n");
+  return fragment;
 }
-

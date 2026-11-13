@@ -6,6 +6,7 @@ using System.Windows.Forms;
 using Microsoft.Web.WebView2.Core;
 using Microsoft.Web.WebView2.WinForms;
 using SkillSync.Daemon.Core.Engine;
+using SkillSync.Daemon.Api;
 
 namespace SkillSync.Daemon.Desktop;
 
@@ -74,29 +75,39 @@ public sealed class SkillHubMainForm : Form
         uint flags);
 
     private readonly string _appUrl;
+    private readonly string _desktopSessionToken;
     private readonly bool _startHiddenInTray;
     private readonly SyncEngine _syncEngine;
-    private readonly Func<Task> _stopHostCallback;
+    private readonly DesktopPreferencesStore _preferences;
+    private readonly string _userDataFolder;
+    private readonly ContextMenuStrip _trayMenu;
+    private readonly Panel _recoveryPanel;
+    private readonly Label _recoveryMessage;
     private readonly Icon _appIcon;
     private readonly Icon _smallIcon;
     private readonly NotifyIcon _trayIcon;
-    private readonly WebView2 _webView;
+    private WebView2 _webView;
     private Task? _webViewInitTask;
     private bool _allowExit;
+    private bool _trayTipShown;
     private bool _initialHideApplied;
     private bool _isDarkTheme = true;
 
     public SkillHubMainForm(
         string appUrl,
+        string desktopSessionToken,
         bool startHiddenInTray,
         SyncEngine syncEngine,
         SkillHubWindowController windowController,
-        Func<Task> stopHostCallback)
+        DesktopPreferencesStore preferences,
+        string userDataFolder)
     {
-        _appUrl = appUrl;
+        _appUrl = appUrl.TrimEnd('/');
+        _desktopSessionToken = desktopSessionToken;
         _startHiddenInTray = startHiddenInTray;
         _syncEngine = syncEngine;
-        _stopHostCallback = stopHostCallback;
+        _preferences = preferences;
+        _userDataFolder = userDataFolder;
 
         _appIcon = SkillHubIconRenderer.CreateAppIcon(64);
         _smallIcon = SkillHubIconRenderer.CreateHubIcon(16);
@@ -108,7 +119,9 @@ public sealed class SkillHubMainForm : Form
         Height = 840;
         MinimumSize = new Size(460, 500);
         StartPosition = FormStartPosition.CenterScreen;
-        BackColor = Color.FromArgb(15, 19, 29);
+        BackColor = Color.FromArgb(21, 23, 30);
+        _isDarkTheme = preferences.Read().Theme switch { "light" => false, "dark" => true, _ => !SystemInformation.HighContrast };
+        RestorePlacement(preferences.Read().Bounds);
 
         if (_startHiddenInTray)
         {
@@ -118,34 +131,41 @@ public sealed class SkillHubMainForm : Form
         }
 
         // System Tray Context Menu
-        var trayMenu = new ContextMenuStrip();
+        _trayMenu = new ContextMenuStrip();
         var openItem = new ToolStripMenuItem("Open SkillHub", null, (_, _) => ShowAndActivateWindow())
         {
-            Font = new Font(Font, FontStyle.Bold)
+            Font = SystemFonts.MenuFont
         };
-        var syncNowItem = new ToolStripMenuItem("Sync All Skills Now", null, async (_, _) =>
+        var syncNowItem = new ToolStripMenuItem("Reconcile skills");
+        syncNowItem.Click += async (_, _) =>
         {
+            syncNowItem.Enabled = false;
             try
             {
-                await _syncEngine.SynchronizeAllAsync();
+                var report = await _syncEngine.SynchronizeAllAsync();
+                if (report.FailedDestinations + report.ConflictedDestinations > 0)
+                {
+                    _trayIcon?.ShowBalloonTip(5000, "SkillHub needs attention", "Open Diagnostics to review sync results.", ToolTipIcon.Warning);
+                }
             }
-            catch
+            catch (Exception exception)
             {
+                _trayIcon?.ShowBalloonTip(5000, "SkillHub could not reconcile", exception.Message, ToolTipIcon.Error);
             }
-        });
-        var quitItem = new ToolStripMenuItem("Quit SkillHub", null, async (_, _) => await ExitApplicationAsync());
-
-        trayMenu.Items.Add(openItem);
-        trayMenu.Items.Add(syncNowItem);
-        trayMenu.Items.Add(new ToolStripSeparator());
-        trayMenu.Items.Add(quitItem);
+            finally
+            {
+                if (!IsDisposed) syncNowItem.Enabled = true;
+            }
+        };
+        var quitItem = new ToolStripMenuItem("Quit SkillHub", null, (_, _) => Quit());
+        _trayMenu.Items.AddRange([openItem, syncNowItem, new ToolStripSeparator(), quitItem]);
 
         _trayIcon = new NotifyIcon
         {
             Icon = _appIcon,
             Text = "SkillHub",
             Visible = true,
-            ContextMenuStrip = trayMenu
+            ContextMenuStrip = _trayMenu
         };
 
         _trayIcon.MouseClick += (_, e) =>
@@ -157,12 +177,22 @@ public sealed class SkillHubMainForm : Form
         };
         _trayIcon.DoubleClick += (_, _) => ShowAndActivateWindow();
 
-        _webView = new WebView2
+        _webView = NewWebView();
+        _recoveryMessage = new Label { AutoSize = true, MaximumSize = new Size(410, 0) };
+        var retry = new Button { Text = "Retry", AutoSize = true };
+        retry.Click += async (_, _) => await RetryWebViewAsync();
+        var layout = new FlowLayoutPanel
         {
-            Dock = DockStyle.Fill,
-            DefaultBackgroundColor = Color.FromArgb(255, 15, 19, 29)
+            AutoSize = true,
+            FlowDirection = FlowDirection.TopDown,
+            Padding = new Padding(24),
+            Dock = DockStyle.Top
         };
-        Controls.Add(_webView);
+        layout.Controls.Add(_recoveryMessage);
+        layout.Controls.Add(retry);
+        _recoveryPanel = new Panel { Dock = DockStyle.Fill, Visible = false };
+        _recoveryPanel.Controls.Add(layout);
+        Controls.Add(_recoveryPanel);
 
         windowController.RegisterCallbacks(
             showWindow: () =>
@@ -183,7 +213,7 @@ public sealed class SkillHubMainForm : Form
             {
                 if (IsHandleCreated)
                 {
-                    BeginInvoke(new Action(async () => await ExitApplicationAsync()));
+                    BeginInvoke(new Action(Quit));
                 }
             },
             setTheme: isDark =>
@@ -225,7 +255,7 @@ public sealed class SkillHubMainForm : Form
     public void ApplyWindowTheme(bool isDark)
     {
         _isDarkTheme = isDark;
-        var bg = isDark ? Color.FromArgb(255, 15, 19, 29) : Color.FromArgb(255, 228, 234, 242);
+        var bg = SystemInformation.HighContrast ? SystemColors.Window : isDark ? Color.FromArgb(255, 15, 19, 29) : Color.FromArgb(255, 228, 234, 242);
         BackColor = bg;
         if (_webView is not null)
         {
@@ -241,8 +271,9 @@ public sealed class SkillHubMainForm : Form
         {
             var hwnd = Handle;
             var darkFlag = isDark ? 1 : 0;
-            _ = DwmSetWindowAttribute(hwnd, DWMWA_USE_IMMERSIVE_DARK_MODE, ref darkFlag, sizeof(int));
-            _ = DwmSetWindowAttribute(hwnd, DWMWA_USE_IMMERSIVE_DARK_MODE_BEFORE_20H1, ref darkFlag, sizeof(int));
+            if (SystemInformation.HighContrast) darkFlag = 0;
+            if (DwmSetWindowAttribute(hwnd, DWMWA_USE_IMMERSIVE_DARK_MODE, ref darkFlag, sizeof(int)) != 0)
+                _ = DwmSetWindowAttribute(hwnd, DWMWA_USE_IMMERSIVE_DARK_MODE_BEFORE_20H1, ref darkFlag, sizeof(int));
 
             // COLORREF is 0x00BBGGRR:
             // Dark Mode:  Caption #0F131D (0x001D130F), Text #F3F4F6 (0x00F6F4F3), Border #1E2536 (0x0036251E)
@@ -250,6 +281,7 @@ public sealed class SkillHubMainForm : Form
             var captionColorRef = isDark ? 0x001D130F : 0x00F2EAE4;
             var textColorRef = isDark ? 0x00F6F4F3 : 0x003B291E;
             var borderColorRef = isDark ? 0x0036251E : 0x00E9DED5;
+            if (SystemInformation.HighContrast) captionColorRef = textColorRef = borderColorRef = -1;
             _ = DwmSetWindowAttribute(hwnd, DWMWA_CAPTION_COLOR, ref captionColorRef, sizeof(int));
             _ = DwmSetWindowAttribute(hwnd, DWMWA_TEXT_COLOR, ref textColorRef, sizeof(int));
             _ = DwmSetWindowAttribute(hwnd, DWMWA_BORDER_COLOR, ref borderColorRef, sizeof(int));
@@ -302,81 +334,117 @@ public sealed class SkillHubMainForm : Form
         return _webViewInitTask ??= InitializeWebViewCoreAsync();
     }
 
+    private WebView2 NewWebView()
+    {
+        var view = new WebView2 { Dock = DockStyle.Fill, DefaultBackgroundColor = BackColor };
+        Controls.Add(view);
+        return view;
+    }
+
     private async Task InitializeWebViewCoreAsync()
     {
         try
         {
-            var userDataFolder = Path.Combine(
-                Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-                "SkillHub",
-                "WebView2Data");
-            Directory.CreateDirectory(userDataFolder);
+            SkillPaths.AssertNoReparsePoints(_userDataFolder);
+            Directory.CreateDirectory(_userDataFolder);
+            var environment = await CoreWebView2Environment.CreateAsync(null, _userDataFolder);
+            await _webView.EnsureCoreWebView2Async(environment);
+            if (IsDisposed) return;
 
-            var env = await CoreWebView2Environment.CreateAsync(null, userDataFolder);
-            await _webView.EnsureCoreWebView2Async(env);
+            var web = _webView.CoreWebView2;
+            var appOrigin = new Uri(_appUrl).GetLeftPart(UriPartial.Authority);
+            bool IsAppUri(string source) => Uri.TryCreate(source, UriKind.Absolute, out var uri) &&
+                uri.GetLeftPart(UriPartial.Authority) == appOrigin;
 
-            // Clear WebView2 HTTP Disk Cache so updated wwwroot HTML/CSS/JS files are never served stale
-            try
+            web.Settings.IsStatusBarEnabled = false;
+            web.Settings.AreDefaultContextMenusEnabled = false;
+            web.Settings.AreDevToolsEnabled = false;
+            web.Settings.IsZoomControlEnabled = true;
+            web.Settings.IsWebMessageEnabled = true;
+            web.NavigationStarting += (_, args) => args.Cancel = !IsAppUri(args.Uri);
+            web.FrameNavigationStarting += (_, args) => args.Cancel = !IsAppUri(args.Uri);
+            web.NewWindowRequested += (_, args) => args.Handled = true;
+            web.PermissionRequested += (_, args) =>
             {
-                await _webView.CoreWebView2.Profile.ClearBrowsingDataAsync(
-                    CoreWebView2BrowsingDataKinds.DiskCache | CoreWebView2BrowsingDataKinds.CacheStorage);
-            }
-            catch
+                args.State = CoreWebView2PermissionState.Deny;
+                args.SavesInProfile = false;
+            };
+            web.DownloadStarting += (_, args) =>
             {
-            }
-
-            _webView.CoreWebView2.Settings.IsStatusBarEnabled = false;
-            _webView.CoreWebView2.Settings.AreDefaultContextMenusEnabled = true;
-            _webView.CoreWebView2.Settings.IsZoomControlEnabled = true;
-            _webView.CoreWebView2.Settings.IsWebMessageEnabled = true;
-
-            _webView.CoreWebView2.WebMessageReceived += (_, args) =>
+                var uri = args.DownloadOperation.Uri;
+                args.Cancel = !IsAppUri(web.Source) || !uri.StartsWith($"blob:{appOrigin}/", StringComparison.Ordinal);
+            };
+            web.ProcessFailed += (_, args) => BeginInvoke(new Action(() =>
+                ShowWebViewError($"The embedded browser stopped ({args.ProcessFailedKind}). Retry to reopen SkillHub.")));
+            web.NavigationCompleted += (_, args) =>
             {
+                if (!args.IsSuccess && args.WebErrorStatus != CoreWebView2WebErrorStatus.OperationCanceled)
+                {
+                    ShowWebViewError($"SkillHub could not load its local page ({args.WebErrorStatus}).");
+                }
+            };
+            web.AddWebResourceRequestedFilter($"{_appUrl}/api/v1/*", CoreWebView2WebResourceContext.All,
+                CoreWebView2WebResourceRequestSourceKinds.Document);
+            web.WebResourceRequested += (_, args) =>
+            {
+                if (IsAppUri(args.Request.Uri) && IsAppUri(web.Source))
+                {
+                    args.Request.Headers.SetHeader(LocalHttpAccess.DesktopHeader, _desktopSessionToken);
+                }
+            };
+            web.WebMessageReceived += (_, args) =>
+            {
+                if (!IsAppUri(args.Source)) return;
                 try
                 {
                     var raw = args.TryGetWebMessageAsString();
-                    if (string.IsNullOrWhiteSpace(raw)) return;
+                    if (raw.Length > 128) return;
                     using var doc = JsonDocument.Parse(raw);
-                    if (doc.RootElement.TryGetProperty("type", out var typeProp) &&
-                        string.Equals(typeProp.GetString(), "theme", StringComparison.OrdinalIgnoreCase) &&
-                        doc.RootElement.TryGetProperty("theme", out var themeProp))
+                    if (doc.RootElement.TryGetProperty("type", out var type) && type.GetString() == "theme" &&
+                        doc.RootElement.TryGetProperty("theme", out var value) && value.GetString() is "light" or "dark")
                     {
-                        var isDark = !string.Equals(themeProp.GetString(), "light", StringComparison.OrdinalIgnoreCase);
-                        ApplyWindowTheme(isDark);
+                        ApplyWindowTheme(value.GetString() == "dark");
                     }
                 }
-                catch
+                catch (Exception exception) when (exception is JsonException or InvalidOperationException or ArgumentException)
                 {
+                    // Ignore malformed messages from the embedded document.
                 }
             };
 
-            _webView.CoreWebView2.NavigationCompleted += async (_, _) =>
-            {
-                try
-                {
-                    var themeResult = await _webView.CoreWebView2.ExecuteScriptAsync(
-                        "document.documentElement.getAttribute('data-theme') || localStorage.getItem('skillhub_theme') || 'dark'");
-                    var cleanTheme = themeResult?.Trim('"') ?? "dark";
-                    var isDark = !string.Equals(cleanTheme, "light", StringComparison.OrdinalIgnoreCase);
-                    ApplyWindowTheme(isDark);
-                }
-                catch
-                {
-                }
-            };
-
-            var cacheBustedUrl = $"{_appUrl.TrimEnd('/')}/?v={DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()}";
-            _webView.CoreWebView2.Navigate(cacheBustedUrl);
+            _recoveryPanel.Visible = false;
+            _webView.Visible = true;
+            web.Navigate(_appUrl + "/");
         }
-        catch (Exception ex)
+        catch (Exception exception) when (!IsDisposed)
         {
-            _webViewInitTask = null;
-            // Never launch an external web browser; only log or display a native message if visible
-            if (Visible && WindowState != FormWindowState.Minimized)
-            {
-                MessageBox.Show($"Could not initialize SkillHub WebView2: {ex.Message}", "SkillHub", MessageBoxButtons.OK, MessageBoxIcon.Warning);
-            }
+            ShowWebViewError(exception is WebView2RuntimeNotFoundException
+                ? "The Microsoft Edge WebView2 Runtime is required. Install it, then retry."
+                : $"SkillHub could not start its embedded browser. {exception.Message}");
         }
+    }
+
+    private void ShowWebViewError(string message)
+    {
+        if (IsDisposed) return;
+        _webView.Visible = false;
+        _recoveryMessage.Text = message;
+        _recoveryPanel.Visible = true;
+        _recoveryPanel.BringToFront();
+        if (!Visible)
+        {
+            _trayIcon?.ShowBalloonTip(4500, "SkillHub window unavailable", message, ToolTipIcon.Warning);
+        }
+    }
+
+    private async Task RetryWebViewAsync()
+    {
+        if (_webViewInitTask is { IsCompleted: false }) return;
+        Controls.Remove(_webView);
+        _webView.Dispose();
+        _webView = NewWebView();
+        _webViewInitTask = null;
+        await InitializeWebViewAsync();
     }
 
     public void ShowAndActivateWindow()
@@ -404,37 +472,82 @@ public sealed class SkillHubMainForm : Form
         BringToFront();
     }
 
+    private void RestorePlacement(DesktopBounds? placement)
+    {
+        if (placement is null || placement.Width < MinimumSize.Width || placement.Height < MinimumSize.Height) return;
+        var bounds = new Rectangle(placement.X, placement.Y, placement.Width, placement.Height);
+        var screen = Screen.AllScreens.OrderByDescending(display =>
+        {
+            var overlap = Rectangle.Intersect(display.WorkingArea, bounds);
+            return (long)overlap.Width * overlap.Height;
+        }).FirstOrDefault(display => Rectangle.Intersect(display.WorkingArea, bounds).Width >= 80);
+        if (screen is null) return;
+        var area = screen.WorkingArea;
+        var width = Math.Min(bounds.Width, area.Width);
+        var height = Math.Min(bounds.Height, area.Height);
+        StartPosition = FormStartPosition.Manual;
+        Bounds = new Rectangle(Math.Clamp(bounds.X, area.X, area.Right - width),
+            Math.Clamp(bounds.Y, area.Y, area.Bottom - height), width, height);
+        if (placement.Maximized && !_startHiddenInTray) WindowState = FormWindowState.Maximized;
+    }
+
+    private void SavePlacement()
+    {
+        if (!Visible && _startHiddenInTray) return;
+        var bounds = WindowState == FormWindowState.Normal ? Bounds : RestoreBounds;
+        if (bounds.Width < MinimumSize.Width || bounds.Height < MinimumSize.Height) return;
+        try
+        {
+            _preferences.SetBounds(new DesktopBounds(bounds.X, bounds.Y, bounds.Width, bounds.Height, WindowState == FormWindowState.Maximized));
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+        {
+            _trayIcon?.ShowBalloonTip(4500, "Window placement could not be saved", exception.Message, ToolTipIcon.Warning);
+        }
+    }
+
     protected override void OnFormClosing(FormClosingEventArgs e)
     {
-        if (!_allowExit && e.CloseReason == CloseReason.UserClosing)
+        SavePlacement();
+        if (!_allowExit && e.CloseReason == CloseReason.UserClosing && _preferences.Read().CloseToTray)
         {
-            // Minimize to System Tray instead of quitting so MCP Server and File Watcher keep running
             e.Cancel = true;
             Hide();
             ShowInTaskbar = false;
+            if (!_trayTipShown)
+            {
+                _trayTipShown = true;
+                _trayIcon.ShowBalloonTip(4500, "SkillHub is still running", "Use the tray icon to reopen SkillHub or quit.", ToolTipIcon.Info);
+            }
             return;
         }
-
         base.OnFormClosing(e);
     }
 
-    private async Task ExitApplicationAsync()
+    internal void RequestHostShutdown()
     {
-        if (_allowExit) return;
+        if (!IsDisposed && IsHandleCreated)
+        {
+            try { BeginInvoke(new Action(Quit)); }
+            catch (InvalidOperationException) { }
+        }
+    }
+
+    private void Quit()
+    {
         _allowExit = true;
-        _trayIcon.Visible = false;
+        Close();
+    }
 
-        try
+    protected override void Dispose(bool disposing)
+    {
+        if (disposing)
         {
-            await _stopHostCallback().ConfigureAwait(true);
+            _trayIcon?.Dispose();
+            _trayMenu?.Dispose();
+            _smallIcon?.Dispose();
+            _appIcon?.Dispose();
         }
-        catch
-        {
-        }
-
-        _trayIcon.Dispose();
-        _smallIcon.Dispose();
-        _appIcon.Dispose();
-        Application.Exit();
+        base.Dispose(disposing);
     }
 }

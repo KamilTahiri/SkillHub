@@ -19,3 +19,4 @@ WebView2Data/
 ## Local Agent Instructions (Excluded from Public Commits)
 AGENTS.md
 
+dist/

@@ -37,6 +37,7 @@ public static class AtomicFileWriter
         var directory = Path.GetDirectoryName(targetPath)
             ?? throw new ArgumentException($"Invalid target path: {targetPath}", nameof(targetPath));
 
+        SkillPaths.AssertNoReparsePoints(targetPath);
         Directory.CreateDirectory(directory);
 
         var fileName = Path.GetFileName(targetPath);
@@ -56,12 +57,14 @@ public static class AtomicFileWriter
             {
                 await fs.WriteAsync(bytes, ct).ConfigureAwait(false);
                 await fs.FlushAsync(ct).ConfigureAwait(false);
+                fs.Flush(flushToDisk: true);
             }
 
             for (var attempt = 0; ; attempt++)
             {
                 try
                 {
+                    SkillPaths.AssertNoReparsePoints(targetPath);
                     File.Move(tempPath, targetPath, overwrite: true);
                     break;
                 }
@@ -87,54 +90,4 @@ public static class AtomicFileWriter
         }
     }
 
-    public static async Task<(bool Success, string Content)> ReadTextWithRetryAsync(string path, CancellationToken ct = default)
-    {
-        for (var attempt = 0; ; attempt++)
-        {
-            if (!File.Exists(path))
-            {
-                return (false, string.Empty);
-            }
-
-            try
-            {
-                await using var fs = new FileStream(
-                    path,
-                    FileMode.Open,
-                    FileAccess.Read,
-                    FileShare.ReadWrite | FileShare.Delete,
-                    bufferSize: 4096,
-                    useAsync: true);
-
-                if (fs.Length == 0)
-                {
-                    // File might be mid-truncation by an external editor; retry briefly
-                    if (attempt < BackoffDelaysMs.Length)
-                    {
-                        await Task.Delay(BackoffDelaysMs[attempt], ct).ConfigureAwait(false);
-                        continue;
-                    }
-
-                    return (false, string.Empty);
-                }
-
-                using var reader = new StreamReader(fs, Encoding.UTF8, detectEncodingFromByteOrderMarks: true);
-                var text = await reader.ReadToEndAsync(ct).ConfigureAwait(false);
-                return (true, ContentHasher.NormalizeLineEndings(text));
-            }
-            catch (FileNotFoundException)
-            {
-                return (false, string.Empty);
-            }
-            catch (DirectoryNotFoundException)
-            {
-                return (false, string.Empty);
-            }
-            catch (IOException) when (attempt < BackoffDelaysMs.Length)
-            {
-                await Task.Delay(BackoffDelaysMs[attempt], ct).ConfigureAwait(false);
-            }
-        }
-    }
 }
-

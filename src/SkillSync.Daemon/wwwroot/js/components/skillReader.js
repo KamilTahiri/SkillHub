@@ -1,489 +1,163 @@
-/**
- * Centered Single-Column Skill Document Reading View Component
- * Renders a clean Notion/Linear-style document view without nested boxes,
- * strips duplicate H1 headings, supports 1-click per-provider sync toggling,
- * interactive "+ Add tag" dropdown popover, and exports portable SKILL.md files.
- */
-import { api } from "../api.js?v=20261112-v7";
-import {
-  store,
-  slugifyTitle,
-  humanizeSlug,
-  getBadgeVariant,
-  getProviderSvgIcon,
-  showToast,
-  showConfirmDialog
-} from "../state.js?v=20261112-v7";
-import { renderMarkdown, highlightText, escapeHtml } from "../markdown.js?v=20261112-v7";
+import { api } from '../api.js?v=20261112-v9';
+import { deployment, destinationLabel, PROVIDERS, skillKey, tagSlug } from '../state.js?v=20261112-v9';
+import { renderMarkdown } from '../markdown.js?v=20261112-v9';
+import { h, button, heading, panel, disclosure, copy, download, busy, notify, modal, confirmAction, field, errorText } from '../ui.js?v=20261112-v9';
+import { showProviderPreview } from './transpilerPreview.js?v=20261112-v9';
 
-export function initSkillReader({
-  onBackToLibrary,
-  onEditSkill,
-  onPreviewSkill,
-  onSkillPromoted,
-  onSkillDeleted
-}) {
-  let lastRenderedKey = "";
-  const el = {
-    btnBackToLibrary: document.getElementById("btn-back-to-library"),
-    readCategoryBadge: document.getElementById("read-category-badge"),
-    readSlugBadge: document.getElementById("read-slug-badge"),
-    btnPromoteSkill: document.getElementById("btn-promote-skill"),
-    btnUnsyncTemplate: document.getElementById("btn-unsync-template"),
-    btnPreviewFromRead: document.getElementById("btn-preview-from-read"),
-    btnExportSkill: document.getElementById("btn-export-skill"),
-    btnEditFromRead: document.getElementById("btn-edit-from-read"),
-    btnEditFromReadLabel: document.getElementById("btn-edit-from-read-label"),
-    btnDeleteFromRead: document.getElementById("btn-delete-from-read"),
-    detailScrollContainer: document.getElementById("detail-scroll-container"),
-    readSearchBanner: document.getElementById("read-search-banner"),
-    readSearchBannerText: document.getElementById("read-search-banner-text"),
-    btnClearReadSearch: document.getElementById("btn-clear-read-search"),
-    readTitle: document.getElementById("read-title"),
-    readProvidersRow: document.getElementById("read-providers-row"),
-    readTagsRow: document.getElementById("read-tags-row"),
-    readTagPickerContainer: document.getElementById("read-tag-picker-container"),
-    btnOpenTagPicker: document.getElementById("btn-open-tag-picker"),
-    readTagPickerPopover: document.getElementById("read-tag-picker-popover"),
-    readTagPickerInput: document.getElementById("read-tag-picker-input"),
-    readTagPickerList: document.getElementById("read-tag-picker-list"),
-    readSourcePath: document.getElementById("read-source-path"),
-    readDescription: document.getElementById("read-description"),
-    readTriggerBlock: document.getElementById("read-trigger-block"),
-    readWhenToUse: document.getElementById("read-when-to-use"),
-    readMarkdownBody: document.getElementById("read-markdown-body"),
-    readSupportingSection: document.getElementById("read-supporting-section"),
-    readSupportingCount: document.getElementById("read-supporting-count"),
-    readSupportingList: document.getElementById("read-supporting-list")
-  };
+export function createReader(root, app) {
+  let modelKey;
+  let lastRender;
+  const openDisclosures = new Set();
+  root.classList.add('reading');
 
-  function getInstalledProviderSet() {
-    const { providers } = store.getState();
-    const set = new Set();
-    (providers || []).forEach((p) => {
-      if (p.is_installed && p.provider !== "canonical") {
-        set.add(p.provider.toLowerCase());
-      }
-    });
-    return set;
+  function loading() {
+    lastRender = undefined;
+    root.replaceChildren(heading('Skill', button('Back to Library', () => app.navigate('library'))), h('p', { role: 'status' }, 'Loading skill…'));
   }
 
-  async function saveUpdatedSkillTags(nextTags) {
-    const { currentSkillModel: skill } = store.getState();
-    if (!skill) return;
-    try {
-      const payload = {
-        ...skill,
-        tags: nextTags,
-        source_category: skill.source_category || "user",
-        origin_provider: skill.origin_provider || "My Skill",
-        is_catalog_only: false
-      };
-      const res = await api.upsertSkill(payload);
-      await onSkillPromoted(res);
-    } catch (err) {
-      showToast(`Failed to update tags: ${err.message}`);
+  function render(detail, snapshot, query = '') {
+    const skill = detail.skill;
+    const id = skillKey(skill);
+    const identity = JSON.stringify([id, skill.revision, skill.title, skill.description, skill.when_to_use,
+      skill.tags, skill.targets, skill.destinations, skill.is_catalog_only, query, snapshot.providers,
+      skill.is_catalog_only ? skill.instructions_markdown : undefined]);
+    if (identity === lastRender) return;
+    const sameSkill = modelKey === id;
+    const scroll = window.scrollY;
+    const focused = root.contains(document.activeElement) ? document.activeElement.dataset.focusKey : null;
+    if (!sameSkill) openDisclosures.clear();
+    modelKey = id;
+    lastRender = identity;
+    const readOnly = skill.is_catalog_only || skill.source_category === 'system';
+    const changes = response => app.updateDetail(response);
+    const sync = deployment(skill);
+    const files = skill.supporting_files ?? {};
+    const openFile = (path) => {
+      if (!Object.hasOwn(files, path)) { notify('This file is outside the stored skill bundle.'); return; }
+      modal(path, h('pre', { class: 'file-code', tabindex: '0' }, files[path]), button('Copy file', () => copy(files[path])));
+    };
+    const primary = skill.source_category === 'system' ? null
+      : skill.is_catalog_only ? button('Clone to My Skills', () => app.edit(detail, { clone: true }), 'primary')
+      : button('Edit skill', () => app.edit(detail), 'primary');
+    const actions = button('Actions', () => showActions(detail, snapshot, readOnly), '', { 'data-focus-key': 'actions' });
+    const title = heading(skill.title || skill.name, h('div', { class: 'actions' }, primary, actions),
+      h('p', { class: 'result-count' }, skill.origin_provider || 'Personal', ' · ',
+        h('span', { class: sync.tone ?? 'muted' }, sync.label)));
+
+    const tags = h('div', { class: 'chips', 'aria-label': 'Skill tags' },
+      ...(skill.tags ?? []).map(tag => readOnly ? h('span', { class: 'chip' }, '#' + tag)
+        : h('button', { class: 'chip', type: 'button', 'data-focus-key': 'tag-' + tag, 'aria-label': 'Remove tag ' + tag,
+          onclick: event => busy(event.currentTarget, async () => changes(await api.skillTag(skill.name, tag, false))) }, '#' + tag, ' ×')),
+      !readOnly && button('Add tag', () => addTag(skill, snapshot, changes), 'small', { 'data-focus-key': 'add-tag' }));
+
+    const section = h('div', { class: 'stack' }, h('div', { class: 'actions' }, button('← Library', () => app.navigate('library'), 'quiet')),
+      title, tags,
+      h('div', { class: 'summary' },
+        skill.description && h('p', {}, skill.description),
+        skill.when_to_use && h('p', {}, h('strong', {}, 'When to use '), skill.when_to_use)),
+      h('article', { class: 'markdown reader-document', 'aria-label': 'Skill instructions' },
+        renderMarkdown(skill.instructions_markdown, { title: skill.title, query, openFile })),
+      destinations(skill, snapshot, changes, readOnly),
+      Object.keys(files).length && disclosure('Supporting files (' + Object.keys(files).length + ')',
+        h('div', { class: 'stack' }, Object.keys(files).sort().map(path => button(path, () => openFile(path), 'quiet')))),
+      disclosure('Source details', h('p', { class: 'path' }, skill.source_path ?? skill.name),
+        skill.revision && h('p', { class: 'muted' }, 'Canonical revision ' + skill.revision)));
+
+    for (const details of section.querySelectorAll('details')) {
+      const label = details.firstElementChild.textContent;
+      details.open = openDisclosures.has(label);
+      details.addEventListener('toggle', () => details.open ? openDisclosures.add(label) : openDisclosures.delete(label));
+    }
+    root.replaceChildren(section);
+    if (sameSkill && !root.hidden) {
+      window.scrollTo(0, scroll);
+      if (focused) root.querySelector('[data-focus-key="' + CSS.escape(focused) + '"]')?.focus({ preventScroll: true });
     }
   }
 
-  function renderTagPickerOptions(filterText = "") {
-    if (!el.readTagPickerList) return;
-    const { currentSkillModel: skill } = store.getState();
-    if (!skill) return;
-
-    const assignedSet = new Set((skill.tags || []).map((t) => t.toLowerCase()));
-    const allKnown = store.getAllKnownUserTags();
-    const q = (filterText || "").trim().toLowerCase().replace(/^#+/, "");
-
-    const candidates = allKnown.filter((t) => !assignedSet.has(t) && (!q || t.includes(q)));
-    el.readTagPickerList.innerHTML = "";
-
-    if (q && !assignedSet.has(q) && !candidates.includes(q)) {
-      const createBtn = document.createElement("button");
-      createBtn.type = "button";
-      createBtn.className = "tag-picker-option";
-      createBtn.innerHTML = `<span>Create &amp; assign <strong>#${escapeHtml(slugifyTitle(q))}</strong></span><span>Enter ↵</span>`;
-      createBtn.addEventListener("click", async () => {
-        const clean = slugifyTitle(q);
-        if (!clean) return;
-        store.addCustomTag(clean);
-        el.readTagPickerInput.value = "";
-        el.readTagPickerPopover.classList.add("hidden");
-        await saveUpdatedSkillTags([...(skill.tags || []), clean]);
-        showToast(`Added tag #${clean}`);
-      });
-      el.readTagPickerList.appendChild(createBtn);
-    }
-
-    if (candidates.length === 0 && !q) {
-      const hint = document.createElement("div");
-      hint.className = "field-hint";
-      hint.style.padding = "6px 8px";
-      hint.textContent = "Type above and press Enter to create a new tag.";
-      el.readTagPickerList.appendChild(hint);
-      return;
-    }
-
-    candidates.forEach((tag) => {
-      const opt = document.createElement("button");
-      opt.type = "button";
-      opt.className = "tag-picker-option";
-      opt.innerHTML = `<span>#${escapeHtml(tag)}</span><span>+ Assign</span>`;
-      opt.addEventListener("click", async () => {
-        el.readTagPickerInput.value = "";
-        el.readTagPickerPopover.classList.add("hidden");
-        await saveUpdatedSkillTags([...(skill.tags || []), tag]);
-        showToast(`Assigned tag #${tag}`);
-      });
-      el.readTagPickerList.appendChild(opt);
-    });
-  }
-
-  function renderDocument() {
-    const { currentSkillModel: skill, searchQuery } = store.getState();
-    if (!skill) return;
-
-    const q = (searchQuery || "").trim();
-    const renderKey = `${skill.name}:${skill.instructions_markdown?.length || 0}:${(skill.tags || []).join(",")}:${q}:${skill.is_catalog_only}`;
-    if (renderKey === lastRenderedKey && el.readTitle.textContent) {
-      return;
-    }
-    lastRenderedKey = renderKey;
-
-    const displayTitle = skill.title || humanizeSlug(skill.name);
-    const badgeInfo = getBadgeVariant(skill);
-    const installedProviders = getInstalledProviderSet();
-    const isSyncedTemplate = !skill.is_catalog_only && skill.source_category === "template";
-
-    el.readCategoryBadge.className = `source-badge ${badgeInfo.css}`;
-    el.readCategoryBadge.innerHTML = `${getProviderSvgIcon(badgeInfo.iconKey, 12)}<span>${escapeHtml(badgeInfo.label)}</span>`;
-    if (el.readSlugBadge) el.readSlugBadge.textContent = skill.name;
-
-    // Button hierarchy based on whether this is a personal skill, synced template, or catalog item
-    if (skill.is_catalog_only) {
-      el.btnPromoteSkill.classList.remove("hidden");
-      el.btnUnsyncTemplate?.classList.add("hidden");
-      el.btnEditFromRead.className = "btn btn-secondary btn-sm";
-      el.btnEditFromReadLabel.textContent = "Customize & Clone";
-      el.btnDeleteFromRead.classList.add("hidden");
-    } else if (isSyncedTemplate) {
-      el.btnPromoteSkill.classList.add("hidden");
-      el.btnUnsyncTemplate?.classList.remove("hidden");
-      el.btnEditFromRead.className = "btn btn-secondary btn-sm";
-      el.btnEditFromReadLabel.textContent = "Customize & Clone";
-      el.btnDeleteFromRead.classList.add("hidden");
-    } else {
-      el.btnPromoteSkill.classList.add("hidden");
-      el.btnUnsyncTemplate?.classList.add("hidden");
-      el.btnEditFromRead.className = "btn btn-primary btn-sm";
-      el.btnEditFromReadLabel.textContent = "Edit Skill";
-      el.btnDeleteFromRead.classList.toggle("hidden", skill.name === "00-skillhub-bootstrap");
-    }
-
-    // Active search highlight notice
-    if (q) {
-      el.readSearchBanner.classList.remove("hidden");
-      el.readSearchBannerText.innerHTML = `Highlighting search matches for <strong>"${escapeHtml(q)}"</strong>`;
-    } else {
-      el.readSearchBanner.classList.add("hidden");
-    }
-
-    // Title
-    el.readTitle.innerHTML = highlightText(displayTitle, q);
-
-    // Interactive Installed Provider Sync Pills (Click any installed provider pill to toggle sync!)
-    el.readProvidersRow.innerHTML = "";
-    if (!skill.is_catalog_only) {
-      const providers = [
-        { key: "gemini", label: "Gemini & Antigravity", on: skill.targets?.gemini?.enabled !== false },
-        { key: "codex", label: "ChatGPT / Codex", on: skill.targets?.codex?.enabled !== false },
-        { key: "claude", label: "Claude", on: skill.targets?.claude?.enabled !== false },
-        { key: "cursor", label: "Cursor", on: skill.targets?.cursor?.enabled !== false }
-      ];
-
-      providers
-        .filter((p) => installedProviders.has(p.key))
-        .forEach((p) => {
-          const pill = document.createElement("button");
-          pill.type = "button";
-          pill.className = p.on
-            ? "provider-pill-active provider-pill-interactive"
-            : "provider-pill-off provider-pill-interactive";
-          pill.title = p.on
-            ? `Synced to ${p.label} — click to disable on this provider`
-            : `Not synced to ${p.label} — click to enable on this provider`;
-          pill.innerHTML = p.on
-            ? `${getProviderSvgIcon(p.key, 13)}<span>Synced: ${escapeHtml(p.label)}</span>`
-            : `${getProviderSvgIcon(p.key, 12)}<span>${escapeHtml(p.label)} • Off</span>`;
-
-          pill.addEventListener("click", async () => {
-            try {
-              pill.disabled = true;
-              const nextEnabled = !p.on;
-              const res = await api.toggleSkillProvider(skill.name, p.key, nextEnabled);
-              showToast(
-                `${nextEnabled ? "Enabled" : "Disabled"} '${displayTitle}' on ${p.label}.`
-              );
-              await onSkillPromoted(res);
-            } catch (err) {
-              showToast(`Failed to toggle provider: ${err.message}`);
-            } finally {
-              pill.disabled = false;
-            }
-          });
-
-          el.readProvidersRow.appendChild(pill);
+  function showActions(detail, snapshot, readOnly) {
+    const skill = detail.skill;
+    const key = skillKey(skill);
+    const content = h('div', { class: 'stack' });
+    const dialog = modal('Skill actions', content);
+    content.append(button('Preview provider output', () => {
+      dialog.close(); showProviderPreview(skill, { saved: detail, providers: snapshot.providers });
+    }), button('Export Markdown', () => download(skill.name + '.SKILL.md', detail.transpiled_previews?.canonical ?? skill.instructions_markdown, 'text/markdown')),
+    button('Export skill bundle', event => busy(event.currentTarget, async () => {
+      const response = await fetch('/api/v1/skills/' + encodeURIComponent(key) + '/bundle');
+      if (!response.ok) throw new Error('Could not export this skill bundle.');
+      download(skill.name + '.zip', await response.blob(), 'application/zip');
+    })));
+    if (skill.is_catalog_only && skill.source_category !== 'system') {
+      const activate = button('Enable sync', async () => {
+        if (!(await confirmAction('Enable template sync', 'Create a managed copy and deploy it to its enabled providers?', 'Enable sync', false))) return;
+        busy(activate, async () => {
+          const response = await api.activate(skill.catalog_id);
+          dialog.close();
+          await app.read(response.skill.name, response);
+          notify('Template activated.');
         });
-    } else {
-      const chip = document.createElement("span");
-      chip.className = "provider-pill-off";
-      chip.innerHTML = `<span>Read-only catalog skill • Click <strong>+ Sync to My AIs</strong> above to enable across your AI tools</span>`;
-      el.readProvidersRow.appendChild(chip);
-    }
-
-    // Interactive User Tags
-    el.readTagsRow.innerHTML = "";
-    const visibleTags = (skill.tags || []).filter(
-      (t) =>
-        t.toLowerCase() !== "meta-skill" &&
-        t.toLowerCase() !== "skillhub" &&
-        t.toLowerCase() !== "system"
-    );
-    visibleTags.forEach((t) => {
-      const tagEl = document.createElement("span");
-      tagEl.className = "doc-tag-chip";
-      const textSpan = document.createElement("span");
-      textSpan.innerHTML = `#${highlightText(t, q)}`;
-      tagEl.appendChild(textSpan);
-
-      const removeBtn = document.createElement("button");
-      removeBtn.type = "button";
-      removeBtn.className = "doc-tag-remove-btn";
-      removeBtn.title = `Remove tag #${t}`;
-      removeBtn.textContent = "×";
-      removeBtn.addEventListener("click", () => {
-        const nextTags = (skill.tags || []).filter((existing) => existing !== t);
-        saveUpdatedSkillTags(nextTags);
       });
-      tagEl.appendChild(removeBtn);
-
-      el.readTagsRow.appendChild(tagEl);
-    });
-
-    // Source file path (inside collapsed File & Sync Details section)
-    if (el.readSourcePath) {
-      el.readSourcePath.textContent =
-        skill.source_path || `~/.skillhub/skills/${skill.name}/SKILL.md`;
+      content.append(activate);
     }
-
-    // Left-Accented Summary Callout Strip (Purpose & Trigger)
-    el.readDescription.innerHTML = skill.description
-      ? highlightText(skill.description, q)
-      : `<span class="field-hint">No summary description specified.</span>`;
-
-    if (skill.when_to_use && skill.when_to_use.trim()) {
-      el.readTriggerBlock.classList.remove("hidden");
-      el.readWhenToUse.innerHTML = highlightText(skill.when_to_use, q);
-    } else {
-      el.readTriggerBlock.classList.add("hidden");
-    }
-
-    // Rich Rendered Markdown Instructions (stripLeadingH1 = true so we never show duplicate titles!)
-    el.readMarkdownBody.innerHTML = renderMarkdown(skill.instructions_markdown || "", q, {
-      stripLeadingH1: true
-    });
-
-    // Wire up Copy buttons on rendered code blocks
-    el.readMarkdownBody.querySelectorAll(".md-code-copy").forEach((btn) => {
-      btn.addEventListener("click", async () => {
-        const rawCode = btn.getAttribute("data-copy-code") || "";
-        await navigator.clipboard.writeText(rawCode);
-        btn.textContent = "Copied!";
-        setTimeout(() => {
-          btn.textContent = "Copy";
-        }, 1500);
-      });
-    });
-
-    // Supporting files (scripts/, references/, resources/, agents/)
-    const files = skill.supporting_files || {};
-    const fileKeys = Object.keys(files).sort();
-    if (fileKeys.length > 0) {
-      el.readSupportingSection.classList.remove("hidden");
-      el.readSupportingCount.textContent = `${fileKeys.length} file${fileKeys.length === 1 ? "" : "s"}`;
-      el.readSupportingList.innerHTML = "";
-
-      fileKeys.forEach((relPath) => {
-        const details = document.createElement("details");
-        details.className = "read-supporting-card";
-
-        const summary = document.createElement("summary");
-        summary.className = "read-supporting-summary";
-        summary.innerHTML = `<span>${escapeHtml(relPath)}</span><span class="field-hint">Click to view</span>`;
-
-        const pre = document.createElement("pre");
-        pre.className = "read-supporting-pre";
-        pre.innerHTML = highlightText(files[relPath], q);
-
-        details.appendChild(summary);
-        details.appendChild(pre);
-        el.readSupportingList.appendChild(details);
-      });
-    } else {
-      el.readSupportingSection.classList.add("hidden");
+    if (!readOnly) {
+      const isTemplate = skill.source_category === 'template' || skill.source_category === 'plugin';
+      if (isTemplate && skill.catalog_id) content.append(button('Customize a copy', () => { dialog.close(); app.edit(detail, { clone: true }); }));
+      const label = isTemplate ? 'Stop syncing template' : 'Move to trash';
+      const remove = button(label, async () => {
+        if (!(await confirmAction(label, 'Move the managed copy to trash and withdraw its owned provider files?', label))) return;
+        busy(remove, async () => {
+          await api.remove(skill.name);
+          dialog.close();
+          await app.navigate('library');
+          await app.refresh();
+          notify('Skill moved to trash. Restore it in Diagnostics.');
+        });
+      }, 'danger');
+      content.append(remove);
     }
   }
 
-  // Event Listeners
-  el.btnBackToLibrary.addEventListener("click", onBackToLibrary);
-  el.btnEditFromRead.addEventListener("click", onEditSkill);
-  el.btnPreviewFromRead.addEventListener("click", onPreviewSkill);
+  return { loading, render, failure: message => root.replaceChildren(heading('Skill unavailable', button('Back to Library', () => app.navigate('library'))), errorText(message)) };
+}
 
-  // Export .md Button
-  el.btnExportSkill?.addEventListener("click", () => {
-    const { currentSkillModel: skill, previews } = store.getState();
-    if (!skill) return;
-
-    const canonicalMd =
-      previews?.canonical ||
-      `---\nname: ${skill.name}\ntitle: "${(skill.title || skill.name).replace(/"/g, '\\"')}"\ndescription: "${(skill.description || "").replace(/"/g, '\\"')}"\nwhen_to_use: "${(skill.when_to_use || "").replace(/"/g, '\\"')}"\n---\n\n${skill.instructions_markdown || ""}\n`;
-
-    const blob = new Blob([canonicalMd], { type: "text/markdown;charset=utf-8" });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = `${skill.name}.SKILL.md`;
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-    URL.revokeObjectURL(url);
-    showToast(`Exported '${skill.name}.SKILL.md'`);
-  });
-
-  el.btnClearReadSearch.addEventListener("click", () => {
-    const searchInput = document.getElementById("library-search-input");
-    if (searchInput) searchInput.value = "";
-    store.update({ searchQuery: "" }, "skills:filterChanged");
-    renderDocument();
-  });
-
-  // Interactive "+ Add tag" Dropdown Popover
-  el.btnOpenTagPicker?.addEventListener("click", (e) => {
-    e.stopPropagation();
-    if (!el.readTagPickerPopover) return;
-    const isHidden = el.readTagPickerPopover.classList.contains("hidden");
-    if (isHidden) {
-      el.readTagPickerPopover.classList.remove("hidden");
-      if (el.readTagPickerInput) {
-        el.readTagPickerInput.value = "";
-        el.readTagPickerInput.focus();
+function destinations(skill, snapshot, change, readOnly) {
+  if (skill.is_catalog_only) return h('p', { class: 'muted' }, 'Read-only catalog entry.');
+  const rows = Object.entries(PROVIDERS).map(([key, label]) => {
+    const targets = (skill.destinations ?? []).filter(item => item.provider === key);
+    const enabled = skill.targets?.[key]?.enabled !== false;
+    const provider = snapshot.providers.find(item => item.provider === key);
+    const actions = [];
+    if (!readOnly) {
+      const toggle = button(enabled ? 'Disable' : 'Enable', async () => {
+        if (enabled && !(await confirmAction('Disable ' + label, 'Withdraw this skill’s owned files from ' + label + '?', 'Disable'))) return;
+        busy(toggle, async () => change(await api.provider(skill.name, key, !enabled)));
+      }, 'small', { 'aria-label': (enabled ? 'Disable ' : 'Enable ') + label, 'data-focus-key': 'toggle-' + key });
+      actions.push(toggle);
+      if (enabled && targets.some(item => item.state === 'missing')) {
+        const repair = button('Repair', () => busy(repair, async () => change(await api.repair(skill.name, key))), 'small',
+          { 'aria-label': 'Repair ' + label, 'data-focus-key': 'repair-' + key });
+        actions.push(repair);
       }
-      renderTagPickerOptions("");
-    } else {
-      el.readTagPickerPopover.classList.add("hidden");
     }
+    return h('div', { class: 'target-row' }, h('div', {}, h('strong', {}, label),
+      targets.length ? targets.map(target => h('div', {},
+        h('p', { class: ['missing', 'conflict', 'error'].includes(target.state) ? 'warning' : 'muted' },
+          target.state === 'synced' && target.applied_revision !== skill.revision ? 'Pending current revision' : destinationLabel(target.state)),
+        h('code', { class: 'path' }, target.path), target.error && h('p', { class: 'error' }, target.error)))
+        : h('p', { class: 'muted' }, enabled ? provider?.is_installed ? 'Awaiting deployment' : 'Client not detected' : 'Disabled')),
+    h('div', { class: 'actions' }, actions));
   });
+  return disclosure('Sync destinations', rows);
+}
 
-  el.readTagPickerInput?.addEventListener("input", () => {
-    renderTagPickerOptions(el.readTagPickerInput.value);
-  });
-
-  el.readTagPickerInput?.addEventListener("keydown", async (e) => {
-    if (e.key === "Enter" || e.key === ",") {
-      e.preventDefault();
-      const raw = el.readTagPickerInput.value.trim();
-      if (!raw) return;
-      const clean = slugifyTitle(raw);
-      el.readTagPickerInput.value = "";
-      el.readTagPickerPopover.classList.add("hidden");
-      if (!clean) return;
-
-      store.addCustomTag(clean);
-      const { currentSkillModel: skill } = store.getState();
-      if (!skill) return;
-      const currentTags = skill.tags || [];
-      if (!currentTags.includes(clean)) {
-        await saveUpdatedSkillTags([...currentTags, clean]);
-        showToast(`Added tag #${clean}`);
-      }
-    } else if (e.key === "Escape") {
-      el.readTagPickerPopover.classList.add("hidden");
-    }
-  });
-
-  document.addEventListener("click", (e) => {
-    if (
-      el.readTagPickerPopover &&
-      !el.readTagPickerPopover.classList.contains("hidden") &&
-      !el.readTagPickerContainer?.contains(e.target)
-    ) {
-      el.readTagPickerPopover.classList.add("hidden");
-    }
-  });
-
-  // "+ Sync to My AIs" on a Built-in Template preserves source_category = "template"
-  el.btnPromoteSkill.addEventListener("click", async () => {
-    const { currentSkillModel: skill } = store.getState();
-    if (!skill) return;
-    try {
-      const payload = {
-        ...skill,
-        source_category: skill.source_category || "template",
-        origin_provider: skill.origin_provider || "Built-in Template",
-        is_catalog_only: false
-      };
-      const res = await api.upsertSkill(payload);
-      showToast(
-        `Synced '${res.skill.title || res.skill.name}' across your installed AI providers (view in Active & Synced).`
-      );
-      await onSkillPromoted(res);
-    } catch (err) {
-      showToast(`Failed to sync skill: ${err.message}`);
-    }
-  });
-
-  // "Disable Sync" on a Synced Template reverts it back to catalog-only template
-  el.btnUnsyncTemplate?.addEventListener("click", async () => {
-    const { currentSkillModel: skill } = store.getState();
-    if (!skill) return;
-    const label = skill.title || skill.name;
-    try {
-      await api.deleteSkill(skill.name);
-      const refreshed = await api.getSkill(skill.name);
-      showToast(`Disabled sync for template '${label}'.`);
-      await onSkillPromoted(refreshed);
-    } catch (err) {
-      showToast(`Failed to disable sync: ${err.message}`);
-    }
-  });
-
-  el.btnDeleteFromRead.addEventListener("click", async () => {
-    const { selectedSkillName, currentSkillModel } = store.getState();
-    if (!selectedSkillName) return;
-    const label = currentSkillModel?.title || selectedSkillName;
-    const ok = await showConfirmDialog({
-      title: "Delete Skill",
-      message: `Delete '${label}' from SkillHub and all connected AI providers? This will remove the skill file from your disk.`,
-      confirmText: "Delete Skill",
-      isDanger: true
-    });
-    if (!ok) return;
-
-    try {
-      await api.deleteSkill(selectedSkillName);
-      showToast(`Deleted '${label}'.`);
-      await onSkillDeleted(selectedSkillName);
-    } catch (err) {
-      showToast(`Delete failed: ${err.message}`);
-    }
-  });
-
-  store.subscribe("skill:selected", () => {
-    renderDocument();
-    if (el.detailScrollContainer) {
-      el.detailScrollContainer.scrollTop = 0;
-    }
-  });
-  store.subscribe("providers:updated", renderDocument);
-  store.subscribe("skills:filterChanged", renderDocument);
+function addTag(skill, snapshot, change) {
+  const input = h('input', { class: 'input', list: 'reader-tag-suggestions', autofocus: true });
+  const suggestions = h('datalist', { id: 'reader-tag-suggestions' }, (snapshot.tags ?? []).map(tag => h('option', { value: tag.tag })));
+  const outcome = h('div', { role: 'status' });
+  const add = button('Add tag', () => busy(add, async () => {
+    change(await api.skillTag(skill.name, tagSlug(input.value), true));
+    dialog.close();
+  }, error => outcome.replaceChildren(errorText(error.message))), 'primary');
+  const dialog = modal('Add tag', [field('Tag', input), suggestions, outcome], add);
 }

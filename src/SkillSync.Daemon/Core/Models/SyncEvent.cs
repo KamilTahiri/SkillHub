@@ -1,28 +1,23 @@
+using System.Text.Json.Serialization;
+
 namespace SkillSync.Daemon.Core.Models;
 
 public enum SyncChangeKind
 {
     CreatedOrModified = 0,
-    Deleted = 1,
-    FullResync = 2
+    Deleted = 1
 }
 
-public sealed record SyncEvent(
-    ProviderType SourceProvider,
-    string SkillSlug,
-    SyncChangeKind ChangeKind,
-    string? FullPath,
-    string Originator,
-    DateTimeOffset TimestampUtc,
-    CanonicalSkillModel? DirectModelOverride = null,
-    TaskCompletionSource<CanonicalSkillModel?>? CompletionSource = null
-);
-
 public sealed record SyncActivityNotification(
-    DateTimeOffset TimestampUtc,
-    string SkillSlug,
-    string Source,
-    string Action,
-    string Details
+    [property: JsonPropertyName("timestamp_utc")] DateTimeOffset TimestampUtc,
+    [property: JsonPropertyName("skill_slug")] string SkillSlug,
+    [property: JsonPropertyName("source")] string Source,
+    [property: JsonPropertyName("action")] string Action,
+    [property: JsonPropertyName("details")] string Details,
+    [property: JsonPropertyName("sequence")] long Sequence
 );
 
+
+
+public sealed record SyncReconciliationReport(Guid OperationId, int ManagedSkills, int Projected,
+    int SyncedDestinations, int ConflictedDestinations, int FailedDestinations, int MissingDestinations);

@@ -1,5 +1,4 @@
 using System.Collections.Concurrent;
-using System.Text.Json;
 using System.Threading.Channels;
 using SkillSync.Daemon.Core.Models;
 using SkillSync.Daemon.Core.Parsing;
@@ -8,1251 +7,463 @@ using SkillSync.Daemon.Watchers;
 
 namespace SkillSync.Daemon.Core.Engine;
 
-public sealed class SyncEngine : IAsyncDisposable
+public sealed partial class SyncEngine : IAsyncDisposable
 {
     public const string BootstrapSkillName = "00-skillhub-bootstrap";
-
-    private static readonly JsonSerializerOptions LedgerJsonOptions = new()
-    {
-        WriteIndented = true
-    };
-
     private readonly ProviderDiscoveryService _discovery;
-    private readonly Dictionary<ProviderType, ISkillTranspiler> _transpilers;
-    private readonly Channel<SyncEvent> _eventChannel;
-    private readonly CancellationTokenSource _cts = new();
-    private readonly Task _consumerTask;
-    private readonly ConcurrentDictionary<string, CanonicalSkillModel> _skillsCache = new(StringComparer.OrdinalIgnoreCase);
-    private readonly ConcurrentDictionary<string, CanonicalSkillModel> _catalogCache = new(StringComparer.OrdinalIgnoreCase);
+    private readonly SkillStorage _storage;
+    private readonly SkillCatalog _catalog;
+    private readonly SyncLedger _ledger;
+    private readonly Channel<Func<Task>> _commands = Channel.CreateBounded<Func<Task>>(
+        new BoundedChannelOptions(128) { SingleReader = true, FullMode = BoundedChannelFullMode.Wait });
+    private readonly Task _writer;
+    private readonly FileStream _storeLock;
+    private long _activitySequence;
+    private readonly ConcurrentDictionary<string, CanonicalSkillModel> _managed = new(StringComparer.OrdinalIgnoreCase);
+    private readonly ConcurrentDictionary<string, string> _expectedWithdrawals = new(SkillPaths.Comparer);
     private readonly ConcurrentQueue<SyncActivityNotification> _recentActivity = new();
-    private readonly object _ledgerLock = new();
-    private SyncLedger _ledger = new();
 
-    public event Action<SyncActivityNotification>? ActivityPublished;
+    private readonly Dictionary<ProviderType, ISkillTranspiler> _transpilers = new()
+    {
+        [ProviderType.Canonical] = new CanonicalTranspiler(),
+        [ProviderType.Claude] = new ClaudeTranspiler(),
+        [ProviderType.Gemini] = new GeminiTranspiler(),
+        [ProviderType.Codex] = new CodexTranspiler(),
+        [ProviderType.Cursor] = new CursorMdcTranspiler()
+    };
 
     public SyncEngine(ProviderDiscoveryService discovery)
     {
         _discovery = discovery;
-        _transpilers = new Dictionary<ProviderType, ISkillTranspiler>
+        _storage = new SkillStorage(discovery);
+        _catalog = new SkillCatalog(discovery);
+        _discovery.EnsureStorage();
+        _storeLock = new FileStream(SkillPaths.Resolve(_discovery.SkillHubRoot, ".writer.lock"),
+            FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.None);
+        try
         {
-            [ProviderType.Canonical] = new CanonicalTranspiler(),
-            [ProviderType.Claude] = new ClaudeTranspiler(),
-            [ProviderType.Gemini] = new GeminiTranspiler(),
-            [ProviderType.Codex] = new CodexTranspiler(),
-            [ProviderType.Cursor] = new CursorMdcTranspiler()
-        };
+            try
+            {
+                _ledger = _storage.ReadLedger();
+                MigrateLedger();
+            }
+            catch (Exception exception) when (exception is System.Text.Json.JsonException or InvalidDataException)
+            {
+                var backup = SkillPaths.Resolve(_discovery.SkillHubRoot, $".sync-ledger.{Guid.NewGuid():N}.bak");
+                File.Copy(_discovery.LedgerFilePath, backup);
+                _ledger = new SyncLedger();
+                PublishActivity(string.Empty, "startup", "error", $"Invalid sync ledger saved to '{backup}'. Existing provider files will be treated as unowned.");
+            }
 
-        _eventChannel = Channel.CreateUnbounded<SyncEvent>(new UnboundedChannelOptions
+            LoadTags();
+            LoadCanonicalSkills();
+            _catalog.Refresh();
+            _writer = ProcessQueueAsync();
+        }
+        catch
         {
-            SingleReader = true,
-            SingleWriter = false
-        });
-
-        LoadLedgerSync();
-        LoadCanonicalSkillsSync();
-        LoadExternalCatalogSkillsSync();
-
-        _consumerTask = Task.Run(() => ProcessQueueLoopAsync(_cts.Token));
+            _storeLock.Dispose();
+            throw;
+        }
     }
 
+    public ProviderDiscoveryService Discovery => _discovery;
     public IReadOnlyCollection<SyncActivityNotification> GetRecentActivity() => _recentActivity.ToArray();
+    public event Action<SyncActivityNotification>? ActivityPublished;
 
-    public IReadOnlyList<CanonicalSkillModel> ListSkills(
-        string? query = null,
-        string? tag = null,
-        bool includeDisabled = true,
-        string? category = null)
+    private async Task ProcessQueueAsync()
     {
-        var combined = new List<CanonicalSkillModel>(_skillsCache.Count + _catalogCache.Count);
-
-        foreach (var canonical in _skillsCache.Values)
+        await foreach (var command in _commands.Reader.ReadAllAsync().ConfigureAwait(false))
         {
-            var clone = canonical.Clone();
-            clone.IsCatalogOnly = false;
-            if (string.Equals(clone.Name, BootstrapSkillName, StringComparison.OrdinalIgnoreCase))
-            {
-                clone.SourceCategory = "system";
-                clone.OriginProvider = "SkillHub System";
-            }
-            combined.Add(clone);
-        }
-
-        foreach (var catalog in _catalogCache.Values)
-        {
-            if (!_skillsCache.ContainsKey(catalog.Name))
-            {
-                var clone = catalog.Clone();
-                clone.IsCatalogOnly = true;
-                combined.Add(clone);
-            }
-        }
-
-        var items = combined.AsEnumerable();
-
-        if (!includeDisabled)
-        {
-            items = items.Where(s =>
-                s.IsCatalogOnly ||
-                s.Targets.Claude.Enabled ||
-                s.Targets.Gemini.Enabled ||
-                s.Targets.Codex.Enabled ||
-                s.Targets.Cursor.Enabled);
-        }
-
-        if (!string.IsNullOrWhiteSpace(category) &&
-            !string.Equals(category, "all", StringComparison.OrdinalIgnoreCase))
-        {
-            var cleanCat = category.Trim();
-            if (string.Equals(cleanCat, "synced", StringComparison.OrdinalIgnoreCase) ||
-                string.Equals(cleanCat, "active", StringComparison.OrdinalIgnoreCase))
-            {
-                items = items.Where(s =>
-                    !s.IsCatalogOnly &&
-                    !string.Equals(s.SourceCategory, "system", StringComparison.OrdinalIgnoreCase) &&
-                    (s.Targets.Claude.Enabled ||
-                     s.Targets.Gemini.Enabled ||
-                     s.Targets.Codex.Enabled ||
-                     s.Targets.Cursor.Enabled));
-            }
-            else
-            {
-                items = items.Where(s => string.Equals(s.SourceCategory, cleanCat, StringComparison.OrdinalIgnoreCase));
-            }
-        }
-
-        if (!string.IsNullOrWhiteSpace(tag))
-        {
-            var cleanTag = tag.Trim();
-            items = items.Where(s => s.Tags.Any(t => string.Equals(t, cleanTag, StringComparison.OrdinalIgnoreCase)));
-        }
-
-        if (!string.IsNullOrWhiteSpace(query))
-        {
-            var q = query.Trim();
-            items = items.Where(s =>
-                s.Name.Contains(q, StringComparison.OrdinalIgnoreCase) ||
-                s.GetEffectiveTitle().Contains(q, StringComparison.OrdinalIgnoreCase) ||
-                s.Description.Contains(q, StringComparison.OrdinalIgnoreCase) ||
-                s.WhenToUse.Contains(q, StringComparison.OrdinalIgnoreCase) ||
-                s.OriginProvider.Contains(q, StringComparison.OrdinalIgnoreCase) ||
-                s.InstructionsMarkdown.Contains(q, StringComparison.OrdinalIgnoreCase) ||
-                s.Tags.Any(t => t.Contains(q, StringComparison.OrdinalIgnoreCase)));
-        }
-
-        return items
-            .OrderBy(GetCategorySortRank)
-            .ThenBy(GetOriginSortRank)
-            .ThenBy(s => s.GetEffectiveTitle(), StringComparer.OrdinalIgnoreCase)
-            .ToList();
-    }
-
-    private static int GetCategorySortRank(CanonicalSkillModel s) => s.SourceCategory.ToLowerInvariant() switch
-    {
-        "user" => 0,
-        "template" => 1,
-        "system" => 2,
-        "plugin" => 3,
-        _ => 4
-    };
-
-    private static int GetOriginSortRank(CanonicalSkillModel s)
-    {
-        if (!s.IsCatalogOnly) return 0;
-        if (s.OriginProvider.StartsWith("OpenAI Template", StringComparison.OrdinalIgnoreCase)) return 1;
-        if (s.OriginProvider.StartsWith("OpenAI Built-in", StringComparison.OrdinalIgnoreCase)) return 2;
-        if (s.OriginProvider.StartsWith("Antigravity Built-in", StringComparison.OrdinalIgnoreCase)) return 3;
-        if (s.OriginProvider.StartsWith("Codex System", StringComparison.OrdinalIgnoreCase)) return 4;
-        return 5;
-    }
-
-    public CanonicalSkillModel? GetSkill(string skillSlug)
-    {
-        var cleanSlug = ProviderDiscoveryService.NormalizeSlug(skillSlug);
-        if (_skillsCache.TryGetValue(cleanSlug, out var model))
-        {
-            var clone = model.Clone();
-            clone.IsCatalogOnly = false;
-            return clone;
-        }
-
-        if (_catalogCache.TryGetValue(cleanSlug, out var catalogModel))
-        {
-            var clone = catalogModel.Clone();
-            clone.IsCatalogOnly = true;
-            return clone;
-        }
-
-        return null;
-    }
-
-    public Dictionary<string, string> PreviewAllTranspilations(CanonicalSkillModel model)
-    {
-        var cleanSlug = ProviderDiscoveryService.NormalizeSlug(string.IsNullOrWhiteSpace(model.Name) ? "preview-skill" : model.Name);
-        var previewModel = model.Clone();
-        previewModel.Name = cleanSlug;
-        var canonicalDir = _discovery.GetSkillDirectoryPath(ProviderType.Canonical, cleanSlug);
-
-        return new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
-        {
-            ["canonical"] = _transpilers[ProviderType.Canonical].TranspileOutbound(previewModel, canonicalDir),
-            ["claude"] = _transpilers[ProviderType.Claude].TranspileOutbound(previewModel, canonicalDir),
-            ["gemini"] = _transpilers[ProviderType.Gemini].TranspileOutbound(previewModel, canonicalDir),
-            ["codex"] = _transpilers[ProviderType.Codex].TranspileOutbound(previewModel, canonicalDir),
-            ["cursor"] = _transpilers[ProviderType.Cursor].TranspileOutbound(previewModel, canonicalDir)
-        };
-    }
-
-    public async Task<CanonicalSkillModel> UpsertSkillDirectAsync(
-        CanonicalSkillModel model,
-        string originator = "api",
-        CancellationToken ct = default)
-    {
-        var cleanSlug = ProviderDiscoveryService.NormalizeSlug(
-            !string.IsNullOrWhiteSpace(model.Name) ? model.Name : model.Title);
-
-        if (string.IsNullOrWhiteSpace(cleanSlug))
-        {
-            throw new ArgumentException("Skill name must be a valid non-empty slug or title.", nameof(model));
-        }
-
-        model.Name = cleanSlug;
-        model.Title = model.GetEffectiveTitle();
-        model.IsCatalogOnly = false;
-
-        if (string.Equals(cleanSlug, BootstrapSkillName, StringComparison.OrdinalIgnoreCase))
-        {
-            model.SourceCategory = "system";
-            model.OriginProvider = "SkillHub System";
-        }
-        else if (string.Equals(model.SourceCategory, "template", StringComparison.OrdinalIgnoreCase) ||
-                 string.Equals(model.SourceCategory, "plugin", StringComparison.OrdinalIgnoreCase))
-        {
-            // Keep template/plugin category intact when enabling sync or toggling providers on a built-in template
-            if (string.IsNullOrWhiteSpace(model.OriginProvider) &&
-                _catalogCache.TryGetValue(cleanSlug, out var catOrig))
-            {
-                model.OriginProvider = catOrig.OriginProvider;
-            }
-        }
-        else if (originator.StartsWith("webui", StringComparison.OrdinalIgnoreCase) ||
-                 string.Equals(originator, "api", StringComparison.OrdinalIgnoreCase) ||
-                 originator.StartsWith("mcp:", StringComparison.OrdinalIgnoreCase))
-        {
-            model.SourceCategory = "user";
-            if (string.IsNullOrWhiteSpace(model.OriginProvider))
-            {
-                model.OriginProvider = "My Skill";
-            }
-        }
-
-        var tcs = new TaskCompletionSource<CanonicalSkillModel?>(TaskCreationOptions.RunContinuationsAsynchronously);
-        var evt = new SyncEvent(
-            ProviderType.Canonical,
-            cleanSlug,
-            SyncChangeKind.CreatedOrModified,
-            _discovery.GetSkillPrimaryFilePath(ProviderType.Canonical, cleanSlug),
-            originator,
-            DateTimeOffset.UtcNow,
-            DirectModelOverride: model.Clone(),
-            CompletionSource: tcs);
-
-        await _eventChannel.Writer.WriteAsync(evt, ct).ConfigureAwait(false);
-        var result = await tcs.Task.WaitAsync(ct).ConfigureAwait(false);
-        return result ?? model;
-    }
-
-    public async Task<bool> DeleteSkillDirectAsync(
-        string skillSlug,
-        string originator = "api",
-        bool allowBootstrapDelete = false,
-        CancellationToken ct = default)
-    {
-        var cleanSlug = ProviderDiscoveryService.NormalizeSlug(skillSlug);
-        if (!allowBootstrapDelete && string.Equals(cleanSlug, BootstrapSkillName, StringComparison.OrdinalIgnoreCase))
-        {
-            throw new InvalidOperationException($"The system meta-skill '{BootstrapSkillName}' is protected and cannot be deleted.");
-        }
-
-        if (!_skillsCache.ContainsKey(cleanSlug))
-        {
-            return false;
-        }
-
-        var tcs = new TaskCompletionSource<CanonicalSkillModel?>(TaskCreationOptions.RunContinuationsAsynchronously);
-        var evt = new SyncEvent(
-            ProviderType.Canonical,
-            cleanSlug,
-            SyncChangeKind.Deleted,
-            _discovery.GetSkillPrimaryFilePath(ProviderType.Canonical, cleanSlug),
-            originator,
-            DateTimeOffset.UtcNow,
-            CompletionSource: tcs);
-
-        await _eventChannel.Writer.WriteAsync(evt, ct).ConfigureAwait(false);
-        await tcs.Task.WaitAsync(ct).ConfigureAwait(false);
-        return true;
-    }
-
-    public async Task<int> RenameTagAcrossSkillsAsync(string oldTag, string newTag, CancellationToken ct = default)
-    {
-        var cleanOld = oldTag.Trim().TrimStart('#').ToLowerInvariant();
-        var cleanNew = ProviderDiscoveryService.NormalizeSlug(newTag);
-        if (string.IsNullOrWhiteSpace(cleanOld) || string.IsNullOrWhiteSpace(cleanNew) ||
-            string.Equals(cleanOld, cleanNew, StringComparison.OrdinalIgnoreCase))
-        {
-            return 0;
-        }
-
-        var affectedCount = 0;
-        foreach (var skill in _skillsCache.Values.ToList())
-        {
-            if (skill.Tags.Any(t => string.Equals(t, cleanOld, StringComparison.OrdinalIgnoreCase)))
-            {
-                var updated = skill.Clone();
-                updated.Tags = updated.Tags
-                    .Select(t => string.Equals(t, cleanOld, StringComparison.OrdinalIgnoreCase) ? cleanNew : t)
-                    .Distinct(StringComparer.OrdinalIgnoreCase)
-                    .ToList();
-                await UpsertSkillDirectAsync(updated, "webui:tag-rename", ct).ConfigureAwait(false);
-                affectedCount++;
-            }
-        }
-
-        foreach (var catSkill in _catalogCache.Values.ToList())
-        {
-            if (catSkill.Tags.Any(t => string.Equals(t, cleanOld, StringComparison.OrdinalIgnoreCase)))
-            {
-                catSkill.Tags = catSkill.Tags
-                    .Select(t => string.Equals(t, cleanOld, StringComparison.OrdinalIgnoreCase) ? cleanNew : t)
-                    .Distinct(StringComparer.OrdinalIgnoreCase)
-                    .ToList();
-            }
-        }
-
-        return affectedCount;
-    }
-
-    public async Task<int> DeleteTagAcrossSkillsAsync(string tagToDelete, CancellationToken ct = default)
-    {
-        var cleanTag = tagToDelete.Trim().TrimStart('#').ToLowerInvariant();
-        if (string.IsNullOrWhiteSpace(cleanTag))
-        {
-            return 0;
-        }
-
-        var affectedCount = 0;
-        foreach (var skill in _skillsCache.Values.ToList())
-        {
-            if (skill.Tags.Any(t => string.Equals(t, cleanTag, StringComparison.OrdinalIgnoreCase)))
-            {
-                var updated = skill.Clone();
-                updated.Tags = updated.Tags
-                    .Where(t => !string.Equals(t, cleanTag, StringComparison.OrdinalIgnoreCase))
-                    .ToList();
-                await UpsertSkillDirectAsync(updated, "webui:tag-delete", ct).ConfigureAwait(false);
-                affectedCount++;
-            }
-        }
-
-        foreach (var catSkill in _catalogCache.Values.ToList())
-        {
-            if (catSkill.Tags.Any(t => string.Equals(t, cleanTag, StringComparison.OrdinalIgnoreCase)))
-            {
-                catSkill.Tags = catSkill.Tags
-                    .Where(t => !string.Equals(t, cleanTag, StringComparison.OrdinalIgnoreCase))
-                    .ToList();
-            }
-        }
-
-        return affectedCount;
-    }
-
-    public void EnqueueFileSystemEvent(ProviderType provider, string skillSlug, SyncChangeKind kind, string fullPath)
-    {
-        var cleanSlug = ProviderDiscoveryService.NormalizeSlug(skillSlug);
-        if (string.IsNullOrEmpty(cleanSlug) ||
-            string.Equals(cleanSlug, ProviderDiscoveryService.LegacyBootstrapSkillName, StringComparison.OrdinalIgnoreCase))
-        {
-            return;
-        }
-
-        var evt = new SyncEvent(
-            provider,
-            cleanSlug,
-            kind,
-            fullPath,
-            $"watcher:{provider.ToString().ToLowerInvariant()}",
-            DateTimeOffset.UtcNow);
-
-        _eventChannel.Writer.TryWrite(evt);
-    }
-
-    public async Task SynchronizeAllAsync(CancellationToken ct = default)
-    {
-        // 1. Discover any native provider user skills (including nested subdirectories that do not start with '.')
-        var directoryScanTargets = new List<(ProviderType Provider, string SkillsDir)>
-        {
-            (ProviderType.Claude, Path.Combine(_discovery.UserHomeRoot, ".claude", "skills")),
-            (ProviderType.Claude, Path.Combine(_discovery.UserHomeRoot, ".claude", "commands")),
-            (ProviderType.Gemini, Path.Combine(_discovery.UserHomeRoot, ".gemini", "skills")),
-            (ProviderType.Gemini, Path.Combine(_discovery.UserHomeRoot, ".gemini", "antigravity", "skills")),
-            (ProviderType.Codex, Path.Combine(_discovery.UserHomeRoot, ".codex", "skills")),
-            (ProviderType.Codex, Path.Combine(_discovery.UserHomeRoot, ".agents", "skills")),
-            (ProviderType.Cursor, Path.Combine(_discovery.UserHomeRoot, ".cursor", "skills"))
-        };
-
-        foreach (var (provider, skillsDir) in directoryScanTargets)
-        {
-            if (!Directory.Exists(skillsDir))
-            {
-                continue;
-            }
-
-            foreach (var skillMd in EnumerateUserSkillMarkdownFiles(skillsDir))
-            {
-                var dir = Path.GetDirectoryName(skillMd)!;
-                var folderName = Path.GetFileName(dir);
-                if (string.IsNullOrEmpty(folderName) ||
-                    folderName.StartsWith('.') ||
-                    string.Equals(folderName, ProviderDiscoveryService.LegacyBootstrapSkillName, StringComparison.OrdinalIgnoreCase))
-                {
-                    continue;
-                }
-
-                var slug = ProviderDiscoveryService.NormalizeSlug(folderName);
-                if (!string.IsNullOrEmpty(slug) && !_skillsCache.ContainsKey(slug))
-                {
-                    await WaitForSingleEventAsync(new SyncEvent(
-                        provider,
-                        slug,
-                        SyncChangeKind.CreatedOrModified,
-                        skillMd,
-                        $"autodiscovery:{provider.ToString().ToLowerInvariant()}",
-                        DateTimeOffset.UtcNow), ct).ConfigureAwait(false);
-                }
-            }
-        }
-
-        // Check Claude ~/.claude/commands/*.md top-level command files with frontmatter
-        var claudeCommandsDir = Path.Combine(_discovery.UserHomeRoot, ".claude", "commands");
-        if (Directory.Exists(claudeCommandsDir))
-        {
-            foreach (var cmdFile in Directory.EnumerateFiles(claudeCommandsDir, "*.md", SearchOption.TopDirectoryOnly))
-            {
-                if (AtomicFileWriter.IsTemporaryOrIgnoredPath(cmdFile))
-                {
-                    continue;
-                }
-
-                var slug = ProviderDiscoveryService.NormalizeSlug(Path.GetFileNameWithoutExtension(cmdFile));
-                if (!string.IsNullOrEmpty(slug) &&
-                    !string.Equals(slug, ProviderDiscoveryService.LegacyBootstrapSkillName, StringComparison.OrdinalIgnoreCase) &&
-                    !_skillsCache.ContainsKey(slug))
-                {
-                    await WaitForSingleEventAsync(new SyncEvent(
-                        ProviderType.Claude,
-                        slug,
-                        SyncChangeKind.CreatedOrModified,
-                        cmdFile,
-                        "autodiscovery:claude-commands",
-                        DateTimeOffset.UtcNow), ct).ConfigureAwait(false);
-                }
-            }
-        }
-
-        // Check Cursor ~/.cursor/rules/*.mdc
-        var cursorRulesDir = Path.Combine(_discovery.UserHomeRoot, ".cursor", "rules");
-        if (Directory.Exists(cursorRulesDir))
-        {
-            foreach (var mdcFile in Directory.EnumerateFiles(cursorRulesDir, "*.mdc", SearchOption.TopDirectoryOnly))
-            {
-                if (AtomicFileWriter.IsTemporaryOrIgnoredPath(mdcFile))
-                {
-                    continue;
-                }
-
-                var slug = ProviderDiscoveryService.NormalizeSlug(Path.GetFileNameWithoutExtension(mdcFile));
-                if (!string.IsNullOrEmpty(slug) &&
-                    !string.Equals(slug, ProviderDiscoveryService.LegacyBootstrapSkillName, StringComparison.OrdinalIgnoreCase) &&
-                    !_skillsCache.ContainsKey(slug))
-                {
-                    await WaitForSingleEventAsync(new SyncEvent(
-                        ProviderType.Cursor,
-                        slug,
-                        SyncChangeKind.CreatedOrModified,
-                        mdcFile,
-                        "autodiscovery:cursor",
-                        DateTimeOffset.UtcNow), ct).ConfigureAwait(false);
-                }
-            }
-        }
-
-        // 2. Refresh external catalog skills (System skills, OpenAI Templates, Built-in capabilities & Plugins)
-        LoadExternalCatalogSkillsSync();
-
-        // 3. Push all canonical skills to all installed & enabled providers
-        foreach (var skill in _skillsCache.Values.ToList())
-        {
-            await UpsertSkillDirectAsync(skill, "startup-sync", ct).ConfigureAwait(false);
+            await command().ConfigureAwait(false);
         }
     }
 
-    private static IEnumerable<string> EnumerateUserSkillMarkdownFiles(string rootSkillsDir)
+    private async Task<T> RunAsync<T>(Func<Task<T>> command, CancellationToken ct)
     {
-        var results = new List<string>();
-        var queue = new Queue<string>();
-        queue.Enqueue(rootSkillsDir);
-
-        while (queue.Count > 0)
+        var completion = new TaskCompletionSource<T>(TaskCreationOptions.RunContinuationsAsynchronously);
+        await _commands.Writer.WriteAsync(async () =>
         {
-            var current = queue.Dequeue();
-            string[] subDirs;
-            try
+            if (ct.IsCancellationRequested)
             {
-                subDirs = Directory.GetDirectories(current);
-            }
-            catch
-            {
-                continue;
-            }
-
-            foreach (var subDir in subDirs)
-            {
-                var name = Path.GetFileName(subDir);
-                if (string.IsNullOrEmpty(name) ||
-                    name.StartsWith('.') ||
-                    ProviderDiscoveryService.IsAllowedSupportingFolder(name))
-                {
-                    continue;
-                }
-
-                var candidateSkillMd = Path.Combine(subDir, "SKILL.md");
-                if (File.Exists(candidateSkillMd))
-                {
-                    results.Add(candidateSkillMd);
-                }
-                else
-                {
-                    queue.Enqueue(subDir);
-                }
-            }
-        }
-
-        return results;
-    }
-
-    public bool IsLoopGuardMatch(ProviderType provider, string skillSlug, string normalizedRawHash)
-    {
-        lock (_ledgerLock)
-        {
-            if (!_ledger.Skills.TryGetValue(skillSlug, out var skillEntry))
-            {
-                return false;
-            }
-
-            var key = provider.ToString().ToLowerInvariant();
-            if (skillEntry.Targets.TryGetValue(key, out var targetLedger) &&
-                string.Equals(targetLedger.LastWrittenRawHash, normalizedRawHash, StringComparison.OrdinalIgnoreCase))
-            {
-                return true;
-            }
-
-            if (provider == ProviderType.Codex &&
-                skillEntry.Targets.TryGetValue("codex_agents", out var agentsLedger) &&
-                string.Equals(agentsLedger.LastWrittenRawHash, normalizedRawHash, StringComparison.OrdinalIgnoreCase))
-            {
-                return true;
-            }
-
-            return false;
-        }
-    }
-
-    private async Task WaitForSingleEventAsync(SyncEvent evt, CancellationToken ct)
-    {
-        var tcs = new TaskCompletionSource<CanonicalSkillModel?>(TaskCreationOptions.RunContinuationsAsynchronously);
-        var withTcs = evt with { CompletionSource = tcs };
-        await _eventChannel.Writer.WriteAsync(withTcs, ct).ConfigureAwait(false);
-        await tcs.Task.WaitAsync(ct).ConfigureAwait(false);
-    }
-
-    private async Task ProcessQueueLoopAsync(CancellationToken ct)
-    {
-        await foreach (var evt in _eventChannel.Reader.ReadAllAsync(ct).ConfigureAwait(false))
-        {
-            try
-            {
-                var result = await HandleSyncEventInternalAsync(evt, ct).ConfigureAwait(false);
-                evt.CompletionSource?.TrySetResult(result);
-            }
-            catch (Exception ex)
-            {
-                PublishActivity(evt.SkillSlug, evt.Originator, "error", ex.Message);
-                evt.CompletionSource?.TrySetException(ex);
-            }
-        }
-    }
-
-    private async Task<CanonicalSkillModel?> HandleSyncEventInternalAsync(SyncEvent evt, CancellationToken ct)
-    {
-        var slug = ProviderDiscoveryService.NormalizeSlug(evt.SkillSlug);
-        if (string.IsNullOrEmpty(slug))
-        {
-            return null;
-        }
-
-        if (evt.ChangeKind == SyncChangeKind.Deleted)
-        {
-            await HandleSkillDeletionAsync(slug, evt.SourceProvider, evt.Originator, ct).ConfigureAwait(false);
-            return null;
-        }
-
-        CanonicalSkillModel mergedModel;
-        var existingCanonical = _skillsCache.TryGetValue(slug, out var current) ? current.Clone() : null;
-        var canonicalDir = _discovery.GetSkillDirectoryPath(ProviderType.Canonical, slug)!;
-
-        if (evt.DirectModelOverride is not null)
-        {
-            mergedModel = evt.DirectModelOverride.Clone();
-            mergedModel.Name = slug;
-            mergedModel.Title = mergedModel.GetEffectiveTitle();
-            if (existingCanonical is not null && mergedModel.SupportingFiles.Count == 0 && existingCanonical.SupportingFiles.Count > 0)
-            {
-                mergedModel.SupportingFiles = new Dictionary<string, string>(existingCanonical.SupportingFiles, StringComparer.Ordinal);
-            }
-            else if (existingCanonical is null && _catalogCache.TryGetValue(slug, out var catalogSource) && mergedModel.SupportingFiles.Count == 0)
-            {
-                mergedModel.SupportingFiles = new Dictionary<string, string>(catalogSource.SupportingFiles, StringComparer.Ordinal);
-            }
-        }
-        else
-        {
-            var primaryFilePath = ResolveActualSkillFilePath(evt.SourceProvider, slug, evt.FullPath);
-            var (readSuccess, rawContent) = await AtomicFileWriter.ReadTextWithRetryAsync(primaryFilePath, ct).ConfigureAwait(false);
-            if (!readSuccess || string.IsNullOrWhiteSpace(rawContent))
-            {
-                return existingCanonical;
-            }
-
-            // STEP 4: Layer-1 Loop Guard (Raw File Hash Check)
-            var incomingRawHash = ContentHasher.ComputeRawFileHash(rawContent);
-            if (IsLoopGuardMatch(evt.SourceProvider, slug, incomingRawHash))
-            {
-                return existingCanonical;
-            }
-
-            if (!FrontmatterParser.TrySplitFrontmatter(rawContent, out _, out _))
-            {
-                return existingCanonical;
-            }
-
-            SkillLedgerEntry? ledgerEntry;
-            lock (_ledgerLock)
-            {
-                _ledger.Skills.TryGetValue(slug, out ledgerEntry);
-            }
-
-            var transpiler = _transpilers[evt.SourceProvider];
-            mergedModel = transpiler.MergeInbound(slug, rawContent, existingCanonical, ledgerEntry, canonicalDir);
-            mergedModel.Title = mergedModel.GetEffectiveTitle();
-
-            var sourceSkillDir = evt.SourceProvider == ProviderType.Cursor
-                ? null
-                : Path.GetDirectoryName(primaryFilePath);
-
-            if (!string.IsNullOrEmpty(sourceSkillDir) && Directory.Exists(sourceSkillDir))
-            {
-                mergedModel.SupportingFiles = ReadSupportingFilesFromDisk(sourceSkillDir);
-            }
-            else if (existingCanonical is not null)
-            {
-                mergedModel.SupportingFiles = new Dictionary<string, string>(existingCanonical.SupportingFiles, StringComparer.Ordinal);
-            }
-
-            // STEP 5: Layer-2 Loop Guard (Semantic Hash Check)
-            var incomingSemanticHash = ContentHasher.ComputeSemanticHash(mergedModel);
-            lock (_ledgerLock)
-            {
-                if (_ledger.Skills.TryGetValue(slug, out var entry) &&
-                    string.Equals(entry.CanonicalSemanticHash, incomingSemanticHash, StringComparison.OrdinalIgnoreCase) &&
-                    evt.SourceProvider != ProviderType.Canonical)
-                {
-                    var providerKey = evt.SourceProvider.ToString().ToLowerInvariant();
-                    entry.Targets[providerKey] = new TargetFileLedger
-                    {
-                        Path = primaryFilePath.Replace('\\', '/'),
-                        LastWrittenRawHash = incomingRawHash,
-                        LastWriteTimestampUtc = DateTimeOffset.UtcNow
-                    };
-                    SaveLedgerSync();
-                    return existingCanonical;
-                }
-            }
-        }
-
-        // STEP 6 & 7: Propagate to Canonical and all installed/enabled Provider Targets
-        await PropagateCanonicalModelToAllTargetsAsync(mergedModel, evt.SourceProvider, evt.Originator, ct).ConfigureAwait(false);
-        return mergedModel;
-    }
-
-    private string ResolveActualSkillFilePath(ProviderType provider, string slug, string? eventFullPath)
-    {
-        if (!string.IsNullOrWhiteSpace(eventFullPath))
-        {
-            if (provider == ProviderType.Cursor && eventFullPath.EndsWith(".mdc", StringComparison.OrdinalIgnoreCase))
-            {
-                return eventFullPath;
-            }
-
-            if (eventFullPath.EndsWith(".md", StringComparison.OrdinalIgnoreCase) && File.Exists(eventFullPath))
-            {
-                return eventFullPath;
-            }
-        }
-
-        if (provider == ProviderType.Codex)
-        {
-            foreach (var dir in _discovery.GetAllCodexSkillDirectories(slug))
-            {
-                var candidate = Path.Combine(dir, "SKILL.md");
-                if (File.Exists(candidate))
-                {
-                    return candidate;
-                }
-            }
-        }
-
-        return _discovery.GetSkillPrimaryFilePath(provider, slug);
-    }
-
-    private async Task PropagateCanonicalModelToAllTargetsAsync(
-        CanonicalSkillModel model,
-        ProviderType sourceProvider,
-        string originator,
-        CancellationToken ct)
-    {
-        var slug = ProviderDiscoveryService.NormalizeSlug(model.Name);
-        model.Name = slug;
-        model.Title = model.GetEffectiveTitle();
-        model.IsCatalogOnly = false;
-        var canonicalPrimaryPath = _discovery.GetSkillPrimaryFilePath(ProviderType.Canonical, slug);
-        model.SourcePath = canonicalPrimaryPath.Replace('\\', '/');
-
-        var semanticHash = ContentHasher.ComputeSemanticHash(model);
-        var canonicalDir = _discovery.GetSkillDirectoryPath(ProviderType.Canonical, slug)!;
-
-        SkillLedgerEntry ledgerEntry;
-        lock (_ledgerLock)
-        {
-            if (!_ledger.Skills.TryGetValue(slug, out var existingEntry))
-            {
-                existingEntry = new SkillLedgerEntry();
-                _ledger.Skills[slug] = existingEntry;
-            }
-
-            existingEntry.CanonicalSemanticHash = semanticHash;
-            existingEntry.LastUpdatedUtc = DateTimeOffset.UtcNow;
-            existingEntry.LastUpdatedBy = originator;
-            existingEntry.LastSynthesizedGeminiDescription = GeminiTranspiler.BuildSingleLineDescription(model.Description, model.WhenToUse);
-            existingEntry.LastSynthesizedCodexDescription = CodexTranspiler.BuildConciseDescription(model);
-            existingEntry.LastSynthesizedCursorDescription = CursorMdcTranspiler.BuildCursorDescription(model);
-            ledgerEntry = existingEntry;
-        }
-
-        _skillsCache[slug] = model.Clone();
-        var syncedProviders = new List<string>();
-
-        foreach (var providerInfo in _discovery.DiscoverProviders())
-        {
-            var targetProvider = providerInfo.Provider;
-            var isEnabled = model.IsEnabledFor(targetProvider);
-            var targetPrimaryPath = _discovery.GetSkillPrimaryFilePath(targetProvider, slug);
-            var targetDir = _discovery.GetSkillDirectoryPath(targetProvider, slug);
-            var providerKey = targetProvider.ToString().ToLowerInvariant();
-
-            if (!isEnabled && targetProvider != ProviderType.Canonical)
-            {
-                await RemoveTargetSkillFromDiskAsync(targetProvider, slug, providerKey, ledgerEntry).ConfigureAwait(false);
-                continue;
-            }
-
-            if (!providerInfo.IsInstalled && targetProvider != ProviderType.Canonical)
-            {
-                continue;
-            }
-
-            var transpiledContent = _transpilers[targetProvider].TranspileOutbound(model, canonicalDir);
-            var expectedRawHash = ContentHasher.ComputeRawFileHash(transpiledContent);
-
-            if (targetProvider != sourceProvider && File.Exists(targetPrimaryPath))
-            {
-                var (existsOk, currentDiskContent) = await AtomicFileWriter.ReadTextWithRetryAsync(targetPrimaryPath, ct).ConfigureAwait(false);
-                if (existsOk && !string.IsNullOrWhiteSpace(currentDiskContent))
-                {
-                    var currentDiskHash = ContentHasher.ComputeRawFileHash(currentDiskContent);
-                    string? recordedHash = null;
-                    lock (_ledgerLock)
-                    {
-                        if (ledgerEntry.Targets.TryGetValue(providerKey, out var tl))
-                        {
-                            recordedHash = tl.LastWrittenRawHash;
-                        }
-                    }
-
-                    if (!string.IsNullOrEmpty(recordedHash) &&
-                        !string.Equals(currentDiskHash, recordedHash, StringComparison.OrdinalIgnoreCase) &&
-                        !string.Equals(currentDiskHash, expectedRawHash, StringComparison.OrdinalIgnoreCase))
-                    {
-                        await SaveConflictBackupAsync(slug, targetProvider, currentDiskContent, ct).ConfigureAwait(false);
-                    }
-                }
-            }
-
-            // Pre-register expected hash BEFORE writing to disk
-            lock (_ledgerLock)
-            {
-                ledgerEntry.Targets[providerKey] = new TargetFileLedger
-                {
-                    Path = targetPrimaryPath.Replace('\\', '/'),
-                    LastWrittenRawHash = expectedRawHash,
-                    LastWriteTimestampUtc = DateTimeOffset.UtcNow
-                };
-            }
-
-            await WriteIfChangedAsync(targetPrimaryPath, transpiledContent, expectedRawHash, ct).ConfigureAwait(false);
-
-            if (!string.IsNullOrEmpty(targetDir))
-            {
-                await SyncSupportingFilesToDirectoryAsync(targetDir, model.SupportingFiles, ct).ConfigureAwait(false);
-            }
-
-            // Dual-sync for Codex: ensure BOTH ~/.codex/skills/<slug> and ~/.agents/skills/<slug> are populated!
-            if (targetProvider == ProviderType.Codex)
-            {
-                foreach (var codexSkillDir in _discovery.GetAllCodexSkillDirectories(slug))
-                {
-                    var codexFile = Path.Combine(codexSkillDir, "SKILL.md");
-                    lock (_ledgerLock)
-                    {
-                        ledgerEntry.Targets["codex_agents"] = new TargetFileLedger
-                        {
-                            Path = codexFile.Replace('\\', '/'),
-                            LastWrittenRawHash = expectedRawHash,
-                            LastWriteTimestampUtc = DateTimeOffset.UtcNow
-                        };
-                    }
-
-                    await WriteIfChangedAsync(codexFile, transpiledContent, expectedRawHash, ct).ConfigureAwait(false);
-                    await SyncSupportingFilesToDirectoryAsync(codexSkillDir, model.SupportingFiles, ct).ConfigureAwait(false);
-                }
-            }
-
-            // Mirror to ~/.gemini/antigravity/skills/<slug> if Gemini is enabled and Antigravity directory exists
-            if (targetProvider == ProviderType.Gemini)
-            {
-                var antigravityDir = _discovery.GetAntigravityMirrorSkillDirectory(slug);
-                if (!string.IsNullOrEmpty(antigravityDir))
-                {
-                    var antigravityFile = Path.Combine(antigravityDir, "SKILL.md");
-                    await WriteIfChangedAsync(antigravityFile, transpiledContent, expectedRawHash, ct).ConfigureAwait(false);
-                    await SyncSupportingFilesToDirectoryAsync(antigravityDir, model.SupportingFiles, ct).ConfigureAwait(false);
-                }
-            }
-
-            if (targetProvider != ProviderType.Canonical)
-            {
-                syncedProviders.Add(providerInfo.DisplayName);
-            }
-        }
-
-        lock (_ledgerLock)
-        {
-            SaveLedgerSync();
-        }
-
-        var providersSummary = syncedProviders.Count > 0 ? string.Join(", ", syncedProviders) : "local canonical store";
-        PublishActivity(slug, originator, "synced", $"Synced '{model.GetEffectiveTitle()}' across {providersSummary}.");
-    }
-
-    private static async Task WriteIfChangedAsync(string filePath, string content, string expectedRawHash, CancellationToken ct)
-    {
-        if (File.Exists(filePath))
-        {
-            var (ok, diskText) = await AtomicFileWriter.ReadTextWithRetryAsync(filePath, ct).ConfigureAwait(false);
-            if (ok && string.Equals(ContentHasher.ComputeRawFileHash(diskText), expectedRawHash, StringComparison.OrdinalIgnoreCase))
-            {
-                return;
-            }
-        }
-
-        await AtomicFileWriter.WriteTextAtomicallyAsync(filePath, content, ct).ConfigureAwait(false);
-    }
-
-    private async Task HandleSkillDeletionAsync(string slug, ProviderType sourceProvider, string originator, CancellationToken ct)
-    {
-        if (string.Equals(slug, BootstrapSkillName, StringComparison.OrdinalIgnoreCase) &&
-            !string.Equals(originator, "force-delete", StringComparison.OrdinalIgnoreCase))
-        {
-            if (_skillsCache.TryGetValue(BootstrapSkillName, out var bootstrapModel))
-            {
-                await PropagateCanonicalModelToAllTargetsAsync(bootstrapModel, ProviderType.Canonical, "bootstrap-self-heal", ct).ConfigureAwait(false);
-            }
-
-            return;
-        }
-
-        _skillsCache.TryRemove(slug, out var removedModel);
-
-        SkillLedgerEntry? entry;
-        lock (_ledgerLock)
-        {
-            _ledger.Skills.TryGetValue(slug, out entry);
-            _ledger.Skills.Remove(slug);
-            SaveLedgerSync();
-        }
-
-        foreach (var providerInfo in _discovery.DiscoverProviders())
-        {
-            var providerKey = providerInfo.Provider.ToString().ToLowerInvariant();
-            await RemoveTargetSkillFromDiskAsync(providerInfo.Provider, slug, providerKey, entry).ConfigureAwait(false);
-        }
-
-        var title = removedModel?.GetEffectiveTitle() ?? slug;
-        PublishActivity(slug, originator, "deleted", $"Removed '{title}' from all connected AI providers.");
-    }
-
-    private Task RemoveTargetSkillFromDiskAsync(ProviderType provider, string slug, string providerKey, SkillLedgerEntry? ledgerEntry)
-    {
-        if (ledgerEntry is not null)
-        {
-            lock (_ledgerLock)
-            {
-                ledgerEntry.Targets.Remove(providerKey);
-                if (provider == ProviderType.Codex)
-                {
-                    ledgerEntry.Targets.Remove("codex_agents");
-                }
-            }
-        }
-
-        try
-        {
-            if (provider == ProviderType.Cursor)
-            {
-                var mdcPath = _discovery.GetSkillPrimaryFilePath(ProviderType.Cursor, slug);
-                if (File.Exists(mdcPath))
-                {
-                    File.Delete(mdcPath);
-                }
-            }
-            else if (provider == ProviderType.Codex)
-            {
-                foreach (var dirPath in _discovery.GetAllCodexSkillDirectories(slug))
-                {
-                    if (Directory.Exists(dirPath))
-                    {
-                        Directory.Delete(dirPath, recursive: true);
-                    }
-                }
-            }
-            else
-            {
-                var dirPath = _discovery.GetSkillDirectoryPath(provider, slug);
-                if (!string.IsNullOrEmpty(dirPath) && Directory.Exists(dirPath))
-                {
-                    Directory.Delete(dirPath, recursive: true);
-                }
-
-                if (provider == ProviderType.Gemini)
-                {
-                    var agDir = _discovery.GetAntigravityMirrorSkillDirectory(slug);
-                    if (!string.IsNullOrEmpty(agDir) && Directory.Exists(agDir))
-                    {
-                        Directory.Delete(agDir, recursive: true);
-                    }
-                }
-            }
-        }
-        catch
-        {
-        }
-
-        return Task.CompletedTask;
-    }
-
-    private async Task SaveConflictBackupAsync(string slug, ProviderType provider, string conflictingContent, CancellationToken ct)
-    {
-        var skillConflictDir = Path.Combine(_discovery.ConflictsRoot, slug);
-        Directory.CreateDirectory(skillConflictDir);
-        var timestamp = DateTimeOffset.UtcNow.ToString("yyyyMMdd-HHmmssfff");
-        var backupPath = Path.Combine(skillConflictDir, $"{timestamp}-{provider.ToString().ToLowerInvariant()}.SKILL.md.bak");
-        await AtomicFileWriter.WriteTextAtomicallyAsync(backupPath, conflictingContent, ct).ConfigureAwait(false);
-        PublishActivity(slug, provider.ToString().ToLowerInvariant(), "conflict-backup", $"Backed up previous {provider} version before syncing.");
-    }
-
-    private static Dictionary<string, string> ReadSupportingFilesFromDisk(string skillDirectory)
-    {
-        var result = new Dictionary<string, string>(StringComparer.Ordinal);
-        if (!Directory.Exists(skillDirectory))
-        {
-            return result;
-        }
-
-        foreach (var folder in new[] { "scripts", "resources", "references", "examples", "agents" })
-        {
-            var subDir = Path.Combine(skillDirectory, folder);
-            if (!Directory.Exists(subDir))
-            {
-                continue;
-            }
-
-            foreach (var file in Directory.EnumerateFiles(subDir, "*", SearchOption.AllDirectories))
-            {
-                if (AtomicFileWriter.IsTemporaryOrIgnoredPath(file))
-                {
-                    continue;
-                }
-
-                try
-                {
-                    var info = new FileInfo(file);
-                    // Only load text-based supporting files under 256 KB into the JSON model
-                    if (info.Length > 262_144)
-                    {
-                        continue;
-                    }
-
-                    var relPath = Path.GetRelativePath(skillDirectory, file).Replace('\\', '/');
-                    var content = ContentHasher.NormalizeLineEndings(File.ReadAllText(file));
-                    result[relPath] = content;
-                }
-                catch
-                {
-                }
-            }
-        }
-
-        return result;
-    }
-
-    private static async Task SyncSupportingFilesToDirectoryAsync(
-        string targetSkillDirectory,
-        Dictionary<string, string> supportingFiles,
-        CancellationToken ct)
-    {
-        var expectedRelativePaths = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-
-        foreach (var kvp in supportingFiles)
-        {
-            var relPath = kvp.Key.Replace('\\', '/').TrimStart('/');
-            var parts = relPath.Split('/', StringSplitOptions.RemoveEmptyEntries);
-            if (parts.Length < 2 || !ProviderDiscoveryService.IsAllowedSupportingFolder(parts[0]))
-            {
-                continue;
-            }
-
-            expectedRelativePaths.Add(relPath);
-            var fullTargetPath = Path.Combine(targetSkillDirectory, relPath.Replace('/', Path.DirectorySeparatorChar));
-
-            if (File.Exists(fullTargetPath))
-            {
-                var (ok, existingContent) = await AtomicFileWriter.ReadTextWithRetryAsync(fullTargetPath, ct).ConfigureAwait(false);
-                if (ok && string.Equals(
-                    ContentHasher.ComputeRawFileHash(existingContent),
-                    ContentHasher.ComputeRawFileHash(kvp.Value),
-                    StringComparison.OrdinalIgnoreCase))
-                {
-                    continue;
-                }
-            }
-
-            await AtomicFileWriter.WriteTextAtomicallyAsync(fullTargetPath, kvp.Value, ct).ConfigureAwait(false);
-        }
-
-        foreach (var folder in new[] { "scripts", "resources", "references", "examples" })
-        {
-            var subDir = Path.Combine(targetSkillDirectory, folder);
-            if (!Directory.Exists(subDir))
-            {
-                continue;
-            }
-
-            foreach (var existingFile in Directory.EnumerateFiles(subDir, "*", SearchOption.AllDirectories))
-            {
-                if (AtomicFileWriter.IsTemporaryOrIgnoredPath(existingFile))
-                {
-                    continue;
-                }
-
-                var rel = Path.GetRelativePath(targetSkillDirectory, existingFile).Replace('\\', '/');
-                if (!expectedRelativePaths.Contains(rel))
-                {
-                    try
-                    {
-                        File.Delete(existingFile);
-                    }
-                    catch
-                    {
-                    }
-                }
-            }
-        }
-    }
-
-    private void LoadLedgerSync()
-    {
-        lock (_ledgerLock)
-        {
-            if (!File.Exists(_discovery.LedgerFilePath))
-            {
-                _ledger = new SyncLedger();
+                completion.TrySetCanceled(ct);
                 return;
             }
 
             try
             {
-                var json = File.ReadAllText(_discovery.LedgerFilePath);
-                _ledger = JsonSerializer.Deserialize<SyncLedger>(json, LedgerJsonOptions) ?? new SyncLedger();
+                // Once started, a mutation reaches a durable result even if the caller disconnects.
+                completion.TrySetResult(await command().ConfigureAwait(false));
             }
-            catch
+            catch (Exception exception)
             {
-                _ledger = new SyncLedger();
+                completion.TrySetException(exception);
             }
-        }
-    }
-
-    private void SaveLedgerSync()
-    {
-        try
-        {
-            var json = JsonSerializer.Serialize(_ledger, LedgerJsonOptions);
-            var dir = Path.GetDirectoryName(_discovery.LedgerFilePath)!;
-            Directory.CreateDirectory(dir);
-            var temp = Path.Combine(dir, $".sync-ledger.{Guid.NewGuid():N}.skillsync-tmp");
-            File.WriteAllText(temp, json);
-            File.Move(temp, _discovery.LedgerFilePath, overwrite: true);
-        }
-        catch
-        {
-        }
-    }
-
-    private void LoadCanonicalSkillsSync()
-    {
-        if (!Directory.Exists(_discovery.CanonicalSkillsRoot))
-        {
-            return;
-        }
-
-        var canonicalTranspiler = _transpilers[ProviderType.Canonical];
-        foreach (var dir in Directory.EnumerateDirectories(_discovery.CanonicalSkillsRoot))
-        {
-            var folderName = Path.GetFileName(dir);
-            if (string.IsNullOrWhiteSpace(folderName) ||
-                folderName.StartsWith('.') ||
-                string.Equals(folderName, ProviderDiscoveryService.LegacyBootstrapSkillName, StringComparison.OrdinalIgnoreCase))
-            {
-                continue;
-            }
-
-            var skillFile = Path.Combine(dir, "SKILL.md");
-            if (!File.Exists(skillFile))
-            {
-                continue;
-            }
-
-            try
-            {
-                var slug = ProviderDiscoveryService.NormalizeSlug(folderName);
-                var raw = File.ReadAllText(skillFile);
-                var model = canonicalTranspiler.MergeInbound(slug, raw, null, null, dir);
-                model.SupportingFiles = ReadSupportingFilesFromDisk(dir);
-                model.IsCatalogOnly = false;
-                model.SourcePath = skillFile.Replace('\\', '/');
-
-                if (string.Equals(slug, BootstrapSkillName, StringComparison.OrdinalIgnoreCase))
-                {
-                    model.SourceCategory = "system";
-                    model.OriginProvider = "SkillHub System";
-                }
-                else if (string.IsNullOrWhiteSpace(model.SourceCategory))
-                {
-                    model.SourceCategory = "user";
-                }
-
-                _skillsCache[slug] = model;
-            }
-            catch
-            {
-            }
-        }
-    }
-
-    private void LoadExternalCatalogSkillsSync()
-    {
-        var codexTranspiler = _transpilers[ProviderType.Codex];
-        var descriptors = _discovery.DiscoverExternalCatalogSkills();
-
-        foreach (var desc in descriptors)
-        {
-            try
-            {
-                var dir = Path.GetDirectoryName(desc.SkillMdPath)!;
-                var raw = File.ReadAllText(desc.SkillMdPath);
-                var model = codexTranspiler.MergeInbound(desc.Slug, raw, null, null, dir);
-
-                model.Title = CanonicalSkillModel.HumanizeSlug(desc.Slug);
-                model.SourceCategory = desc.SourceCategory;
-                model.OriginProvider = desc.OriginProvider;
-                model.IsCatalogOnly = true;
-                model.SourcePath = desc.SkillMdPath.Replace('\\', '/');
-
-                foreach (var tag in desc.SuggestedTags)
-                {
-                    if (!model.Tags.Contains(tag, StringComparer.OrdinalIgnoreCase))
-                    {
-                        model.Tags.Add(tag);
-                    }
-                }
-
-                model.SupportingFiles = ReadSupportingFilesFromDisk(dir);
-                _catalogCache[desc.Slug] = model;
-            }
-            catch
-            {
-            }
-        }
-    }
-
-    private void PublishActivity(string skillSlug, string source, string action, string details)
-    {
-        var notification = new SyncActivityNotification(
-            DateTimeOffset.UtcNow,
-            skillSlug,
-            source,
-            action,
-            details);
-
-        _recentActivity.Enqueue(notification);
-        while (_recentActivity.Count > 100 && _recentActivity.TryDequeue(out _))
-        {
-        }
-
-        ActivityPublished?.Invoke(notification);
+        }, ct).ConfigureAwait(false);
+        return await completion.Task.ConfigureAwait(false);
     }
 
     public async ValueTask DisposeAsync()
     {
-        _eventChannel.Writer.TryComplete();
-        await _cts.CancelAsync().ConfigureAwait(false);
+        _commands.Writer.TryComplete();
         try
         {
-            await _consumerTask.ConfigureAwait(false);
+            await _writer.ConfigureAwait(false);
         }
-        catch (OperationCanceledException)
+        finally
         {
+            await _storeLock.DisposeAsync().ConfigureAwait(false);
+        }
+    }
+
+    private IEnumerable<CanonicalSkillModel> SelectSkills(string? query, string? tag, bool includeDisabled, string? category)
+    {
+        var managed = _managed.Values.ToArray();
+        var promoted = managed.Where(skill => skill.SourceCategory is "template" or "plugin" && skill.CatalogId is not null)
+            .Select(skill => skill.CatalogId!).ToHashSet(StringComparer.Ordinal);
+        IEnumerable<CanonicalSkillModel> source = managed.Concat(_catalog.Summaries().Where(skill => !promoted.Contains(skill.CatalogId!)));
+
+        if (!includeDisabled)
+        {
+            source = source.Where(skill => skill.IsCatalogOnly || IsActive(skill));
+        }
+        if (category?.Trim().ToLowerInvariant() is { Length: > 0 } scope && scope != "all")
+        {
+            source = scope is "active" or "synced" ? source.Where(IsActive)
+                : source.Where(skill => string.Equals(skill.SourceCategory, scope, StringComparison.OrdinalIgnoreCase));
+        }
+        if (!string.IsNullOrWhiteSpace(tag))
+        {
+            var requestedTag = ProviderDiscoveryService.NormalizeSlug(tag);
+            source = source.Where(skill => skill.Tags.Any(value => ProviderDiscoveryService.NormalizeSlug(value) == requestedTag));
+        }
+        if (!string.IsNullOrWhiteSpace(query))
+        {
+            var term = query.Trim();
+            source = source.Where(skill => MatchesQuery(skill, term) ||
+                skill.IsCatalogOnly && skill.CatalogId is { } id && _catalog.MatchesInstructions(id, term));
         }
 
-        _cts.Dispose();
+        return source.OrderBy(skill => skill.SourceCategory switch { "user" => 0, "template" => 1, "system" => 2, _ => 3 })
+            .ThenBy(skill => skill.GetEffectiveTitle(), StringComparer.OrdinalIgnoreCase)
+            .ThenBy(skill => skill.CatalogId, StringComparer.Ordinal);
+    }
+
+    public static bool IsActive(CanonicalSkillModel skill) => !skill.IsCatalogOnly && skill.SourceCategory != "system" &&
+        skill.Destinations.Any(destination => destination.State == "synced" && destination.AppliedRevision == skill.Revision);
+
+    public IReadOnlyList<CanonicalSkillModel> ListSkills(string? query = null, string? tag = null,
+        bool includeDisabled = true, string? category = null) =>
+        SelectSkills(query, tag, includeDisabled, category).Select(skill => skill.Clone(includeContents: false)).ToList();
+
+    public IReadOnlyList<SkillSummary> ListSkillSummaries(string? query = null, string? tag = null, string? category = null,
+        int offset = 0, int limit = int.MaxValue) =>
+        SelectSkills(query, tag, includeDisabled: true, category).Skip(offset).Take(limit).Select(skill =>
+        {
+            var metadata = skill.Clone(includeContents: false);
+            return new SkillSummary(metadata.Name, metadata.Title, metadata.Version, metadata.Description,
+                metadata.WhenToUse, metadata.SummaryShort, metadata.SourceCategory, metadata.OriginProvider,
+                metadata.IsCatalogOnly, metadata.CatalogId, metadata.Revision, metadata.Tags, metadata.Targets, metadata.Destinations,
+                FindInstructionExcerpt(skill.InstructionsMarkdown, query));
+        }).ToList();
+
+    public IReadOnlyDictionary<string, int> CountSkills() => SelectSkills(null, null, true, null)
+        .GroupBy(skill => skill.SourceCategory)
+        .ToDictionary(group => group.Key, group => group.Count(), StringComparer.OrdinalIgnoreCase);
+
+    private static bool MatchesQuery(CanonicalSkillModel skill, string query)
+    {
+        string[] fields = [skill.Name, skill.Title, skill.Description, skill.WhenToUse, skill.OriginProvider,
+            skill.InstructionsMarkdown, .. skill.Tags];
+        return fields.Any(field => field.Contains(query, StringComparison.OrdinalIgnoreCase)) ||
+            query.Split(' ', StringSplitOptions.RemoveEmptyEntries).All(term =>
+                fields.Any(field => field.Contains(term, StringComparison.OrdinalIgnoreCase)));
+    }
+
+    private static string? FindInstructionExcerpt(string text, string? query)
+    {
+        if (string.IsNullOrWhiteSpace(query))
+        {
+            return null;
+        }
+        foreach (var term in query.Split(' ', StringSplitOptions.RemoveEmptyEntries).Prepend(query))
+        {
+            var index = text.IndexOf(term, StringComparison.OrdinalIgnoreCase);
+            if (index >= 0)
+            {
+                var start = Math.Max(0, index - 50);
+                return text.Substring(start, Math.Min(text.Length - start, 180));
+            }
+        }
+        return null;
+    }
+
+    public CanonicalSkillModel? GetSkill(string name) =>
+        _managed.TryGetValue(ProviderDiscoveryService.NormalizeSlug(name), out var managed)
+            ? managed.Clone() : _catalog.Get(name);
+
+    public CanonicalSkillModel? GetCatalogSkill(string id) => _catalog.Get(id);
+
+    public bool HasManagedCatalogCopy(string id) => _managed.Values.Any(skill => skill.CatalogId == id ||
+        string.Equals(skill.Passthrough.GetValueOrDefault("import_catalog_id")?.ToString(), id, StringComparison.OrdinalIgnoreCase));
+
+    public bool HasImportedSkill(string repository, string path) => _managed.Values.Any(skill =>
+        string.Equals(skill.Passthrough.GetValueOrDefault("import_source")?.ToString(), repository, StringComparison.OrdinalIgnoreCase) &&
+        string.Equals(skill.Passthrough.GetValueOrDefault("import_path")?.ToString(), path, StringComparison.Ordinal));
+
+    public Dictionary<string, string[]> PreviewDestinationPaths(CanonicalSkillModel draft)
+    {
+        var slug = string.IsNullOrWhiteSpace(draft.Name) && string.IsNullOrWhiteSpace(draft.Title) ? "preview-skill" : GetSlug(draft);
+        return GetDestinations(slug, new SkillLedgerEntry(), []).GroupBy(destination => ProviderName(destination.Provider))
+            .ToDictionary(group => group.Key, group => group.Select(destination => destination.Path).ToArray());
+    }
+
+    public Dictionary<string, string> PreviewAllTranspilations(CanonicalSkillModel model)
+    {
+        var slug = string.IsNullOrWhiteSpace(model.Name) && string.IsNullOrWhiteSpace(model.Title) ? "preview-skill" : GetSlug(model);
+        SkillStorage.ValidateModel(model);
+        var draft = model.Clone();
+        draft.Name = slug;
+        var directory = Path.GetDirectoryName(_storage.CanonicalPath(slug))!;
+        return _transpilers.ToDictionary(pair => ProviderName(pair.Key), pair => pair.Value.TranspileOutbound(draft, directory));
+    }
+
+    public Task<CanonicalSkillModel> CreateSkillAsync(CanonicalSkillModel model, string originator, CancellationToken ct = default) =>
+        SaveDirectAsync(model, originator, createOnly: true, ct);
+
+    public Task<CanonicalSkillModel> UpsertSkillDirectAsync(CanonicalSkillModel model, string originator = "api",
+        CancellationToken ct = default) => SaveDirectAsync(model, originator, createOnly: false, ct);
+
+    private Task<CanonicalSkillModel> SaveDirectAsync(CanonicalSkillModel model, string originator, bool createOnly, CancellationToken ct)
+    {
+        var slug = GetSlug(model);
+        SkillStorage.ValidateModel(model);
+        var input = model.Clone();
+        return RunAsync(async () =>
+        {
+            ProtectSystemSkill(slug, originator);
+            var current = await LoadCurrentAsync(slug, GetEntry(slug)).ConfigureAwait(false);
+            ProtectSystemCategory(current, originator);
+            if (current is not null && (createOnly || input.Revision > 0 && input.Revision != current.Revision))
+            {
+                throw new SkillConflictException($"Skill '{slug}' already exists or was changed by another operation.");
+            }
+            if (input.IsCatalogOnly || input.CatalogId is not null && current?.CatalogId != input.CatalogId)
+            {
+                throw new SkillConflictException("Use the catalog activation or clone command to create a managed copy.");
+            }
+            if (current is not null && input.Revision == 0 && originator != "bootstrap-seed")
+            {
+                throw new SkillConflictException($"A current revision is required to replace '{slug}'.");
+            }
+            if (current is not null)
+            {
+                input.SourceCategory = current.SourceCategory;
+                input.OriginProvider = current.OriginProvider;
+                input.CatalogId = current.CatalogId;
+            }
+            else if (originator == "bootstrap-seed")
+            {
+                input.SourceCategory = "system";
+                input.OriginProvider = "SkillHub System";
+            }
+            else if (originator.StartsWith("webui:", StringComparison.Ordinal) || originator.StartsWith("mcp:", StringComparison.Ordinal) || originator == "api")
+            {
+                input.SourceCategory = "user";
+            }
+
+            return await SaveAndProjectAsync(slug, input, originator).ConfigureAwait(false);
+        }, ct);
+    }
+
+    public Task<CanonicalSkillModel> EditSkillAsync(string name, Action<CanonicalSkillModel> patch,
+        string originator, CancellationToken ct = default, long? expectedRevision = null)
+    {
+        var slug = RequireSlug(name);
+        return RunAsync(async () =>
+        {
+            ProtectSystemSkill(slug, originator);
+            var current = await LoadCurrentAsync(slug, GetEntry(slug)).ConfigureAwait(false)
+                ?? throw new KeyNotFoundException($"Managed skill '{slug}' was not found.");
+            ProtectSystemCategory(current, originator);
+            if (expectedRevision is not null && expectedRevision != current.Revision)
+            {
+                throw new SkillConflictException($"Skill '{slug}' changed since it was opened.");
+            }
+
+            patch(current);
+            return await SaveAndProjectAsync(slug, current, originator).ConfigureAwait(false);
+        }, ct);
+    }
+
+    public Task<CanonicalSkillModel> SetProviderAsync(string name, ProviderType provider, bool enabled, string originator,
+        CancellationToken ct = default)
+    {
+        if (!Enum.IsDefined(provider) || provider == ProviderType.Canonical)
+        {
+            throw new ArgumentException("An external provider is required.");
+        }
+        return EditSkillAsync(name, model => model.SetEnabledFor(provider, enabled), originator, ct);
+    }
+
+    public Task<CanonicalSkillModel> MaterializeCatalogSkillAsync(string id, CanonicalSkillModel? draft, bool activate,
+        string originator, CancellationToken ct = default) => RunAsync(async () =>
+    {
+        var source = _catalog.Get(id) ?? throw new KeyNotFoundException("The catalog entry no longer exists.");
+        if (source.SourceCategory == "system")
+        {
+            throw new SkillConflictException("System catalog entries are read-only.");
+        }
+
+        var model = draft ?? source.Clone();
+        var slug = draft is not null ? GetSlug(draft) : activate ? source.Name : RequireSlug($"{source.Name}-copy");
+        ProtectSystemSkill(slug, originator);
+        if (await LoadCurrentAsync(slug, GetEntry(slug)).ConfigureAwait(false) is not null)
+        {
+            throw new SkillConflictException($"A managed skill already uses the name '{slug}'.");
+        }
+        model.CatalogId = source.CatalogId;
+        model.SourceCategory = activate ? source.SourceCategory : "user";
+        model.OriginProvider = source.OriginProvider;
+        model.IsCatalogOnly = false;
+        foreach (var (key, value) in source.Passthrough)
+        {
+            model.Passthrough.TryAdd(key, value);
+        }
+        model.Targets.Claude.Model ??= source.Targets.Claude.Model;
+        if (!activate && draft is null)
+        {
+            foreach (var provider in _transpilers.Keys.Where(provider => provider != ProviderType.Canonical))
+            {
+                model.SetEnabledFor(provider, false);
+            }
+        }
+        return await SaveAndProjectAsync(slug, model, originator).ConfigureAwait(false);
+    }, ct);
+
+    public Task<bool> DeleteSkillDirectAsync(string name, string originator = "api",
+        CancellationToken ct = default)
+    {
+        var slug = RequireSlug(name);
+        return RunAsync(async () =>
+        {
+            ProtectSystemSkill(slug, originator);
+            var entry = GetEntry(slug);
+            var current = await LoadCurrentAsync(slug, entry).ConfigureAwait(false);
+            if (current is null)
+            {
+                return false;
+            }
+            ProtectSystemCategory(current, originator);
+            entry.Deleted = true;
+            entry.Tombstone = $"{slug}-{Guid.NewGuid():N}";
+            await PersistAsync().ConfigureAwait(false);
+            await FinishDeleteAsync(slug, entry).ConfigureAwait(false);
+            PublishActivity(slug, originator, "deleted", $"Moved '{slug}' to SkillHub trash and withdrew its owned projections.");
+            return true;
+        }, ct);
+    }
+
+    public Task<CanonicalSkillModel> RestoreSkillAsync(string name, CancellationToken ct = default)
+    {
+        var slug = RequireSlug(name);
+        return RunAsync(async () =>
+        {
+            var entry = GetEntry(slug);
+            if (!entry.Deleted || entry.Tombstone is null)
+            {
+                throw new KeyNotFoundException($"No deleted skill named '{slug}' is available.");
+            }
+            var source = SkillPaths.Resolve(_discovery.TrashRoot, entry.Tombstone);
+            var destination = Path.GetDirectoryName(_storage.CanonicalPath(slug))!;
+            if (Directory.Exists(destination))
+            {
+                throw new SkillConflictException($"A folder already occupies '{slug}'.");
+            }
+            Directory.Move(source, destination);
+            entry.Deleted = false;
+            entry.Tombstone = null;
+            entry.CanonicalDiskHash = null;
+            await PersistAsync().ConfigureAwait(false);
+            var model = await LoadCurrentAsync(slug, entry).ConfigureAwait(false)
+                ?? throw new InvalidDataException("The restored bundle does not contain SKILL.md.");
+            await ReconcileSkillAsync(slug, [], "restore").ConfigureAwait(false);
+            return _managed.GetValueOrDefault(slug)?.Clone() ?? model;
+        }, ct);
+    }
+
+    public async Task<int> RenameTagAcrossSkillsAsync(string oldTag, string newTag, CancellationToken ct = default) =>
+        (await ChangeTagAsync(oldTag, newTag, ct).ConfigureAwait(false)).UpdatedSkills;
+
+    public async Task<int> DeleteTagAcrossSkillsAsync(string tag, CancellationToken ct = default) =>
+        (await ChangeTagAsync(tag, null, ct).ConfigureAwait(false)).UpdatedSkills;
+
+    public static string NormalizeTag(string tag)
+    {
+        var normalized = ProviderDiscoveryService.NormalizeSlug(tag);
+        if (normalized.Length is 0 or > 64 || normalized is "system" or "skillhub" or "meta-skill")
+        {
+            throw new ArgumentException("A valid non-reserved tag is required.");
+        }
+        return normalized;
+    }
+
+    private static void ProtectSystemSkill(string slug, string originator)
+    {
+        if ((slug == BootstrapSkillName && originator != "bootstrap-seed") || slug == ProviderDiscoveryService.LegacyBootstrapSkillName)
+        {
+            throw new SkillConflictException($"System skill '{slug}' is protected.");
+        }
+    }
+
+    private static void ProtectSystemCategory(CanonicalSkillModel? model, string originator)
+    {
+        if (model?.SourceCategory == "system" && originator != "bootstrap-seed")
+        {
+            throw new SkillConflictException($"System skill '{model.Name}' is protected.");
+        }
+    }
+
+    private static string GetSlug(CanonicalSkillModel model) => RequireSlug(
+        string.IsNullOrWhiteSpace(model.Name) ? ProviderDiscoveryService.NormalizeSlug(model.Title) : model.Name);
+
+    private static string RequireSlug(string name)
+    {
+        SkillPaths.ValidateSegment(name);
+        var slug = ProviderDiscoveryService.NormalizeSlug(name);
+        if (slug.Length is 0 or > 64)
+        {
+            throw new ArgumentException("A skill name must contain 1 to 64 slug characters.");
+        }
+        SkillPaths.ValidateSegment(slug);
+        return slug;
+    }
+
+    private static string ProviderName(ProviderType provider) => provider.ToString().ToLowerInvariant();
+
+    private SkillLedgerEntry GetEntry(string slug) => _ledger.Skills.TryGetValue(slug, out var entry)
+        ? entry : _ledger.Skills[slug] = new SkillLedgerEntry();
+
+    private Task PersistAsync() => _storage.SaveLedgerAsync(_ledger);
+
+    private void PublishActivity(string slug, string source, string action, string details)
+    {
+        var item = new SyncActivityNotification(DateTimeOffset.UtcNow, slug, source, action, details, Interlocked.Increment(ref _activitySequence));
+        _recentActivity.Enqueue(item);
+        while (_recentActivity.Count > 100 && _recentActivity.TryDequeue(out _))
+        {
+        }
+        var listeners = ActivityPublished?.GetInvocationList() ?? [];
+        foreach (var listener in listeners.Cast<Action<SyncActivityNotification>>())
+        {
+            try
+            {
+                listener(item);
+            }
+            catch
+            {
+                // A disconnected subscriber must never affect a committed operation.
+            }
+        }
     }
 }

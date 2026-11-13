@@ -1,0 +1,8 @@
+SkillHub
+Copyright 2026 Kamil Tahiri
+
+SkillHub source and the repository's SkillHub icon are licensed under the Apache License, Version 2.0.
+
+Packaged third-party components include the .NET runtime (Microsoft, MIT), WebView2 SDK
+(Microsoft, distributed under its package license), and YamlDotNet (Antoine Aubry, MIT).
+The installer uses Inno Setup. See THIRD_PARTY_NOTICES.md for sources and license links.

@@ -183,6 +183,78 @@ public sealed class InstallManagerTests : IDisposable
         Assert.Contains("WantedBy=default.target", systemdUnit);
     }
 
+
+    [Fact]
+    public void RepairCodexToml_PreservesFollowingTablesCommentsOverridesAndExactBackup()
+    {
+        var config = Path.Combine(_tempHome, "config.toml");
+        var preamble = "# leading comment\r\n";
+        var section = "[ mcp_servers . 'skillhub' ] # preserve header\r\n" +
+            "command = 'old.exe' # preserve command comment\r\n" +
+            "args = [\r\n  'mcp-stdio',\r\n] # preserve args comment\r\n" +
+            "startup_timeout_sec = 40 # preserve override\r\n";
+        var following = "\r\n[mcp_servers.skillhub.env]\r\nRUNTIME = 'custom'\r\n\r\n" +
+            "[unrelated]\r\ntext = \"\"\"\r\n[mcp_servers.skillhub]\r\nthis is literal text\r\n\"\"\"\r\n" +
+            "setting = 42\r\n";
+        var utf8 = new System.Text.UTF8Encoding(encoderShouldEmitUTF8Identifier: true);
+        File.WriteAllText(config, preamble + section + following, utf8);
+        var original = File.ReadAllBytes(config);
+        const string command = "C:\\Test Folder\\O'Brien\\SkillHub.exe";
+
+        InstallManager.InjectSkillHubMcpEntryIntoCodexToml(config, command, new[] { "mcp-stdio" });
+
+        var edited = File.ReadAllText(config);
+        Assert.StartsWith(preamble, edited);
+        Assert.EndsWith(following, edited);
+        Assert.Contains("command = \"C:\\\\Test Folder\\\\O'Brien\\\\SkillHub.exe\" # preserve command comment", edited);
+        Assert.Contains("args = [\"mcp-stdio\"] # preserve args comment", edited);
+        Assert.Contains("startup_timeout_sec = 40 # preserve override\r\n", edited);
+        Assert.Equal(original, File.ReadAllBytes(config + ".bak"));
+        Assert.True(InstallManager.IsSkillHubPresentInCodexToml(config));
+
+        InstallManager.InjectSkillHubMcpEntryIntoCodexToml(config, command, new[] { "mcp-stdio" });
+        Assert.Equal(original, File.ReadAllBytes(config + ".bak"));
+    }
+
+    [Fact]
+    public void RepairJson_PreservesCommentsUserFieldsAndExactBackup()
+    {
+        var config = Path.Combine(_tempHome, "client.json");
+        var original = "{\r\n  // This comment stays.\r\n  \"mcpServers\": { \"skillhub\": { \"command\": \"old\", " +
+            "\"args\": [\"mcp-stdio\"], \"env\": {\"KEY\": \"preserved\"} }, \"custom\": { \"command\": \"untouched\" } },\r\n" +
+            "  \"theme\": \"dark\"\r\n}";
+        File.WriteAllText(config, original);
+
+        InstallManager.InjectSkillHubMcpEntryIntoFile(config, "new", new[] { "mcp-stdio" });
+
+        Assert.Equal(original.Replace("\"command\": \"old\"", "\"command\": \"new\""), File.ReadAllText(config));
+        Assert.Equal(original, File.ReadAllText(config + ".bak"));
+    }
+
+    [Theory]
+    [InlineData("{ \"mcpServers\": [] }")]
+    [InlineData("{ \"mcpServers\": { \"skillhub\": null } }")]
+    [InlineData("{ \"mcpServers\": ")]
+    public void RepairJson_InvalidConfigRemainsByteIdentical(string original)
+    {
+        var config = Path.Combine(_tempHome, "client.json");
+        File.WriteAllText(config, original);
+        Assert.ThrowsAny<Exception>(() => InstallManager.InjectSkillHubMcpEntryIntoFile(config, "new", new[] { "mcp-stdio" }));
+        Assert.Equal(original, File.ReadAllText(config));
+        Assert.False(File.Exists(config + ".bak"));
+    }
+
+    [Fact]
+    public void RepairCodexToml_RefusesAmbiguousInlineRegistrationWithoutWriting()
+    {
+        var config = Path.Combine(_tempHome, "config.toml");
+        const string original = "[mcp_servers]\nskillhub = { command = \"existing\", args = [] }\n";
+        File.WriteAllText(config, original);
+        Assert.Throws<InvalidDataException>(() => InstallManager.InjectSkillHubMcpEntryIntoCodexToml(config, "new", new[] { "mcp-stdio" }));
+        Assert.Equal(original, File.ReadAllText(config));
+        Assert.False(File.Exists(config + ".bak"));
+    }
+
     public void Dispose()
     {
         try

@@ -1,408 +1,203 @@
-/**
- * Dedicated Cohesive Vertical Skill Editor (Write / Live Formatted Markdown Preview)
- */
-import { api } from "../api.js?v=20261112-v7";
-import { store, slugifyTitle, humanizeSlug, showToast } from "../state.js?v=20261112-v7";
-import { renderMarkdown, escapeHtml } from "../markdown.js?v=20261112-v7";
+import { api } from '../api.js?v=20261112-v9';
+import { deployment, PROVIDERS, slugify, tagSlug } from '../state.js?v=20261112-v9';
+import { renderMarkdown } from '../markdown.js?v=20261112-v9';
+import { h, button, heading, field, disclosure, errorText, modal, notify } from '../ui.js?v=20261112-v9';
+import { showProviderPreview } from './transpilerPreview.js?v=20261112-v9';
 
-export function initSkillEditor({ onCancelEdit, onPreviewFromEdit, onSkillSaved }) {
-  const el = {
-    btnCancelEdit: document.getElementById("btn-cancel-edit"),
-    editorHeading: document.getElementById("editor-heading"),
-    slugPreviewBadge: document.getElementById("slug-preview-badge"),
-    btnPreviewFromEdit: document.getElementById("btn-preview-from-edit"),
-    btnSaveSkill: document.getElementById("btn-save-skill"),
-    fieldTitle: document.getElementById("field-title"),
-    fieldDescription: document.getElementById("field-description"),
-    fieldWhenToUse: document.getElementById("field-when-to-use"),
-    activeTagsList: document.getElementById("active-tags-list"),
-    tagInputField: document.getElementById("tag-input-field"),
-    editorAvailableTags: document.getElementById("editor-available-tags"),
-    btnMdWrite: document.getElementById("btn-md-write"),
-    btnMdPreview: document.getElementById("btn-md-preview"),
-    fieldInstructions: document.getElementById("field-instructions"),
-    editorMdLivePreview: document.getElementById("editor-md-live-preview"),
-    toggleClaude: document.getElementById("toggle-claude"),
-    toggleGemini: document.getElementById("toggle-gemini"),
-    toggleCodex: document.getElementById("toggle-codex"),
-    toggleCursor: document.getElementById("toggle-cursor"),
-    fieldAllowedTools: document.getElementById("field-allowed-tools"),
-    fieldSummaryShort: document.getElementById("field-summary-short"),
-    codexCharCounter: document.getElementById("codex-char-counter"),
-    fieldCursorGlobs: document.getElementById("field-cursor-globs"),
-    fieldCursorAlways: document.getElementById("field-cursor-always"),
-    btnAddSupportingFile: document.getElementById("btn-add-supporting-file"),
-    supportingFilesContainer: document.getElementById("supporting-files-container")
-  };
+const blank = () => ({
+  title: '', name: '', description: '', when_to_use: '', instructions_markdown: '', tags: [],
+  targets: Object.fromEntries(Object.keys(PROVIDERS).map(name => [name, { enabled: true }])), supporting_files: {}
+});
+const supported = new Set(['scripts', 'resources', 'references', 'examples', 'assets', 'agents']);
+const windowsDevice = /^(?:con|prn|aux|nul|conin\$|conout\$|com[0-9¹²³]|lpt[0-9¹²³])$/i;
 
-  let currentTags = [];
-  let previewTimer = null;
-
-  function autoResizeTextarea(textarea) {
-    if (!textarea) return;
-    textarea.style.height = "auto";
-    textarea.style.height = `${Math.max(68, textarea.scrollHeight)}px`;
+function validatePath(value) {
+  const path = value.trim().replaceAll('\\', '/');
+  const parts = path.split('/');
+  if (parts.length < 2 || !supported.has(parts[0].toLowerCase()) ||
+    parts.some(part => !part || part.length > 255 || /[. ]$/.test(part) ||
+      /[<>:"|?*\u0000-\u001f]/.test(part) || windowsDevice.test(part.split('.')[0].trimEnd()))) {
+    throw new Error('Use a safe relative file path under a supported bundle folder.');
   }
+  return path;
+}
 
-  function autoResizeAllTextareas() {
-    autoResizeTextarea(el.fieldDescription);
-    autoResizeTextarea(el.fieldWhenToUse);
+function draftStorage(key, value) {
+  try {
+    if (value === undefined) return JSON.parse(localStorage.getItem(key) ?? 'null');
+    if (value === null) localStorage.removeItem(key);
+    else localStorage.setItem(key, JSON.stringify(value));
+  } catch {
+    return null;
   }
+}
 
-  function setMarkdownTab(mode) {
-    if (mode === "preview") {
-      el.btnMdWrite.classList.remove("active");
-      el.btnMdPreview.classList.add("active");
-      el.fieldInstructions.classList.add("hidden");
-      el.editorMdLivePreview.classList.remove("hidden");
-      el.editorMdLivePreview.innerHTML = renderMarkdown(el.fieldInstructions.value || "");
-    } else {
-      el.btnMdPreview.classList.remove("active");
-      el.btnMdWrite.classList.add("active");
-      el.editorMdLivePreview.classList.add("hidden");
-      el.fieldInstructions.classList.remove("hidden");
+export function createEditor(root, app) {
+  let baseline;
+  let cloneId;
+  let returnKey;
+  let draftKey;
+  let readDraft;
+  let initial;
+  let isSaving = false;
+  let dirty = false;
+  let storageTimer;
+
+  function start(detail, snapshot, clone = false) {
+    root.classList.add('reading');
+    baseline = structuredClone(detail?.skill ?? blank());
+    cloneId = clone ? baseline.catalog_id : null;
+    returnKey = detail ? (baseline.is_catalog_only ? baseline.catalog_id : baseline.name) : null;
+    if (clone) {
+      baseline.title += ' Copy';
+      baseline.revision = 0;
+      Object.values(baseline.targets).forEach(target => { target.enabled = false; });
     }
-  }
-
-  function renderAvailableTagsHelper() {
-    if (!el.editorAvailableTags) return;
-    const allKnown = store.getAllKnownUserTags();
-    const unassigned = allKnown.filter((t) => !currentTags.includes(t));
-    el.editorAvailableTags.innerHTML = "";
-    if (unassigned.length === 0) return;
-
-    const label = document.createElement("span");
-    label.className = "field-hint";
-    label.textContent = "Click to add existing tag:";
-    el.editorAvailableTags.appendChild(label);
-
-    unassigned.forEach((tag) => {
-      const chip = document.createElement("button");
-      chip.type = "button";
-      chip.className = "tag-chip";
-      chip.innerHTML = `+ #${escapeHtml(tag)}`;
-      chip.addEventListener("click", () => {
-        if (!currentTags.includes(tag)) {
-          currentTags.push(tag);
-          renderTagsPills();
-          schedulePreviewUpdate();
-        }
-      });
-      el.editorAvailableTags.appendChild(chip);
-    });
-  }
-
-  function renderTagsPills() {
-    el.activeTagsList.innerHTML = "";
-    currentTags.forEach((tag) => {
-      const pill = document.createElement("span");
-      pill.className = "tag-pill";
-      pill.textContent = tag;
-
-      const removeBtn = document.createElement("button");
-      removeBtn.type = "button";
-      removeBtn.textContent = "×";
-      removeBtn.title = `Remove tag '${tag}'`;
-      removeBtn.addEventListener("click", () => {
-        currentTags = currentTags.filter((t) => t !== tag);
-        renderTagsPills();
-        schedulePreviewUpdate();
-      });
-
-      pill.appendChild(removeBtn);
-      el.activeTagsList.appendChild(pill);
-    });
-    renderAvailableTagsHelper();
-  }
-
-  function addTagFromInput(rawVal) {
-    const cleaned = String(rawVal || "")
-      .split(",")
-      .map((s) => s.trim().toLowerCase().replace(/^#+/, ""))
-      .filter(Boolean);
-
-    let changed = false;
-    cleaned.forEach((t) => {
-      store.addCustomTag(t);
-      if (!currentTags.includes(t)) {
-        currentTags.push(t);
-        changed = true;
-      }
-    });
-
-    if (changed) {
-      renderTagsPills();
-      schedulePreviewUpdate();
+    draftKey = 'skillhub:draft:' + (cloneId ? 'clone:' + cloneId : returnKey ?? 'new');
+    const restored = draftStorage(draftKey);
+    const form = h('form', { class: 'editor-form', novalidate: true, onsubmit: event => { event.preventDefault(); save(); } });
+    const feedback = h('div', { role: 'status' });
+    const formTitle = h('input', { class: 'input', value: baseline.title, required: true, maxlength: '128' });
+    const summary = h('textarea', { rows: '2', maxlength: '1024' }, baseline.description ?? '');
+    const trigger = h('textarea', { rows: '2', maxlength: '1024' }, baseline.when_to_use ?? '');
+    const instructions = h('textarea', { class: 'instructions', rows: '10' }, baseline.instructions_markdown ?? '');
+    const tags = h('input', { class: 'input', value: (baseline.tags ?? []).join(', '), list: 'editor-tag-suggestions' });
+    const suggestionList = h('datalist', { id: 'editor-tag-suggestions' },
+      snapshot.tags.map(tag => h('option', { value: tag.tag })));
+    const deploy = Object.fromEntries(Object.entries(PROVIDERS).map(([key, label]) => [key, {
+      label, control: h('input', { type: 'checkbox', checked: baseline.targets?.[key]?.enabled !== false })
+    }]));
+    const tooling = h('input', { class: 'input', value: (baseline.targets?.claude?.allowed_tools ?? []).join(', ') });
+    const globs = h('input', { class: 'input', value: (baseline.targets?.cursor?.globs ?? []).join(', ') });
+    const always = h('input', { type: 'checkbox', checked: baseline.targets?.cursor?.always_apply === true });
+    const concise = h('input', { class: 'input', value: baseline.summary_short ?? '', maxlength: '1024' });
+    const files = h('div', { class: 'stack' });
+    function addFile(path, text) {
+      const name = h('input', { class: 'input', value: path, placeholder: 'references/example.md' });
+      const content = h('textarea', { rows: '4' }, text);
+      const row = h('div', { class: 'panel stack' }, field('Relative path', name), field('File contents', content),
+        button('Remove file', () => { row.remove(); edited(); }, 'danger small'));
+      row.readFile = () => [name.value, content.value];
+      row.writeFile = (p, c) => { name.value = p; content.value = c; };
+      files.append(row);
+      return name;
     }
-  }
-
-  function computeEffectiveSlug() {
-    const { isCreatingNew, selectedSkillName } = store.getState();
-    const titleVal = el.fieldTitle.value.trim();
-    if (!isCreatingNew && selectedSkillName) {
-      return selectedSkillName;
-    }
-    return slugifyTitle(titleVal) || "new-skill";
-  }
-
-  function updateHeaderAndSlugBadge() {
-    const { isCreatingNew } = store.getState();
-    const titleVal = el.fieldTitle.value.trim();
-    const slug = computeEffectiveSlug();
-
-    el.editorHeading.textContent = titleVal || (isCreatingNew ? "New Skill" : "Edit Skill");
-    el.slugPreviewBadge.textContent = slug;
-  }
-
-  function updateCodexCounter() {
-    const len = (el.fieldSummaryShort.value || "").trim().length;
-    el.codexCharCounter.textContent = len > 0 ? `${len} chars` : "Auto-generated if blank";
-  }
-
-  function addSupportingFileRow(relPath = "scripts/helper.sh", content = "#!/usr/bin/env bash\n") {
-    const wrapper = document.createElement("div");
-    wrapper.className = "supporting-file-item";
-
-    const top = document.createElement("div");
-    top.className = "supporting-file-top";
-
-    const pathInput = document.createElement("input");
-    pathInput.type = "text";
-    pathInput.className = "supporting-path-input";
-    pathInput.value = relPath;
-    pathInput.placeholder = "scripts/my-script.py or references/guide.md";
-
-    const removeBtn = document.createElement("button");
-    removeBtn.type = "button";
-    removeBtn.className = "btn btn-sm btn-ghost-danger";
-    removeBtn.textContent = "Remove";
-    removeBtn.addEventListener("click", () => {
-      wrapper.remove();
-      schedulePreviewUpdate();
+    for (const [path, text] of Object.entries(baseline.supporting_files ?? {})) addFile(path, text);
+    const deploymentSection = disclosure('Deployment and provider settings',
+      h('div', { class: 'stack' }, h('fieldset', {}, h('legend', {}, 'Providers'),
+        h('div', { class: 'checks' }, Object.entries(deploy).map(([key, item]) => h('label', {}, item.control,
+          item.label + (snapshot.providers.some(provider => provider.provider === key && provider.is_installed) ? '' : ' · not detected'))))),
+        field('Codex concise summary', concise), field('Claude allowed tools', tooling, 'Separate tool names with commas.'),
+        field('Cursor file globs', globs, 'Separate glob patterns with commas.'), h('label', { class: 'actions' }, always, 'Always apply Cursor rule')));
+    const fileSection = disclosure('Supporting files',
+      h('div', { class: 'stack' }, files, button('Add file', () => { addFile('', '').focus(); edited(); })));
+    const saveButton = h('button', { type: 'submit', class: 'btn primary' }, 'Save skill');
+    const preview = button('Provider output', () => {
+      try { showProviderPreview(readDraft(true), { providers: snapshot.providers }); }
+      catch (error) { feedback.replaceChildren(errorText(error.message)); }
     });
-
-    top.appendChild(pathInput);
-    top.appendChild(removeBtn);
-
-    const contentArea = document.createElement("textarea");
-    contentArea.className = "supporting-content-input";
-    contentArea.rows = 4;
-    contentArea.value = content;
-
-    pathInput.addEventListener("input", () => schedulePreviewUpdate());
-    contentArea.addEventListener("input", () => schedulePreviewUpdate());
-
-    wrapper.appendChild(top);
-    wrapper.appendChild(contentArea);
-    el.supportingFilesContainer.appendChild(wrapper);
-  }
-
-  function populateForm() {
-    const { currentSkillModel: skill, isCreatingNew } = store.getState();
-    if (!skill) return;
-
-    setMarkdownTab("write");
-
-    const displayTitle = isCreatingNew ? skill.title || "" : skill.title || humanizeSlug(skill.name);
-    el.fieldTitle.value = displayTitle;
-    el.fieldDescription.value = skill.description || "";
-    el.fieldWhenToUse.value = skill.when_to_use || "";
-
-    currentTags = [...(skill.tags || [])];
-    el.tagInputField.value = "";
-    renderTagsPills();
-
-    el.fieldInstructions.value = skill.instructions_markdown || "";
-
-    el.toggleClaude.checked = skill.targets?.claude?.enabled !== false;
-    el.toggleGemini.checked = skill.targets?.gemini?.enabled !== false;
-    el.toggleCodex.checked = skill.targets?.codex?.enabled !== false;
-    el.toggleCursor.checked = skill.targets?.cursor?.enabled !== false;
-
-    el.fieldAllowedTools.value = (skill.targets?.claude?.allowed_tools || []).join(", ");
-    el.fieldSummaryShort.value = skill.summary_short || "";
-    updateCodexCounter();
-
-    el.fieldCursorGlobs.value = (skill.targets?.cursor?.globs || ["**/*"]).join(", ");
-    el.fieldCursorAlways.checked = Boolean(skill.targets?.cursor?.always_apply);
-
-    el.supportingFilesContainer.innerHTML = "";
-    const files = skill.supporting_files || {};
-    Object.keys(files)
-      .sort()
-      .forEach((relPath) => {
-        addSupportingFileRow(relPath, files[relPath]);
-      });
-
-    updateHeaderAndSlugBadge();
-    requestAnimationFrame(autoResizeAllTextareas);
-  }
-
-  function buildPayloadFromForm() {
-    if (el.tagInputField.value.trim()) {
-      addTagFromInput(el.tagInputField.value);
-      el.tagInputField.value = "";
-    }
-
-    const parseList = (val) =>
-      (val || "")
-        .split(",")
-        .map((s) => s.trim())
-        .filter(Boolean);
-
-    const supportingFiles = {};
-    el.supportingFilesContainer.querySelectorAll(".supporting-file-item").forEach((item) => {
-      const p = item.querySelector(".supporting-path-input").value.trim().replace(/\\/g, "/");
-      const c = item.querySelector(".supporting-content-input").value;
-      if (p) supportingFiles[p] = c;
+    const cancel = button('Cancel', () => app.cancelEditor(returnKey));
+    const draftStatus = h('span', { class: 'muted', role: 'status' });
+    const markdownPreview = button('Preview Markdown', () => modal('Markdown preview',
+      h('article', { class: 'markdown' }, renderMarkdown(instructions.value, { title: formTitle.value }))));
+    form.append(h('div', { class: 'editor-actions spread' }, h('div', { class: 'actions' }, saveButton, preview, cancel), draftStatus),
+      feedback, field('Title', formTitle), h('div', { class: 'columns' }, field('Description', summary), field('When to use', trigger)),
+      field('Instructions', instructions), markdownPreview, field('Tags', tags, 'Separate tags with commas.'), suggestionList, deploymentSection, fileSection);
+    const list = text => text.split(',').map(item => item.trim()).filter(Boolean);
+    const raw = () => ({
+      title: formTitle.value, description: summary.value, when_to_use: trigger.value, instructions_markdown: instructions.value,
+      tags: tags.value, targets: Object.fromEntries(Object.entries(deploy).map(([key, item]) => [key, item.control.checked])),
+      summary_short: concise.value, tools: tooling.value, globs: globs.value, always: always.checked,
+      files: Array.from(files.children, child => child.readFile())
     });
-
-    const globs = parseList(el.fieldCursorGlobs.value);
-    const title = el.fieldTitle.value.trim();
-    const slug = computeEffectiveSlug();
-
-    return {
-      name: slug,
-      title: title || humanizeSlug(slug),
-      version: store.getState().currentSkillModel?.version || "1.0.0",
-      source_category: "user",
-      origin_provider: "My Skill",
-      description: el.fieldDescription.value.trim(),
-      when_to_use: el.fieldWhenToUse.value.trim(),
-      summary_short: el.fieldSummaryShort.value.trim(),
-      tags: [...currentTags],
-      targets: {
-        claude: {
-          enabled: el.toggleClaude.checked,
-          allowed_tools: parseList(el.fieldAllowedTools.value)
-        },
-        gemini: {
-          enabled: el.toggleGemini.checked
-        },
-        codex: {
-          enabled: el.toggleCodex.checked
-        },
-        cursor: {
-          enabled: el.toggleCursor.checked,
-          globs: globs.length > 0 ? globs : ["**/*"],
-          always_apply: el.fieldCursorAlways.checked
-        }
-      },
-      instructions_markdown: el.fieldInstructions.value,
-      supporting_files: supportingFiles
+    const restore = draft => {
+      formTitle.value = draft.title; summary.value = draft.description; trigger.value = draft.when_to_use;
+      instructions.value = draft.instructions_markdown; tags.value = draft.tags; concise.value = draft.summary_short;
+      tooling.value = draft.tools; globs.value = draft.globs; always.checked = draft.always;
+      for (const key of Object.keys(deploy)) deploy[key].control.checked = draft.targets[key];
+      files.replaceChildren();
+      for (const [path, text] of draft.files) addFile(path, text);
     };
-  }
-
-  function schedulePreviewUpdate(immediate = false) {
-    updateHeaderAndSlugBadge();
-    updateCodexCounter();
-    if (previewTimer) clearTimeout(previewTimer);
-
-    const run = async () => {
+    readDraft = validate => {
+      const values = raw();
+      const name = baseline.revision ? baseline.name : slugify(values.title);
+      if (validate && (!values.title.trim() || !name || name.length > 64 || windowsDevice.test(name))) {
+        formTitle.focus();
+        throw new Error('Enter a title that creates a valid skill name of up to 64 characters.');
+      }
+      const bundle = Object.create(null);
+      const paths = new Set();
+      for (const [path, contents] of values.files) {
+        const safe = validatePath(path);
+        if (paths.has(safe.toLowerCase())) throw new Error('Supporting files need unique paths.');
+        paths.add(safe.toLowerCase());
+        bundle[safe] = contents;
+      }
+      const targetData = structuredClone(baseline.targets ?? {});
+      for (const key of Object.keys(deploy)) targetData[key] = { ...targetData[key], enabled: values.targets[key] };
+      targetData.claude.allowed_tools = list(values.tools);
+      targetData.cursor.globs = list(values.globs);
+      targetData.cursor.always_apply = values.always;
+      return {
+        ...baseline, name, title: values.title.trim(), description: values.description, when_to_use: values.when_to_use,
+        instructions_markdown: values.instructions_markdown, tags: [...new Set(list(values.tags).map(tagSlug))],
+        summary_short: values.summary_short, targets: targetData, supporting_files: bundle
+      };
+    };
+    initial = JSON.stringify(raw());
+    dirty = false;
+    isSaving = false;
+    function edited() {
+      dirty = JSON.stringify(raw()) !== initial;
+      draftStatus.textContent = dirty ? 'Draft · unsaved changes' : '';
+      clearTimeout(storageTimer);
+      storageTimer = setTimeout(() => draftStorage(draftKey, dirty ? { revision: baseline.revision ?? 0, fields: raw() } : null), 100);
+    }
+    form.addEventListener('input', edited);
+    async function save() {
+      if (isSaving) return;
+      feedback.replaceChildren();
+      let draft;
+      try { draft = readDraft(true); }
+      catch (error) { feedback.replaceChildren(errorText(error.message)); return; }
+      isSaving = true;
+      saveButton.disabled = preview.disabled = cancel.disabled = true;
+      draftStatus.textContent = 'Saving…';
       try {
-        const draft = buildPayloadFromForm();
-        const res = await api.previewTranspilation(draft);
-        store.update(
-          {
-            previews: res.transpiled_previews || {}
-          },
-          "previews:updated"
-        );
-      } catch (_) {}
-    };
-
-    if (immediate) {
-      run();
-    } else {
-      previewTimer = setTimeout(run, 180);
-    }
-  }
-
-  // Event Listeners
-  el.btnCancelEdit.addEventListener("click", onCancelEdit);
-  el.btnPreviewFromEdit.addEventListener("click", () => {
-    schedulePreviewUpdate(true);
-    onPreviewFromEdit();
-  });
-
-  el.btnMdWrite.addEventListener("click", () => setMarkdownTab("write"));
-  el.btnMdPreview.addEventListener("click", () => setMarkdownTab("preview"));
-
-  el.fieldDescription.addEventListener("input", () => autoResizeTextarea(el.fieldDescription));
-  el.fieldWhenToUse.addEventListener("input", () => autoResizeTextarea(el.fieldWhenToUse));
-  window.addEventListener("resize", autoResizeAllTextareas);
-
-  el.tagInputField.addEventListener("keydown", (e) => {
-    if (e.key === "Enter" || e.key === ",") {
-      e.preventDefault();
-      addTagFromInput(el.tagInputField.value);
-      el.tagInputField.value = "";
-    } else if (e.key === "Backspace" && !el.tagInputField.value && currentTags.length > 0) {
-      currentTags.pop();
-      renderTagsPills();
-      schedulePreviewUpdate();
-    }
-  });
-
-  el.tagInputField.addEventListener("blur", () => {
-    if (el.tagInputField.value.trim()) {
-      addTagFromInput(el.tagInputField.value);
-      el.tagInputField.value = "";
-    }
-  });
-
-  [
-    el.fieldTitle,
-    el.fieldDescription,
-    el.fieldWhenToUse,
-    el.fieldInstructions,
-    el.toggleClaude,
-    el.toggleGemini,
-    el.toggleCodex,
-    el.toggleCursor,
-    el.fieldAllowedTools,
-    el.fieldSummaryShort,
-    el.fieldCursorGlobs,
-    el.fieldCursorAlways
-  ].forEach((input) => input.addEventListener("input", () => schedulePreviewUpdate()));
-
-  el.btnAddSupportingFile.addEventListener("click", () => {
-    addSupportingFileRow();
-    schedulePreviewUpdate();
-  });
-
-  async function saveSkill() {
-    try {
-      const payload = buildPayloadFromForm();
-      if (!payload.title || !payload.name) {
-        showToast("Please enter a Skill Name.");
-        el.fieldTitle.focus();
-        return;
+        const detail = await api.save(draft, cloneId);
+        clearTimeout(storageTimer);
+        draftStorage(draftKey, null);
+        dirty = false;
+        isSaving = false;
+        await app.read(detail.skill.name, detail);
+        const sync = deployment(detail.skill);
+        notify(sync.key === 'issue' ? 'Saved. A deployment needs attention.' : 'Skill saved.');
+      } catch (error) {
+        feedback.replaceChildren(errorText(error.message));
+        draftStatus.textContent = 'Draft · save failed';
+      } finally {
+        isSaving = false;
+        saveButton.disabled = preview.disabled = cancel.disabled = false;
       }
-      if (!payload.description) {
-        showToast("Please describe what this skill does.");
-        el.fieldDescription.focus();
-        return;
+    }
+    root.replaceChildren(heading(clone ? 'Customize skill' : detail ? 'Edit skill' : 'New skill'), form);
+    if (restored?.fields) {
+      if (restored.revision === (baseline.revision ?? 0)) {
+        restore(restored.fields);
+        edited();
+        feedback.textContent = 'Recovered your unsaved draft.';
+      } else {
+        feedback.replaceChildren(h('p', { class: 'warning' }, 'This skill changed after your draft was saved.'),
+          button('Recover draft text', () => modal('Draft from an earlier revision', h('pre', { class: 'file-code' }, restored.fields.instructions_markdown))));
       }
-      const res = await api.upsertSkill(payload);
-      showToast(`Saved '${res.skill.title || res.skill.name}' and synced across providers.`);
-      await onSkillSaved(res);
-    } catch (err) {
-      showToast(`Save failed: ${err.message}`);
     }
+    root.saveDraft = save;
   }
-
-  el.btnSaveSkill.addEventListener("click", saveSkill);
-
-  window.addEventListener("keydown", (e) => {
-    if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "s" && store.getState().activeScreen === "edit") {
-      e.preventDefault();
-      saveSkill();
-    }
-  });
-
   return {
-    populateForm,
-    schedulePreviewUpdate
+    start,
+    get isDirty() { return dirty; },
+    get isSaving() { return isSaving; },
+    discard() { clearTimeout(storageTimer); draftStorage(draftKey, null); dirty = false; },
+    save() { root.saveDraft?.(); }
   };
 }

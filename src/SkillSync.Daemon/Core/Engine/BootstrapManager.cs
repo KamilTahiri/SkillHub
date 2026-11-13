@@ -15,7 +15,7 @@ public static class BootstrapManager
             OriginProvider = "SkillHub System",
             Description = "Mandatory protocol for creating, reading, updating, tagging, importing, or deleting AI agent skills and rules across all local AI environments (Claude, Gemini/Antigravity, OpenAI Codex, and Cursor) via the SkillHub MCP server.",
             WhenToUse = "ALWAYS activate whenever the user asks to create a skill, update a skill, delete a skill, list skills, tag skills, search/import community skills, toggle provider sync, or modify files inside ~/.claude/skills, ~/.gemini/skills, ~/.codex/skills, ~/.agents/skills, or .cursor/rules.",
-            SummaryShort = "Mandatory skill management protocol: use SkillHub MCP tools (list_skills, get_skill, create_skill, update_skill, delete_skill, manage_skill_tags, import_community_skill) for all skill operations.",
+            SummaryShort = "Mandatory skill management protocol: use SkillHub MCP tools (list_skills, get_skill, create_skill, update_skill, delete_skill, manage_skill_tags, prepare_skill_import, apply_skill_import) for all skill operations.",
             Tags = ["system", "skillhub", "meta-skill"],
             Targets = new SkillTargetsConfig
             {
@@ -32,7 +32,11 @@ public static class BootstrapManager
                         "mcp__skillhub__manage_skill_tags",
                         "mcp__skillhub__toggle_skill_provider",
                         "mcp__skillhub__search_community_skills",
-                        "mcp__skillhub__import_community_skill",
+                        "mcp__skillhub__prepare_skill_import",
+                        "mcp__skillhub__apply_skill_import",
+                        "mcp__skillhub__activate_catalog_skill",
+                        "mcp__skillhub__clone_catalog_skill",
+                        "mcp__skillhub__restore_skill",
                         "mcp__skillhub__get_sync_status"
                     ]
                 },
@@ -63,7 +67,8 @@ public static class BootstrapManager
                    - `manage_skill_tags` — List, add, remove, rename, or delete tags across skills (`action`: `"list"`, `"add"`, `"remove"`, `"rename"`, `"delete"`).
                    - `toggle_skill_provider` — Enable or disable syncing a skill or built-in template to a specific provider (`claude`, `gemini`, `codex`, `cursor`).
                    - `search_community_skills` — Browse or search open-source skills from GitHub / `skills.sh` repositories (`vercel-labs/agent-skills`, `anthropics/skills`, etc.).
-                   - `import_community_skill` — Import a community skill from GitHub / `skills.sh` directly into SkillHub and sync it across providers.
+                   - `prepare_skill_import` — Review a pinned community skill with its origin, license, and files.
+                   - `apply_skill_import` — Import the reviewed revision and deploy only to explicitly selected providers.
                    - `get_sync_status` — Inspect connected AI providers, skill counts, and recent sync events.
 
                 2. **DO NOT MANUALLY COPY SKILLS BETWEEN PROVIDERS:**

@@ -66,6 +66,18 @@ public sealed class CanonicalSkillModel
     [JsonPropertyName("source_path")]
     public string SourcePath { get; set; } = string.Empty;
 
+    [YamlIgnore]
+    [JsonPropertyName("revision")]
+    public long Revision { get; set; }
+
+    [YamlIgnore]
+    [JsonPropertyName("catalog_id")]
+    public string? CatalogId { get; set; }
+
+    [YamlIgnore]
+    [JsonPropertyName("destinations")]
+    public IReadOnlyList<SyncDestinationStatus> Destinations { get; set; } = [];
+
     public string GetEffectiveTitle()
     {
         if (!string.IsNullOrWhiteSpace(Title))
@@ -138,7 +150,7 @@ public sealed class CanonicalSkillModel
         return string.Join(" ", words);
     }
 
-    public CanonicalSkillModel Clone()
+    public CanonicalSkillModel Clone(bool includeContents = true)
     {
         return new CanonicalSkillModel
         {
@@ -152,6 +164,9 @@ public sealed class CanonicalSkillModel
             OriginProvider = string.IsNullOrWhiteSpace(OriginProvider) ? "My Skill" : OriginProvider,
             IsCatalogOnly = IsCatalogOnly,
             SourcePath = SourcePath,
+            Revision = Revision,
+            CatalogId = CatalogId,
+            Destinations = Destinations.ToArray(),
             Tags = [.. Tags],
             Targets = new SkillTargetsConfig
             {
@@ -176,11 +191,22 @@ public sealed class CanonicalSkillModel
                     AlwaysApply = Targets.Cursor.AlwaysApply
                 }
             },
-            Passthrough = new Dictionary<string, object?>(Passthrough, StringComparer.Ordinal),
-            InstructionsMarkdown = InstructionsMarkdown,
-            SupportingFiles = new Dictionary<string, string>(SupportingFiles, StringComparer.Ordinal)
+            Passthrough = includeContents ? CopyMetadata(Passthrough) : new(StringComparer.Ordinal),
+            InstructionsMarkdown = includeContents ? InstructionsMarkdown : string.Empty,
+            SupportingFiles = includeContents ? new Dictionary<string, string>(SupportingFiles, StringComparer.Ordinal) : new(StringComparer.Ordinal)
         };
     }
+
+    private static Dictionary<string, object?> CopyMetadata(Dictionary<string, object?> values) =>
+        values.ToDictionary(pair => pair.Key, pair => CopyValue(pair.Value), StringComparer.Ordinal);
+
+    private static object? CopyValue(object? value) => value switch
+    {
+        Dictionary<string, object?> dictionary => CopyMetadata(dictionary),
+        IEnumerable<object?> list => list.Select(CopyValue).ToList(),
+        System.Text.Json.JsonElement element => element.Clone(),
+        _ => value
+    };
 
     public bool IsEnabledFor(ProviderType provider) => provider switch
     {

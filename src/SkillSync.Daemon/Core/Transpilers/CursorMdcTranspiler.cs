@@ -30,9 +30,7 @@ public sealed partial class CursorMdcTranspiler : ISkillTranspiler
 
     public string TranspileOutbound(CanonicalSkillModel model, string? canonicalSkillDirPath = null)
     {
-        var globs = model.Targets.Cursor.Globs is { Count: > 0 }
-            ? model.Targets.Cursor.Globs
-            : ["**/*"];
+        var globs = model.Targets.Cursor.Globs;
 
         var frontmatter = new Dictionary<string, object?>(StringComparer.Ordinal)
         {
@@ -97,7 +95,7 @@ public sealed partial class CursorMdcTranspiler : ISkillTranspiler
         if (dict.ContainsKey("globs"))
         {
             var globs = FrontmatterParser.ExtractStringList(dict, "globs");
-            merged.Targets.Cursor.Globs = globs.Count > 0 ? globs : ["**/*"];
+            merged.Targets.Cursor.Globs = globs;
         }
 
         if (dict.TryGetValue("alwaysApply", out var alwaysObj) || dict.TryGetValue("always_apply", out alwaysObj))

@@ -1,4 +1,5 @@
 using System.IO.Pipes;
+using System.Text;
 using System.Windows.Forms;
 using SkillSync.Daemon.Api;
 using SkillSync.Daemon.Core.Engine;
@@ -10,7 +11,6 @@ namespace SkillSync.Daemon;
 
 public static class Program
 {
-    private const string GlobalMutexName = @"Global\SkillHub_Singleton_Daemon_Mutex";
 
     [STAThread]
     public static int Main(string[] args)
@@ -36,7 +36,7 @@ public static class Program
         }
 
         var port = 45880;
-        var enableTunnel = false;
+        var explicitPort = false;
         var isBackground = false;
         var launchDesktopAfterInstall = false;
         var noSpawnOnInstall = false;
@@ -49,11 +49,14 @@ public static class Program
             if (string.Equals(arg, "--port", StringComparison.OrdinalIgnoreCase) && i + 1 < args.Length && int.TryParse(args[i + 1], out var p))
             {
                 port = p;
+                explicitPort = true;
                 i++;
             }
             else if (string.Equals(arg, "--tunnel", StringComparison.OrdinalIgnoreCase))
             {
-                enableTunnel = true;
+                InstallManager.AttachParentConsoleIfAvailable();
+                Console.Error.WriteLine("Public Quick Tunnel access is disabled.");
+                return 2;
             }
             else if (string.Equals(arg, "--background", StringComparison.OrdinalIgnoreCase) ||
                      string.Equals(arg, "--tray", StringComparison.OrdinalIgnoreCase))
@@ -106,7 +109,7 @@ public static class Program
             return RunStatusCommandAsync(customHome, binPathOverride, port).GetAwaiter().GetResult();
         }
 
-        return RunDesktopAndDaemonApp(args, port, enableTunnel, isBackground, customHome);
+        return RunDesktopAndDaemonApp(args, port, isBackground, customHome, explicitPort);
     }
 
     private static async Task<int> RunInstallCommandAsync(
@@ -172,14 +175,15 @@ public static class Program
         Console.WriteLine($"[4/5] Injected 'skillhub' MCP server into {registeredClients.Count} AI client config(s):");
         foreach (var c in clientResults)
         {
-            var badge = c.IsSkillHubRegistered ? "REGISTERED" : "SKIPPED (not installed)";
+            var badge = c.Error is not null ? "FAILED" : c.IsSkillHubRegistered ? "REGISTERED" : "SKIPPED (not installed)";
             Console.WriteLine($"      - {c.DisplayName,-26} [{badge}] ({c.ConfigFilePath})");
+            if (c.Error is not null) Console.Error.WriteLine($"        {c.Error}");
         }
 
         // 5. Start SkillHub (either showing the Desktop Window or running in the System Tray)
         if (!noSpawn)
         {
-            var spawned = InstallManager.SpawnDetachedBackgroundDaemon(resolvedExe, port, showWindow: launchUi);
+            var spawned = InstallManager.SpawnDetachedBackgroundDaemon(resolvedExe, port, showWindow: launchUi, home: customHome);
             Console.WriteLine(spawned
                 ? $"[5/5] SkillHub started {(launchUi ? "with Desktop Window & System Tray" : "in System Tray") }."
                 : "[5/5] SkillHub ready.");
@@ -189,6 +193,11 @@ public static class Program
             Console.WriteLine("[5/5] Configuration complete.");
         }
 
+        if (clientResults.Any(client => client.Error is not null))
+        {
+            Console.Error.WriteLine("Installation finished with client configuration failures.");
+            return 1;
+        }
         Console.WriteLine("\nInstallation complete!");
         return 0;
     }
@@ -211,7 +220,8 @@ public static class Program
         Console.WriteLine("[3/4] Removed 'skillhub' from AI client MCP configuration files:");
         foreach (var c in clients.Where(x => x.ConfigFileExists))
         {
-            Console.WriteLine($"      - Cleaned: {c.DisplayName} ({c.ConfigFilePath})");
+            Console.WriteLine(c.Error is null ? $"      - Checked: {c.DisplayName} ({c.ConfigFilePath})"
+                : $"      - Failed: {c.DisplayName} ({c.ConfigFilePath}) {c.Error}");
         }
 
         var stopped = InstallManager.StopRunningDaemonProcesses();
@@ -225,7 +235,7 @@ public static class Program
         var discovery = new ProviderDiscoveryService(customHome);
         var installManager = new InstallManager(customHome);
         var report = installManager.GetStatusReport(binPathOverride);
-        var daemonAlive = await IsDaemonPipeAliveAsync().ConfigureAwait(false);
+        var daemonAlive = await IsDaemonPipeAliveAsync(new LocalDaemonIdentity(customHome)).ConfigureAwait(false);
 
         Console.WriteLine("=== SkillHub System Status ===");
         Console.WriteLine($"Background Service    : {(daemonAlive ? "ONLINE (skillhub-mcp-v1)" : "OFFLINE")}");
@@ -251,41 +261,42 @@ public static class Program
     private static int RunDesktopAndDaemonApp(
         string[] args,
         int port,
-        bool enableTunnel,
         bool isBackground,
-        string? customHome)
+        string? customHome,
+        bool explicitPort)
     {
-        using var mutex = new Mutex(initiallyOwned: true, name: GlobalMutexName, out var createdNew);
+        var identity = new LocalDaemonIdentity(customHome);
+        using var mutex = new Mutex(initiallyOwned: true, name: identity.MutexName, out var createdNew);
         if (!createdNew)
         {
             // An instance is already running! If the user launched SkillHub interactively (not --background),
             // signal the running instance to pop up its Desktop window and focus it.
             if (!isBackground)
             {
-                TrySignalRunningInstanceToShowWindow(port);
+                TrySignalRunningInstanceToShowWindow(identity);
             }
 
             return 0;
         }
 
+        var webRoot = Path.Combine(AppContext.BaseDirectory, "wwwroot");
+        if (!File.Exists(Path.Combine(webRoot, "index.html")))
+        {
+            ReportStartupFailure("SkillHub’s web assets are missing. Restore the complete application bundle.", isBackground);
+            return 1;
+        }
         var builder = WebApplication.CreateBuilder(new WebApplicationOptions
         {
             Args = args,
-            ContentRootPath = AppContext.BaseDirectory
+            ContentRootPath = AppContext.BaseDirectory,
+            WebRootPath = webRoot
         });
-
         builder.Logging.ClearProviders();
-
-        var wwwrootCandidates = new[]
+        if (!explicitPort && System.Net.NetworkInformation.IPGlobalProperties.GetIPGlobalProperties()
+            .GetActiveTcpListeners().Any(endpoint => endpoint.Port == port))
         {
-            Path.Combine(AppContext.BaseDirectory, "wwwroot"),
-            Path.Combine(Directory.GetCurrentDirectory(), "wwwroot"),
-            Path.Combine(Directory.GetCurrentDirectory(), "src", "SkillSync.Daemon", "wwwroot")
-        };
-        var resolvedWwwroot = wwwrootCandidates.FirstOrDefault(Directory.Exists) ?? wwwrootCandidates[0];
-        Directory.CreateDirectory(resolvedWwwroot);
-        builder.Environment.WebRootPath = resolvedWwwroot;
-
+            port = 0;
+        }
         builder.WebHost.UseUrls($"http://127.0.0.1:{port}");
 
         var windowController = new SkillHubWindowController();
@@ -293,6 +304,7 @@ public static class Program
         builder.Services.AddSingleton(_ => new ProviderDiscoveryService(customHome));
         builder.Services.AddSingleton(_ => new InstallManager(customHome));
         builder.Services.AddSingleton<SyncEngine>();
+        builder.Services.AddSingleton<DesktopPreferencesStore>();
         builder.Services.AddSingleton<SkillImporterService>();
         builder.Services.AddSingleton<McpJsonRpcHandler>();
         builder.Services.AddSingleton(sp =>
@@ -303,93 +315,86 @@ public static class Program
         builder.Services.AddHostedService(sp => sp.GetRequiredService<MultiRootFileWatcher>());
         builder.Services.AddHostedService<NamedPipeMcpServer>();
 
-        builder.Services.AddSingleton(sp =>
-            new TunnelSupervisorService(
-                sp.GetRequiredService<ILogger<TunnelSupervisorService>>(),
-                localPort: port,
-                startOnBoot: enableTunnel));
-        builder.Services.AddHostedService(sp => sp.GetRequiredService<TunnelSupervisorService>());
-
+        var access = new LocalHttpAccess(Environment.GetEnvironmentVariable("SKILLHUB_HTTP_MCP_TOKEN"));
         var app = builder.Build();
 
-        app.Use(async (context, next) =>
-        {
-            var path = context.Request.Path.Value ?? string.Empty;
-            if (path == "/" ||
-                path.EndsWith(".html", StringComparison.OrdinalIgnoreCase) ||
-                path.EndsWith(".css", StringComparison.OrdinalIgnoreCase) ||
-                path.EndsWith(".js", StringComparison.OrdinalIgnoreCase))
-            {
-                context.Response.Headers.CacheControl = "no-store, no-cache, must-revalidate, max-age=0";
-                context.Response.Headers.Pragma = "no-cache";
-                context.Response.Headers.Expires = "0";
-            }
-
-            await next();
-        });
-
+        app.Use(access.InvokeAsync);
         app.UseDefaultFiles();
         app.UseStaticFiles(new StaticFileOptions
         {
             OnPrepareResponse = ctx =>
             {
-                ctx.Context.Response.Headers.CacheControl = "no-store, no-cache, must-revalidate, max-age=0";
-                ctx.Context.Response.Headers.Pragma = "no-cache";
-                ctx.Context.Response.Headers.Expires = "0";
+                ctx.Context.Response.Headers.CacheControl = ctx.Context.Request.Query["v"] == "20261112-v9" &&
+                    Path.GetExtension(ctx.File.Name) is ".js" or ".css" ? "private, max-age=31536000, immutable" : "no-store";
             }
         });
 
-        app.MapSkillRestApi(port);
+        app.MapSkillRestApi();
         app.MapMcpEndpoints();
 
-        // Start Kestrel + File Watcher + MCP Server asynchronously in the background
-        app.StartAsync().GetAwaiter().GetResult();
+        try
+        {
+            app.StartAsync().GetAwaiter().GetResult();
+            Application.SetHighDpiMode(HighDpiMode.PerMonitorV2);
+            Application.EnableVisualStyles();
+            Application.SetCompatibleTextRenderingDefault(false);
 
-        // Run native Windows Forms + WebView2 + System Tray loop on the main STA thread
-        Application.SetHighDpiMode(HighDpiMode.PerMonitorV2);
-        Application.EnableVisualStyles();
-        Application.SetCompatibleTextRenderingDefault(false);
-
-        var syncEngine = app.Services.GetRequiredService<SyncEngine>();
-        using var mainForm = new SkillHubMainForm(
-            appUrl: $"http://127.0.0.1:{port}",
-            startHiddenInTray: isBackground,
-            syncEngine: syncEngine,
-            windowController: windowController,
-            stopHostCallback: async () =>
+            var syncEngine = app.Services.GetRequiredService<SyncEngine>();
+            var userData = customHome is null
+                ? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "SkillHub", "WebView2Data")
+                : SkillPaths.Resolve(syncEngine.Discovery.SkillHubRoot, "WebView2Data");
+            using var mainForm = new SkillHubMainForm(app.Urls.Single(), access.DesktopToken, isBackground,
+                syncEngine, windowController, app.Services.GetRequiredService<DesktopPreferencesStore>(), userData);
+            using var onStop = app.Lifetime.ApplicationStopping.Register(mainForm.RequestHostShutdown);
+            Application.Run(mainForm);
+            return 0;
+        }
+        catch (Exception exception)
+        {
+            ReportStartupFailure(exception.Message, isBackground);
+            return 1;
+        }
+        finally
+        {
+            try
             {
-                await app.StopAsync().ConfigureAwait(false);
-                await app.DisposeAsync().ConfigureAwait(false);
-            });
-
-        Application.Run(mainForm);
-        return 0;
-    }
-
-    private static void TrySignalRunningInstanceToShowWindow(int port)
-    {
-        try
-        {
-            using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(2) };
-            using var content = new StringContent("{}", System.Text.Encoding.UTF8, "application/json");
-            _ = http.PostAsync($"http://127.0.0.1:{port}/api/v1/window/show", content).GetAwaiter().GetResult();
-        }
-        catch
-        {
+                using var shutdown = new CancellationTokenSource(TimeSpan.FromSeconds(8));
+                app.StopAsync(shutdown.Token).GetAwaiter().GetResult();
+            }
+            finally
+            {
+                app.DisposeAsync().AsTask().GetAwaiter().GetResult();
+            }
         }
     }
 
-    private static async Task<bool> IsDaemonPipeAliveAsync()
+    private static void ReportStartupFailure(string details, bool background)
     {
-        await using var client = new NamedPipeClientStream(".", NamedPipeMcpServer.PipeName, PipeDirection.InOut, PipeOptions.Asynchronous);
+        Console.Error.WriteLine("SkillHub could not start: " + details);
+        if (!background)
+        {
+            MessageBox.Show(details, "SkillHub could not start", MessageBoxButtons.OK, MessageBoxIcon.Error);
+        }
+    }
+
+    private static void TrySignalRunningInstanceToShowWindow(LocalDaemonIdentity identity)
+    {
         try
         {
-            await client.ConnectAsync(timeout: 250).ConfigureAwait(false);
-            return client.IsConnected;
+            using var pipe = identity.ConnectStream();
+            pipe.Connect(750);
+            using var writer = new StreamWriter(pipe, new UTF8Encoding(false)) { NewLine = "\n", AutoFlush = true };
+            writer.WriteLine(NamedPipeMcpServer.ShowWindowCommand);
         }
-        catch
+        catch (Exception exception) when (exception is IOException or TimeoutException or UnauthorizedAccessException)
         {
-            return false;
+            // The daemon can be shutting down while a second window is requested.
         }
+    }
+
+    private static async Task<bool> IsDaemonPipeAliveAsync(LocalDaemonIdentity identity)
+    {
+        await using var client = await StdioProxyRunner.ProbeAsync(identity, 500, CancellationToken.None).ConfigureAwait(false);
+        return client is not null;
     }
 }

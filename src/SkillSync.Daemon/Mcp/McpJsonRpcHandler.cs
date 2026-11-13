@@ -31,14 +31,17 @@ public sealed class McpJsonRpcHandler
     {
         _syncEngine = syncEngine;
         _importer = importer ?? new SkillImporterService(syncEngine);
-        _discovery = discovery ?? new ProviderDiscoveryService();
+        _discovery = discovery ?? syncEngine.Discovery;
     }
 
     /// <summary>
     /// Processes a single JSON-RPC 2.0 request or notification line.
     /// Returns null for JSON-RPC notifications (messages without an "id" property).
     /// </summary>
-    public async Task<string?> ProcessMessageAsync(string rawJsonMessage, CancellationToken ct = default)
+    public Task<string?> ProcessMessageAsync(string rawJsonMessage, CancellationToken ct = default) =>
+        ProcessMessageAsync(rawJsonMessage, null, ct);
+
+    internal async Task<string?> ProcessMessageAsync(string rawJsonMessage, McpSession? session, CancellationToken ct)
     {
         if (string.IsNullOrWhiteSpace(rawJsonMessage))
         {
@@ -49,10 +52,15 @@ public sealed class McpJsonRpcHandler
         try
         {
             rootNode = JsonNode.Parse(rawJsonMessage);
+            if (rootNode is JsonObject obj) _ = obj.Count;
         }
-        catch (Exception ex)
+        catch (JsonException)
         {
-            return SerializeError(null, -32700, $"Parse error: {ex.Message}");
+            return SerializeError(null, -32700, "Invalid JSON.");
+        }
+        catch (ArgumentException)
+        {
+            return SerializeError(null, -32600, "JSON-RPC request keys must be unique.");
         }
 
         if (rootNode is not JsonObject requestObj)
@@ -61,48 +69,97 @@ public sealed class McpJsonRpcHandler
         }
 
         var hasId = requestObj.TryGetPropertyValue("id", out var idNode);
-        var method = requestObj["method"]?.GetValue<string>();
-
-        if (string.IsNullOrWhiteSpace(method))
+        if (requestObj["jsonrpc"] is not JsonValue version || !version.TryGetValue<string>(out var protocol) || protocol != "2.0" ||
+            requestObj["method"] is not JsonValue methodValue || !methodValue.TryGetValue<string>(out var method) ||
+            string.IsNullOrWhiteSpace(method) || hasId && (idNode is null ||
+            idNode.GetValueKind() is not (JsonValueKind.String or JsonValueKind.Number)))
         {
-            return hasId ? SerializeError(idNode, -32600, "Invalid Request: missing 'method'.") : null;
-        }
-
-        // Notifications (no "id") do not receive a response in JSON-RPC 2.0
-        if (!hasId || idNode is null)
-        {
-            return null;
+            return SerializeError(null, -32600, "Invalid JSON-RPC 2.0 request.");
         }
 
         var paramsObj = requestObj["params"] as JsonObject;
+        if (requestObj.TryGetPropertyValue("params", out _) && paramsObj is null)
+        {
+            return hasId ? SerializeError(idNode, -32602, "MCP parameters must be a JSON object.") : null;
+        }
+        if (!hasId)
+        {
+            if (method == "notifications/initialized") session?.MarkInitialized();
+            if (method == "notifications/cancelled") session?.Cancel(paramsObj?["requestId"]);
+            return null;
+        }
+        if (method.StartsWith("notifications/", StringComparison.Ordinal))
+        {
+            return SerializeError(idNode, -32600, "Notifications cannot have an ID.");
+        }
+        if (session is not null && !session.IsReady && method is not ("initialize" or "ping"))
+        {
+            return SerializeError(idNode, -32002, "Complete MCP initialization before calling this method.");
+        }
+        var responseId = idNode!;
 
+        using var request = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        if (session is not null && !session.Track(responseId, request))
+        {
+            return SerializeError(responseId, -32600, "This request ID is already in use.");
+        }
         try
         {
             return method switch
             {
-                "initialize" => HandleInitialize(idNode, paramsObj),
-                "ping" => SerializeResult(idNode, new JsonObject()),
-                "tools/list" => HandleToolsList(idNode),
-                "tools/call" => await HandleToolsCallAsync(idNode, paramsObj, ct).ConfigureAwait(false),
-                "resources/list" => SerializeResult(idNode, new JsonObject { ["resources"] = new JsonArray() }),
-                "resources/templates/list" => SerializeResult(idNode, new JsonObject { ["resourceTemplates"] = new JsonArray() }),
-                "prompts/list" => SerializeResult(idNode, new JsonObject { ["prompts"] = new JsonArray() }),
-                _ => SerializeError(idNode, -32601, $"Method not found: '{method}'")
+                "initialize" => HandleInitialize(responseId, paramsObj, session),
+                "ping" => SerializeResult(responseId, new JsonObject()),
+                "tools/list" => HandleToolsList(responseId),
+                "tools/call" => await HandleToolsCallAsync(responseId, paramsObj, session?.Version, request.Token).ConfigureAwait(false),
+                "resources/list" => SerializeResult(responseId, new JsonObject { ["resources"] = new JsonArray() }),
+                "resources/templates/list" => SerializeResult(responseId, new JsonObject { ["resourceTemplates"] = new JsonArray() }),
+                "prompts/list" => SerializeResult(responseId, new JsonObject { ["prompts"] = new JsonArray() }),
+                _ => SerializeError(responseId, -32601, $"Method not found: '{method}'")
             };
         }
-        catch (Exception ex)
+        catch (OperationCanceledException) when (request.IsCancellationRequested)
         {
-            return SerializeError(idNode, -32603, $"Internal error: {ex.Message}");
+            return null;
+        }
+        catch (Exception)
+        {
+            return SerializeError(responseId, -32603, "The request could not be processed.");
+        }
+        finally
+        {
+            session?.Complete(responseId);
         }
     }
 
-    private static string HandleInitialize(JsonNode idNode, JsonObject? paramsObj)
+    internal static bool IsCancellationNotification(string message)
     {
-        var clientProtocolVersion = paramsObj?["protocolVersion"]?.GetValue<string>();
-        var negotiatedVersion = string.IsNullOrWhiteSpace(clientProtocolVersion)
-            ? "2024-11-05"
-            : clientProtocolVersion;
+        try
+        {
+            using var document = JsonDocument.Parse(message);
+            var root = document.RootElement;
+            return root.ValueKind == JsonValueKind.Object && !root.TryGetProperty("id", out _) &&
+                root.TryGetProperty("method", out var method) && method.ValueKind == JsonValueKind.String &&
+                method.GetString() == "notifications/cancelled";
+        }
+        catch (JsonException) { return false; }
+    }
 
+    public static bool IsSupportedVersion(string version) => version is "2024-11-05" or "2025-06-18";
+
+    private static string HandleInitialize(JsonNode idNode, JsonObject? paramsObj, McpSession? session)
+    {
+        if (paramsObj?["protocolVersion"] is not JsonValue proposed || !proposed.TryGetValue<string>(out var clientProtocolVersion)
+            || string.IsNullOrWhiteSpace(clientProtocolVersion))
+        {
+            return SerializeError(idNode, -32602, "A protocolVersion string is required.");
+        }
+        var negotiatedVersion = session?.TransportVersion ?? (IsSupportedVersion(clientProtocolVersion)
+            ? clientProtocolVersion : "2025-06-18");
+
+        if (session is not null && !session.TryInitialize(negotiatedVersion))
+        {
+            return SerializeError(idNode, -32600, "This MCP session is already initialized.");
+        }
         var result = new JsonObject
         {
             ["protocolVersion"] = negotiatedVersion,
@@ -116,9 +173,9 @@ public sealed class McpJsonRpcHandler
             ["serverInfo"] = new JsonObject
             {
                 ["name"] = "skillhub",
-                ["version"] = "1.0.0"
+                ["version"] = ProductVersion.Current
             },
-            ["instructions"] = "Use SkillHub MCP tools (list_skills, get_skill, create_skill, update_skill, delete_skill, manage_skill_tags, toggle_skill_provider, search_community_skills, import_community_skill, get_sync_status) as the Single Source of Truth whenever managing AI skills across Claude, Gemini/Antigravity, OpenAI Codex, and Cursor."
+            ["instructions"] = "Use SkillHub MCP tools (list_skills, get_skill, create_skill, update_skill, delete_skill, manage_skill_tags, toggle_skill_provider, search_community_skills, prepare_skill_import, apply_skill_import, get_sync_status) as the Single Source of Truth whenever managing AI skills across Claude, Gemini/Antigravity, OpenAI Codex, and Cursor."
         };
 
         return SerializeResult(idNode, result);
@@ -134,14 +191,21 @@ public sealed class McpJsonRpcHandler
         return SerializeResult(idNode, result);
     }
 
-    private async Task<string> HandleToolsCallAsync(JsonNode idNode, JsonObject? paramsObj, CancellationToken ct)
+    private async Task<string> HandleToolsCallAsync(JsonNode idNode, JsonObject? paramsObj, string? version, CancellationToken ct)
     {
-        var toolName = paramsObj?["name"]?.GetValue<string>();
-        var arguments = paramsObj?["arguments"] as JsonObject ?? new JsonObject();
-
-        if (string.IsNullOrWhiteSpace(toolName))
+        if (paramsObj?["name"] is not JsonValue tool || !tool.TryGetValue<string>(out var toolName) ||
+            string.IsNullOrWhiteSpace(toolName))
         {
-            return SerializeError(idNode, -32602, "Missing tool 'name' in tools/call.");
+            return SerializeError(idNode, -32602, "A tool name string is required.");
+        }
+        if (paramsObj.TryGetPropertyValue("arguments", out var supplied) && supplied is not JsonObject)
+        {
+            return SerializeError(idNode, -32602, "Tool arguments must be an object.");
+        }
+        var arguments = supplied as JsonObject ?? new JsonObject();
+        if (McpToolDefinitions.ValidateArguments(toolName, arguments) is { } validationError)
+        {
+            return SerializeError(idNode, -32602, validationError);
         }
 
         try
@@ -156,14 +220,19 @@ public sealed class McpJsonRpcHandler
                 "manage_skill_tags" => await ExecuteManageSkillTagsAsync(arguments, ct).ConfigureAwait(false),
                 "toggle_skill_provider" => await ExecuteToggleSkillProviderAsync(arguments, ct).ConfigureAwait(false),
                 "search_community_skills" => await ExecuteSearchCommunitySkillsAsync(arguments, ct).ConfigureAwait(false),
+                "prepare_skill_import" => await ExecutePrepareImportAsync(arguments, ct).ConfigureAwait(false),
+                "apply_skill_import" => await ExecuteApplyImportAsync(arguments, ct).ConfigureAwait(false),
                 "import_community_skill" => await ExecuteImportCommunitySkillAsync(arguments, ct).ConfigureAwait(false),
+                "activate_catalog_skill" => await ExecuteCatalogCommandAsync(arguments, true, ct).ConfigureAwait(false),
+                "clone_catalog_skill" => await ExecuteCatalogCommandAsync(arguments, false, ct).ConfigureAwait(false),
+                "restore_skill" => await ExecuteRestoreAsync(arguments, ct).ConfigureAwait(false),
                 "get_sync_status" => ExecuteGetSyncStatus(),
                 _ => throw new ArgumentException($"Unknown tool '{toolName}'.")
             };
 
-            return SerializeToolCallSuccess(idNode, payload);
+            return SerializeToolCallSuccess(idNode, payload, version != "2024-11-05");
         }
-        catch (Exception ex)
+        catch (Exception ex) when (ex is ArgumentException or InvalidOperationException or IOException or InvalidDataException or KeyNotFoundException or FormatException)
         {
             return SerializeToolCallError(idNode, ex.Message);
         }
@@ -196,7 +265,7 @@ public sealed class McpJsonRpcHandler
                     codex = s.Targets.Codex.Enabled,
                     cursor = s.Targets.Cursor.Enabled
                 },
-                supporting_file_count = s.SupportingFiles.Count
+                destinations = s.Destinations
             })
             .ToList();
 
@@ -231,7 +300,10 @@ public sealed class McpJsonRpcHandler
             targets = skill.Targets,
             instructions_markdown = skill.InstructionsMarkdown,
             supporting_file_paths = skill.SupportingFiles.Keys.OrderBy(k => k, StringComparer.Ordinal).ToList(),
-            supporting_files = includeFiles ? skill.SupportingFiles : null
+            supporting_files = includeFiles ? skill.SupportingFiles : null,
+            revision = skill.Revision,
+            catalog_id = skill.CatalogId,
+            destinations = skill.Destinations
         };
 
         return JsonSerializer.Serialize(response, IndentedJson);
@@ -241,7 +313,7 @@ public sealed class McpJsonRpcHandler
     {
         var rawName = args["name"]?.GetValue<string>()
             ?? throw new ArgumentException("Parameter 'name' is required.");
-        var slug = ProviderDiscoveryService.NormalizeSlug(rawName);
+        var slug = rawName;
         if (string.IsNullOrEmpty(slug))
         {
             throw new ArgumentException($"Invalid skill slug '{rawName}'.");
@@ -263,7 +335,7 @@ public sealed class McpJsonRpcHandler
             WhenToUse = args["when_to_use"]?.GetValue<string>()?.Trim() ?? string.Empty,
             SummaryShort = args["summary_short"]?.GetValue<string>()?.Trim() ?? string.Empty,
             InstructionsMarkdown = instructions.Trim(),
-            Tags = ReadStringList(args["tags"])
+            Tags = ReadStringList(args["tags"]).Select(SyncEngine.NormalizeTag).Distinct(StringComparer.OrdinalIgnoreCase).ToList()
         };
 
         var allowedTools = ReadStringList(args["allowed_tools"]);
@@ -287,17 +359,20 @@ public sealed class McpJsonRpcHandler
         {
             foreach (var item in filesArr.OfType<JsonObject>())
             {
-                var relPath = item["relative_path"]?.GetValue<string>()?.Replace('\\', '/').TrimStart('/');
+                var relPath = item["relative_path"]?.GetValue<string>();
                 var content = item["content"]?.GetValue<string>();
                 if (!string.IsNullOrWhiteSpace(relPath) && content is not null)
                 {
-                    ValidateSupportingFilePath(relPath);
-                    model.SupportingFiles[relPath] = content;
+                    var path = SkillPaths.SupportingPath(relPath);
+                    if (!model.SupportingFiles.TryAdd(path, content))
+                    {
+                        throw new ArgumentException($"Duplicate supporting file '{path}'.");
+                    }
                 }
             }
         }
 
-        var created = await _syncEngine.UpsertSkillDirectAsync(model, "mcp:create_skill", ct).ConfigureAwait(false);
+        var created = await _syncEngine.CreateSkillAsync(model, "mcp:create_skill", ct).ConfigureAwait(false);
         return JsonSerializer.Serialize(new
         {
             status = "created",
@@ -310,83 +385,78 @@ public sealed class McpJsonRpcHandler
     {
         var rawName = args["name"]?.GetValue<string>()
             ?? throw new ArgumentException("Parameter 'name' is required.");
-        var slug = ProviderDiscoveryService.NormalizeSlug(rawName);
+        var slug = rawName;
 
-        var existing = _syncEngine.GetSkill(slug)
-            ?? throw new KeyNotFoundException($"Skill '{slug}' does not exist. Use 'create_skill' to create it first.");
-
-        var updated = existing.Clone();
-
-        if (args.TryGetPropertyValue("title", out var titleNode) && titleNode is not null)
+        var saved = await _syncEngine.EditSkillAsync(slug, updated =>
         {
-            updated.Title = titleNode.GetValue<string>().Trim();
-        }
-
-        if (args.TryGetPropertyValue("description", out var descNode) && descNode is not null)
-        {
-            updated.Description = descNode.GetValue<string>().Trim();
-        }
-
-        if (args.TryGetPropertyValue("when_to_use", out var whenNode) && whenNode is not null)
-        {
-            updated.WhenToUse = whenNode.GetValue<string>().Trim();
-        }
-
-        if (args.TryGetPropertyValue("summary_short", out var shortNode) && shortNode is not null)
-        {
-            updated.SummaryShort = shortNode.GetValue<string>().Trim();
-        }
-
-        if (args.TryGetPropertyValue("instructions_markdown", out var bodyNode) && bodyNode is not null)
-        {
-            updated.InstructionsMarkdown = bodyNode.GetValue<string>().Trim();
-        }
-
-        if (args.TryGetPropertyValue("tags", out var tagsNode) && tagsNode is not null)
-        {
-            updated.Tags = ReadStringList(tagsNode);
-        }
-
-        if (args.TryGetPropertyValue("allowed_tools", out var toolsNode) && toolsNode is not null)
-        {
-            updated.Targets.Claude.AllowedTools = ReadStringList(toolsNode);
-        }
-
-        if (args.TryGetPropertyValue("cursor_globs", out var globsNode) && globsNode is not null)
-        {
-            var globs = ReadStringList(globsNode);
-            updated.Targets.Cursor.Globs = globs.Count > 0 ? globs : ["**/*"];
-        }
-
-        if (args.TryGetPropertyValue("cursor_always_apply", out var alwaysNode) && alwaysNode is not null)
-        {
-            updated.Targets.Cursor.AlwaysApply = alwaysNode.GetValue<bool>();
-        }
-
-        if (args["upsert_supporting_files"] is JsonArray upsertArr)
-        {
-            foreach (var item in upsertArr.OfType<JsonObject>())
+            if (args.TryGetPropertyValue("title", out var titleNode) && titleNode is not null)
             {
-                var relPath = item["relative_path"]?.GetValue<string>()?.Replace('\\', '/').TrimStart('/');
-                var content = item["content"]?.GetValue<string>();
-                if (!string.IsNullOrWhiteSpace(relPath) && content is not null)
+                updated.Title = titleNode.GetValue<string>().Trim();
+            }
+
+            if (args.TryGetPropertyValue("description", out var descNode) && descNode is not null)
+            {
+                updated.Description = descNode.GetValue<string>().Trim();
+            }
+
+            if (args.TryGetPropertyValue("when_to_use", out var whenNode) && whenNode is not null)
+            {
+                updated.WhenToUse = whenNode.GetValue<string>().Trim();
+            }
+
+            if (args.TryGetPropertyValue("summary_short", out var shortNode) && shortNode is not null)
+            {
+                updated.SummaryShort = shortNode.GetValue<string>().Trim();
+            }
+
+            if (args.TryGetPropertyValue("instructions_markdown", out var bodyNode) && bodyNode is not null)
+            {
+                updated.InstructionsMarkdown = bodyNode.GetValue<string>().Trim();
+            }
+
+            if (args.TryGetPropertyValue("tags", out var tagsNode) && tagsNode is not null)
+            {
+                updated.Tags = ReadStringList(tagsNode).Select(SyncEngine.NormalizeTag).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+            }
+
+            if (args.TryGetPropertyValue("allowed_tools", out var toolsNode) && toolsNode is not null)
+            {
+                updated.Targets.Claude.AllowedTools = ReadStringList(toolsNode);
+            }
+
+            if (args.TryGetPropertyValue("cursor_globs", out var globsNode) && globsNode is not null)
+            {
+                var globs = ReadStringList(globsNode);
+                updated.Targets.Cursor.Globs = globs;
+            }
+
+            if (args.TryGetPropertyValue("cursor_always_apply", out var alwaysNode) && alwaysNode is not null)
+            {
+                updated.Targets.Cursor.AlwaysApply = alwaysNode.GetValue<bool>();
+            }
+
+            if (args["upsert_supporting_files"] is JsonArray upsertArr)
+            {
+                foreach (var item in upsertArr.OfType<JsonObject>())
                 {
-                    ValidateSupportingFilePath(relPath);
-                    updated.SupportingFiles[relPath] = content;
+                    var relPath = item["relative_path"]?.GetValue<string>();
+                    var content = item["content"]?.GetValue<string>();
+                    if (!string.IsNullOrWhiteSpace(relPath) && content is not null)
+                    {
+                        updated.SupportingFiles[SkillPaths.SupportingPath(relPath)] = content;
+                    }
                 }
             }
-        }
 
-        if (args["delete_supporting_files"] is JsonArray deleteArr)
-        {
-            foreach (var path in ReadStringList(deleteArr))
+            if (args["delete_supporting_files"] is JsonArray deleteArr)
             {
-                var cleanRel = path.Replace('\\', '/').TrimStart('/');
-                updated.SupportingFiles.Remove(cleanRel);
+                foreach (var path in ReadStringList(deleteArr))
+                {
+                    var cleanRel = SkillPaths.SupportingPath(path);
+                    updated.SupportingFiles.Remove(cleanRel);
+                }
             }
-        }
-
-        var saved = await _syncEngine.UpsertSkillDirectAsync(updated, "mcp:update_skill", ct).ConfigureAwait(false);
+        }, "mcp:update_skill", ct, args["revision"]?.GetValue<long>()).ConfigureAwait(false);
         return JsonSerializer.Serialize(new
         {
             status = "updated",
@@ -399,9 +469,9 @@ public sealed class McpJsonRpcHandler
     {
         var rawName = args["name"]?.GetValue<string>()
             ?? throw new ArgumentException("Parameter 'name' is required.");
-        var slug = ProviderDiscoveryService.NormalizeSlug(rawName);
+        var slug = rawName;
 
-        var deleted = await _syncEngine.DeleteSkillDirectAsync(slug, "mcp:delete_skill", allowBootstrapDelete: false, ct).ConfigureAwait(false);
+        var deleted = await _syncEngine.DeleteSkillDirectAsync(slug, "mcp:delete_skill", ct).ConfigureAwait(false);
         if (!deleted)
         {
             throw new KeyNotFoundException($"Skill '{slug}' was not found.");
@@ -422,25 +492,24 @@ public sealed class McpJsonRpcHandler
         {
             case "list":
             {
-                var allSkills = _syncEngine.ListSkills();
-                var counts = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
-                foreach (var s in allSkills.Where(s => !string.Equals(s.SourceCategory, "system", StringComparison.OrdinalIgnoreCase)))
+                return JsonSerializer.Serialize(new { action, tags = _syncEngine.ListTags() }, StructuredJson);
+            }
+
+            case "create":
+            {
+                var tag = await _syncEngine.CreateTagAsync(args["tag"]?.GetValue<string>()
+                    ?? throw new ArgumentException("tag is required."), ct).ConfigureAwait(false);
+                return JsonSerializer.Serialize(new { action, tag }, StructuredJson);
+            }
+
+            case "undo":
+            {
+                if (!Guid.TryParse(args["undo_id"]?.GetValue<string>(), out var id))
                 {
-                    foreach (var t in s.Tags)
-                    {
-                        var lower = t.ToLowerInvariant();
-                        if (lower is "system" or "skillhub" or "meta-skill") continue;
-                        counts[lower] = counts.GetValueOrDefault(lower) + 1;
-                    }
+                    throw new ArgumentException("undo_id is required.");
                 }
-
-                var tagsList = counts
-                    .OrderByDescending(kv => kv.Value)
-                    .ThenBy(kv => kv.Key, StringComparer.OrdinalIgnoreCase)
-                    .Select(kv => new { tag = kv.Key, skill_count = kv.Value })
-                    .ToList();
-
-                return JsonSerializer.Serialize(new { action = "list", tags = tagsList }, IndentedJson);
+                var updated = await _syncEngine.UndoTagChangeAsync(id, ct).ConfigureAwait(false);
+                return JsonSerializer.Serialize(new { action, updated_skills = updated }, StructuredJson);
             }
 
             case "add":
@@ -449,31 +518,21 @@ public sealed class McpJsonRpcHandler
                 var skillName = args["skill_name"]?.GetValue<string>()
                     ?? args["name"]?.GetValue<string>()
                     ?? throw new ArgumentException($"Parameter 'skill_name' is required for action '{action}'.");
-                var rawTags = ReadStringList(args["tags"]);
+                var rawTags = ReadStringList(args["tags"]).Select(SyncEngine.NormalizeTag).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
                 if (args["tag"]?.GetValue<string>() is { } singleTagVal && !string.IsNullOrWhiteSpace(singleTagVal))
                 {
                     rawTags.Add(singleTagVal);
                 }
                 var tags = rawTags
-                    .Select(ProviderDiscoveryService.NormalizeSlug)
-                    .Where(t => !string.IsNullOrWhiteSpace(t))
+                    .Select(SyncEngine.NormalizeTag)
                     .ToList();
 
-                var existing = _syncEngine.GetSkill(skillName)
-                    ?? throw new KeyNotFoundException($"Skill '{skillName}' was not found.");
-
-                var updated = existing.Clone();
-                if (action == "add")
+                var saved = await _syncEngine.EditSkillAsync(skillName, updated =>
                 {
-                    updated.Tags = updated.Tags.Concat(tags).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
-                }
-                else
-                {
-                    var removeSet = new HashSet<string>(tags, StringComparer.OrdinalIgnoreCase);
-                    updated.Tags = updated.Tags.Where(t => !removeSet.Contains(t)).ToList();
-                }
-
-                var saved = await _syncEngine.UpsertSkillDirectAsync(updated, $"mcp:tags_{action}", ct).ConfigureAwait(false);
+                    updated.Tags = action == "add"
+                        ? updated.Tags.Concat(tags).Distinct(StringComparer.OrdinalIgnoreCase).ToList()
+                        : updated.Tags.Except(tags, StringComparer.OrdinalIgnoreCase).ToList();
+                }, $"mcp:tags_{action}", ct).ConfigureAwait(false);
                 return JsonSerializer.Serialize(new
                 {
                     status = "ok",
@@ -490,13 +549,14 @@ public sealed class McpJsonRpcHandler
                 var newTag = args["new_tag"]?.GetValue<string>()
                     ?? throw new ArgumentException("Parameter 'new_tag' is required for action 'rename'.");
 
-                var updatedCount = await _syncEngine.RenameTagAcrossSkillsAsync(oldTag, newTag, ct).ConfigureAwait(false);
+                var change = await _syncEngine.ChangeTagAsync(oldTag, newTag, ct).ConfigureAwait(false);
                 return JsonSerializer.Serialize(new
                 {
                     status = "renamed",
                     old_tag = oldTag,
-                    new_tag = ProviderDiscoveryService.NormalizeSlug(newTag),
-                    updated_skills = updatedCount
+                    new_tag = SyncEngine.NormalizeTag(newTag),
+                    updated_skills = change.UpdatedSkills,
+                    undo_id = change.UndoId
                 }, IndentedJson);
             }
 
@@ -508,17 +568,23 @@ public sealed class McpJsonRpcHandler
                     tags.Add(singleTag);
                 }
 
+                if (tags.Count == 0) throw new ArgumentException("Supply at least one tag.");
+                tags = tags.Select(SyncEngine.NormalizeTag).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
                 var totalUpdated = 0;
-                foreach (var t in tags)
+                Guid? undoId = null;
+                foreach (var tag in tags)
                 {
-                    totalUpdated += await _syncEngine.DeleteTagAcrossSkillsAsync(t, ct).ConfigureAwait(false);
+                    var change = await _syncEngine.ChangeTagAsync(tag, null, ct).ConfigureAwait(false);
+                    totalUpdated += change.UpdatedSkills;
+                    undoId = change.UndoId ?? undoId;
                 }
 
                 return JsonSerializer.Serialize(new
                 {
                     status = "deleted",
                     deleted_tags = tags,
-                    updated_skills = totalUpdated
+                    updated_skills = totalUpdated,
+                    undo_id = tags.Count == 1 ? undoId : null
                 }, IndentedJson);
             }
 
@@ -537,18 +603,12 @@ public sealed class McpJsonRpcHandler
             ?? throw new ArgumentException("Parameter 'enabled' is required.");
 
         if (!Enum.TryParse<ProviderType>(providerStr, ignoreCase: true, out var provider) ||
-            provider == ProviderType.Canonical)
+            !Enum.IsDefined(provider) || provider == ProviderType.Canonical)
         {
             throw new ArgumentException($"Invalid provider '{providerStr}'. Expected claude, gemini, codex, or cursor.");
         }
 
-        var existing = _syncEngine.GetSkill(name)
-            ?? throw new KeyNotFoundException($"Skill '{name}' was not found.");
-
-        var updated = existing.Clone();
-        updated.SetEnabledFor(provider, enabled);
-
-        var saved = await _syncEngine.UpsertSkillDirectAsync(updated, "mcp:toggle_skill_provider", ct).ConfigureAwait(false);
+        var saved = await _syncEngine.SetProviderAsync(name, provider, enabled, "mcp:toggle_skill_provider", ct).ConfigureAwait(false);
         return JsonSerializer.Serialize(new
         {
             status = "updated",
@@ -589,6 +649,30 @@ public sealed class McpJsonRpcHandler
         }, IndentedJson);
     }
 
+    private static readonly JsonSerializerOptions StructuredJson = new(CompactJson)
+    {
+        PropertyNamingPolicy = JsonNamingPolicy.SnakeCaseLower
+    };
+
+    private async Task<string> ExecutePrepareImportAsync(JsonObject args, CancellationToken ct)
+    {
+        var selection = args.Deserialize<SkillImportSelection>(StructuredJson)!;
+        var plan = await _importer.PrepareImportAsync(selection, ct).ConfigureAwait(false);
+        return JsonSerializer.Serialize(plan, StructuredJson);
+    }
+
+    private async Task<string> ExecuteApplyImportAsync(JsonObject args, CancellationToken ct)
+    {
+        if (!Guid.TryParse(args["plan_id"]?.GetValue<string>(), out var id))
+        {
+            throw new ArgumentException("Invalid plan_id.");
+        }
+        var request = new SkillImportApplyRequest(args["revision"]!.GetValue<string>(), args["name"]?.GetValue<string>(),
+            ReadStringList(args["providers"]));
+        var model = await _importer.ApplyImportAsync(id, request, ct).ConfigureAwait(false);
+        return JsonSerializer.Serialize(new { model.Name, model.Revision, model.Destinations }, StructuredJson);
+    }
+
     private async Task<string> ExecuteImportCommunitySkillAsync(JsonObject args, CancellationToken ct)
     {
         var source = args["source"]?.GetValue<string>()
@@ -619,7 +703,7 @@ public sealed class McpJsonRpcHandler
 
         var allSkills = _syncEngine.ListSkills();
         var userCount = allSkills.Count(s => string.Equals(s.SourceCategory, "user", StringComparison.OrdinalIgnoreCase));
-        var syncedCount = allSkills.Count(s => !s.IsCatalogOnly && !string.Equals(s.SourceCategory, "system", StringComparison.OrdinalIgnoreCase));
+        var syncedCount = _syncEngine.ListSkills(category: "synced").Count;
         var templateCount = allSkills.Count(s => string.Equals(s.SourceCategory, "template", StringComparison.OrdinalIgnoreCase));
 
         return JsonSerializer.Serialize(new
@@ -633,22 +717,22 @@ public sealed class McpJsonRpcHandler
                 total_discovered = allSkills.Count
             },
             providers,
-            recent_activity = _syncEngine.GetRecentActivity().Take(10)
+            recent_activity = _syncEngine.GetRecentActivity().Reverse().Take(10)
         }, IndentedJson);
     }
 
-    private static void ValidateSupportingFilePath(string relativePath)
+    private async Task<string> ExecuteCatalogCommandAsync(JsonObject args, bool activate, CancellationToken ct)
     {
-        if (relativePath.Contains("..", StringComparison.Ordinal))
-        {
-            throw new ArgumentException($"Invalid supporting file path '{relativePath}': path traversal is forbidden.");
-        }
+        var id = args["catalog_id"]?.GetValue<string>() ?? throw new ArgumentException("catalog_id is required.");
+        var skill = await _syncEngine.MaterializeCatalogSkillAsync(id, null, activate, "mcp:catalog", ct).ConfigureAwait(false);
+        return JsonSerializer.Serialize(new { skill.Name, skill.Revision, skill.Destinations }, CompactJson);
+    }
 
-        var parts = relativePath.Split('/', StringSplitOptions.RemoveEmptyEntries);
-        if (parts.Length < 2 || !ProviderDiscoveryService.IsAllowedSupportingFolder(parts[0]))
-        {
-            throw new ArgumentException($"Supporting file '{relativePath}' must reside under scripts/, resources/, references/, or examples/.");
-        }
+    private async Task<string> ExecuteRestoreAsync(JsonObject args, CancellationToken ct)
+    {
+        var name = args["name"]?.GetValue<string>() ?? throw new ArgumentException("name is required.");
+        var skill = await _syncEngine.RestoreSkillAsync(name, ct).ConfigureAwait(false);
+        return JsonSerializer.Serialize(new { skill.Name, skill.Revision, skill.Destinations }, CompactJson);
     }
 
     private static List<string> ReadStringList(JsonNode? node)
@@ -664,8 +748,9 @@ public sealed class McpJsonRpcHandler
             .ToList();
     }
 
-    private static string SerializeToolCallSuccess(JsonNode idNode, string textPayload)
+    private static string SerializeToolCallSuccess(JsonNode idNode, string textPayload, bool includeStructured)
     {
+        var structured = JsonNode.Parse(textPayload);
         var result = new JsonObject
         {
             ["content"] = new JsonArray
@@ -673,12 +758,13 @@ public sealed class McpJsonRpcHandler
                 new JsonObject
                 {
                     ["type"] = "text",
-                    ["text"] = textPayload
+                    ["text"] = structured?.ToJsonString(CompactJson) ?? textPayload
                 }
             },
             ["isError"] = false
         };
 
+        if (includeStructured && structured is JsonObject) result["structuredContent"] = structured;
         return SerializeResult(idNode, result);
     }
 

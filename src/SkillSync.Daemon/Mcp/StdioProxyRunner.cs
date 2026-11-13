@@ -1,216 +1,208 @@
 using System.Diagnostics;
 using System.IO.Pipes;
+using System.Runtime.InteropServices;
 using System.Text;
-using SkillSync.Daemon.Core.Engine;
-using SkillSync.Daemon.Watchers;
+using System.Text.Json;
 
 namespace SkillSync.Daemon.Mcp;
 
 public static class StdioProxyRunner
 {
-    private static readonly UTF8Encoding Utf8NoBom = new(encoderShouldEmitUTF8Identifier: false);
+    private static readonly UTF8Encoding Utf8 = new(false);
 
-    public static async Task<int> RunAsync(string[] originalArgs, CancellationToken ct = default)
+    public static async Task<int> RunAsync(string[] args, CancellationToken ct = default)
     {
-        Console.InputEncoding = Utf8NoBom;
-        Console.OutputEncoding = Utf8NoBom;
-
-        await using var pipeClient = await TryConnectOrSpawnDaemonAsync(ct).ConfigureAwait(false);
-
-        if (pipeClient is not null && pipeClient.IsConnected)
-        {
-            await BridgeStdioOverPipeAsync(pipeClient, ct).ConfigureAwait(false);
-            return 0;
-        }
-
-        // Fallback: if Named Pipe connection could not be established, run in-process MCP handler directly against Canonical store
-        await Console.Error.WriteLineAsync("[skillsync] Daemon pipe unavailable; running direct stdio MCP mode.").ConfigureAwait(false);
-        var discovery = new ProviderDiscoveryService();
-        await using var engine = new SyncEngine(discovery);
-        await BootstrapManager.EnsureBootstrapSkillSeededAsync(engine, ct).ConfigureAwait(false);
-        await engine.SynchronizeAllAsync(ct).ConfigureAwait(false);
-
-        var rpcHandler = new McpJsonRpcHandler(engine);
-        using var stdinReader = new StreamReader(Console.OpenStandardInput(), Utf8NoBom);
-        await using var stdoutWriter = new StreamWriter(Console.OpenStandardOutput(), Utf8NoBom)
-        {
-            AutoFlush = true,
-            NewLine = "\n"
-        };
-
-        while (!ct.IsCancellationRequested)
-        {
-            var line = await stdinReader.ReadLineAsync(ct).ConfigureAwait(false);
-            if (line is null)
-            {
-                break;
-            }
-
-            if (string.IsNullOrWhiteSpace(line))
-            {
-                continue;
-            }
-
-            var response = await rpcHandler.ProcessMessageAsync(line, ct).ConfigureAwait(false);
-            if (!string.IsNullOrEmpty(response))
-            {
-                await stdoutWriter.WriteLineAsync(response.AsMemory(), ct).ConfigureAwait(false);
-                await stdoutWriter.FlushAsync(ct).ConfigureAwait(false);
-            }
-        }
-
-        return 0;
-    }
-
-    private static async Task<NamedPipeClientStream?> TryConnectOrSpawnDaemonAsync(CancellationToken ct)
-    {
-        var pipe = new NamedPipeClientStream(".", NamedPipeMcpServer.PipeName, PipeDirection.InOut, PipeOptions.Asynchronous);
+        var homeIndex = Array.FindIndex(args, value => value.Equals("--home", StringComparison.OrdinalIgnoreCase));
+        var identity = new LocalDaemonIdentity(homeIndex >= 0 && homeIndex + 1 < args.Length ? args[homeIndex + 1] : null);
+        var portIndex = Array.FindIndex(args, value => value.Equals("--port", StringComparison.OrdinalIgnoreCase));
+        int? port = portIndex >= 0 && portIndex + 1 < args.Length && int.TryParse(args[portIndex + 1], out var parsedPort)
+            && parsedPort is >= 0 and <= 65535 ? parsedPort : null;
         try
         {
-            await pipe.ConnectAsync(timeout: 300, ct).ConfigureAwait(false);
-            return pipe;
-        }
-        catch (TimeoutException)
-        {
-            await pipe.DisposeAsync().ConfigureAwait(false);
-        }
-        catch
-        {
-            await pipe.DisposeAsync().ConfigureAwait(false);
-        }
-
-        // Attempt to spawn `skillsync daemon` in the background
-        TrySpawnBackgroundDaemon();
-
-        for (var i = 0; i < 10; i++)
-        {
-            var retryPipe = new NamedPipeClientStream(".", NamedPipeMcpServer.PipeName, PipeDirection.InOut, PipeOptions.Asynchronous);
-            try
+            await using var pipe = await ConnectOrStartAsync(identity, port, ct).ConfigureAwait(false);
+            if (pipe is null)
             {
-                await retryPipe.ConnectAsync(timeout: 300, ct).ConfigureAwait(false);
-                return retryPipe;
+                await Console.Error.WriteLineAsync("SkillHub's local daemon is unavailable. Open SkillHub and retry.").ConfigureAwait(false);
+                return 1;
             }
-            catch
-            {
-                await retryPipe.DisposeAsync().ConfigureAwait(false);
-                await Task.Delay(200, ct).ConfigureAwait(false);
-            }
+            return await BridgeAsync(pipe, ct).ConfigureAwait(false);
         }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            return 0;
+        }
+        catch (IOException exception)
+        {
+            await Console.Error.WriteLineAsync("SkillHub MCP connection closed: " + exception.Message).ConfigureAwait(false);
+            return 1;
+        }
+    }
 
+    private static async Task<NamedPipeClientStream?> ConnectOrStartAsync(LocalDaemonIdentity identity, int? port, CancellationToken ct)
+    {
+        var connected = await ProbeAsync(identity, 200, ct).ConfigureAwait(false);
+        if (connected is not null) return connected;
+        TryStart(identity, port);
+        for (var attempt = 0; attempt < 12; attempt++)
+        {
+            connected = await ProbeAsync(identity, 250, ct).ConfigureAwait(false);
+            if (connected is not null) return connected;
+            await Task.Delay(100, ct).ConfigureAwait(false);
+        }
         return null;
     }
 
-    private static void TrySpawnBackgroundDaemon()
+    internal static async Task<NamedPipeClientStream?> ProbeAsync(LocalDaemonIdentity identity, int timeout, CancellationToken ct)
     {
+        var stream = identity.ConnectStream();
+        var keep = false;
         try
         {
-            var processPath = Environment.ProcessPath;
-            if (string.IsNullOrEmpty(processPath))
-            {
-                return;
-            }
+            using var budget = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            budget.CancelAfter(timeout);
+            await stream.ConnectAsync(timeout, budget.Token).ConfigureAwait(false);
+            await using var writer = new StreamWriter(stream, Utf8, leaveOpen: true) { NewLine = "\n", AutoFlush = true };
+            using var reader = new StreamReader(stream, Utf8, leaveOpen: true);
+            await writer.WriteLineAsync(LocalDaemonIdentity.Hello.AsMemory(), budget.Token).ConfigureAwait(false);
+            keep = await reader.ReadLineAsync(budget.Token).ConfigureAwait(false) == LocalDaemonIdentity.Protocol;
+            return keep ? stream : null;
+        }
+        catch (Exception exception) when (exception is TimeoutException or IOException or UnauthorizedAccessException ||
+            exception is OperationCanceledException && !ct.IsCancellationRequested)
+        {
+            return null;
+        }
+        finally
+        {
+            if (!keep) await stream.DisposeAsync().ConfigureAwait(false);
+        }
+    }
 
-            var startInfo = new ProcessStartInfo
+    private static void TryStart(LocalDaemonIdentity identity, int? port)
+    {
+        var process = Environment.ProcessPath;
+        if (process is null) return;
+        try
+        {
+            // Windows can inherit the caller's original handles even when the child has redirected streams.
+            foreach (var streamId in new[] { -10, -11, -12 })
             {
-                FileName = processPath,
-                Arguments = "daemon --background",
+                var handle = GetStdHandle(streamId);
+                if (handle != IntPtr.Zero && handle != new IntPtr(-1) && !SetHandleInformation(handle, 1, 0))
+                    throw new System.ComponentModel.Win32Exception(Marshal.GetLastWin32Error());
+            }
+            // Give the daemon separate streams so it cannot keep the MCP client's stdio pipes open.
+            var info = new ProcessStartInfo(process)
+            {
                 UseShellExecute = false,
                 CreateNoWindow = true,
                 WindowStyle = ProcessWindowStyle.Hidden,
-                RedirectStandardOutput = false,
-                RedirectStandardError = false,
-                RedirectStandardInput = false
+                RedirectStandardInput = true,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true
             };
-
-            // If running via `dotnet SkillSync.Daemon.dll`, pass the entry assembly path first
-            if (processPath.EndsWith("dotnet", StringComparison.OrdinalIgnoreCase) ||
-                processPath.EndsWith("dotnet.exe", StringComparison.OrdinalIgnoreCase))
+            if (Path.GetFileNameWithoutExtension(process).Equals("dotnet", StringComparison.OrdinalIgnoreCase))
             {
-                var entryAssembly = System.Reflection.Assembly.GetEntryAssembly()?.Location;
-                if (!string.IsNullOrEmpty(entryAssembly))
-                {
-                    startInfo.Arguments = $"\"{entryAssembly}\" daemon --background";
-                }
+                info.ArgumentList.Add(Path.Combine(AppContext.BaseDirectory, "SkillHub.dll"));
             }
-
-            Process.Start(startInfo);
+            info.ArgumentList.Add("daemon");
+            info.ArgumentList.Add("--background");
+            if (identity.Home is { } home)
+            {
+                info.ArgumentList.Add("--home");
+                info.ArgumentList.Add(home);
+            }
+            if (port is not null || identity.Home is not null)
+            {
+                info.ArgumentList.Add("--port");
+                info.ArgumentList.Add((port ?? 0).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            }
+            using var started = Process.Start(info);
         }
-        catch (Exception ex)
+        catch (Exception exception) when (exception is System.ComponentModel.Win32Exception or IOException or UnauthorizedAccessException)
         {
-            Console.Error.WriteLine($"[skillsync] Warning: failed to auto-spawn background daemon: {ex.Message}");
+            Console.Error.WriteLine("Could not start SkillHub: " + exception.Message);
         }
     }
 
-    private static async Task BridgeStdioOverPipeAsync(NamedPipeClientStream pipeClient, CancellationToken ct)
+    private static async Task<int> BridgeAsync(NamedPipeClientStream pipe, CancellationToken ct)
     {
-        using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
-        var token = linkedCts.Token;
+        using var lifetime = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        using var stdin = new StreamReader(Console.OpenStandardInput(), Utf8);
+        await using var stdout = new StreamWriter(Console.OpenStandardOutput(), Utf8) { NewLine = "\n", AutoFlush = true };
+        using var reader = new StreamReader(pipe, Utf8, leaveOpen: true);
+        await using var writer = new StreamWriter(pipe, Utf8, leaveOpen: true) { NewLine = "\n", AutoFlush = true };
+        var pending = 0;
+        var inputEnded = 0;
+        var drained = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
 
-        using var stdinReader = new StreamReader(Console.OpenStandardInput(), Utf8NoBom);
-        await using var stdoutWriter = new StreamWriter(Console.OpenStandardOutput(), Utf8NoBom)
+        async Task SendAsync()
         {
-            AutoFlush = true,
-            NewLine = "\n"
-        };
-
-        using var pipeReader = new StreamReader(pipeClient, Utf8NoBom, detectEncodingFromByteOrderMarks: false, bufferSize: 4096, leaveOpen: true);
-        await using var pipeWriter = new StreamWriter(pipeClient, Utf8NoBom, bufferSize: 4096, leaveOpen: true)
+            while (await stdin.ReadLineAsync(lifetime.Token).ConfigureAwait(false) is { } line)
+            {
+                if (HasId(line)) Interlocked.Increment(ref pending);
+                await writer.WriteLineAsync(line.AsMemory(), lifetime.Token).ConfigureAwait(false);
+            }
+            Volatile.Write(ref inputEnded, 1);
+            if (Volatile.Read(ref pending) <= 0) drained.TrySetResult();
+        }
+        async Task ReceiveAsync()
         {
-            AutoFlush = true,
-            NewLine = "\n"
-        };
+            while (await reader.ReadLineAsync(lifetime.Token).ConfigureAwait(false) is { } line)
+            {
+                await stdout.WriteLineAsync(line.AsMemory(), lifetime.Token).ConfigureAwait(false);
+                if (HasId(line)) Interlocked.Decrement(ref pending);
+                if (Volatile.Read(ref inputEnded) == 1 && Volatile.Read(ref pending) <= 0) drained.TrySetResult();
+            }
+        }
 
-        var stdinToPipe = Task.Run(async () =>
+        var send = SendAsync();
+        var receive = ReceiveAsync();
+        try
         {
-            try
+            var first = await Task.WhenAny(send, receive).ConfigureAwait(false);
+            await first.ConfigureAwait(false);
+            if (first == send)
             {
-                while (!token.IsCancellationRequested && pipeClient.IsConnected)
-                {
-                    var line = await stdinReader.ReadLineAsync(token).ConfigureAwait(false);
-                    if (line is null)
-                    {
-                        break;
-                    }
-
-                    await pipeWriter.WriteLineAsync(line.AsMemory(), token).ConfigureAwait(false);
-                    await pipeWriter.FlushAsync(token).ConfigureAwait(false);
-                }
+                var drainedOrDisconnected = await Task.WhenAny(drained.Task, receive)
+                    .WaitAsync(TimeSpan.FromSeconds(15), ct).ConfigureAwait(false);
+                await drainedOrDisconnected.ConfigureAwait(false);
+                if (Volatile.Read(ref pending) > 0)
+                    throw new IOException("The daemon disconnected before all messages were answered.");
             }
-            catch
+            else if (Volatile.Read(ref inputEnded) == 0 || Volatile.Read(ref pending) > 0)
             {
+                throw new IOException("The daemon disconnected before all messages were answered.");
             }
-            finally
-            {
-                await linkedCts.CancelAsync().ConfigureAwait(false);
-            }
-        }, token);
-
-        var pipeToStdout = Task.Run(async () =>
+            return 0;
+        }
+        catch (TimeoutException)
         {
-            try
-            {
-                while (!token.IsCancellationRequested && pipeClient.IsConnected)
-                {
-                    var line = await pipeReader.ReadLineAsync(token).ConfigureAwait(false);
-                    if (line is null)
-                    {
-                        break;
-                    }
+            await Console.Error.WriteLineAsync("SkillHub timed out while waiting for pending MCP responses.").ConfigureAwait(false);
+            return 1;
+        }
+        finally
+        {
+            await lifetime.CancelAsync().ConfigureAwait(false);
+            try { await Task.WhenAll(send, receive).ConfigureAwait(false); }
+            catch (Exception exception) when (exception is OperationCanceledException or IOException) { }
+        }
+    }
 
-                    await stdoutWriter.WriteLineAsync(line.AsMemory(), token).ConfigureAwait(false);
-                    await stdoutWriter.FlushAsync(token).ConfigureAwait(false);
-                }
-            }
-            catch
-            {
-            }
-            finally
-            {
-                await linkedCts.CancelAsync().ConfigureAwait(false);
-            }
-        }, token);
+    [DllImport("kernel32.dll")]
+    private static extern IntPtr GetStdHandle(int streamId);
 
-        await Task.WhenAny(stdinToPipe, pipeToStdout).ConfigureAwait(false);
+    [DllImport("kernel32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool SetHandleInformation(IntPtr handle, uint mask, uint flags);
+
+    private static bool HasId(string text)
+    {
+        try
+        {
+            using var value = JsonDocument.Parse(text);
+            return value.RootElement.ValueKind == JsonValueKind.Object && value.RootElement.TryGetProperty("id", out _);
+        }
+        catch (JsonException) { return true; }
     }
 }
-

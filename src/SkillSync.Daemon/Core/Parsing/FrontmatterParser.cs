@@ -1,4 +1,6 @@
 using System.Text;
+using YamlDotNet.Core;
+using YamlDotNet.Core.Events;
 using YamlDotNet.Serialization;
 using YamlDotNet.Serialization.NamingConventions;
 
@@ -9,6 +11,7 @@ public static class FrontmatterParser
     private static readonly IDeserializer YamlDeserializer = new DeserializerBuilder()
         .WithNamingConvention(NullNamingConvention.Instance)
         .IgnoreUnmatchedProperties()
+        .WithDuplicateKeyChecking()
         .Build();
 
     private static readonly ISerializer YamlSerializer = new SerializerBuilder()
@@ -45,21 +48,31 @@ public static class FrontmatterParser
             !string.Equals(normalized, "---", StringComparison.Ordinal))
         {
             // No frontmatter block present; treat entire document as markdown body
-            markdownBody = normalized.Trim();
+            markdownBody = normalized;
             return true;
         }
 
         // Find the closing "---" on its own line
         const string closingFence = "\n---\n";
-        var closeIndex = normalized.IndexOf(closingFence, 3, StringComparison.Ordinal);
-        if (closeIndex >= 0)
+        if (normalized is "---\n---" || normalized.StartsWith("---\n---\n", StringComparison.Ordinal))
         {
-            yamlFrontmatter = normalized.Substring(4, closeIndex - 4).Trim();
-            markdownBody = normalized.Substring(closeIndex + closingFence.Length).Trim();
+            markdownBody = normalized.Length > 7 ? normalized[8..] : string.Empty;
             return true;
         }
 
-        if (normalized.EndsWith("\n---", StringComparison.Ordinal) && normalized.Length > 4)
+        var closeIndex = normalized.IndexOf(closingFence, 4, StringComparison.Ordinal);
+        if (closeIndex >= 0)
+        {
+            yamlFrontmatter = normalized.Substring(4, closeIndex - 4).Trim();
+            markdownBody = normalized[(closeIndex + closingFence.Length)..];
+            if (markdownBody.StartsWith('\n'))
+            {
+                markdownBody = markdownBody[1..];
+            }
+            return true;
+        }
+
+        if (normalized.EndsWith("\n---", StringComparison.Ordinal) && normalized.Length >= 8)
         {
             yamlFrontmatter = normalized.Substring(4, normalized.Length - 8).Trim();
             markdownBody = string.Empty;
@@ -137,6 +150,7 @@ public static class FrontmatterParser
             return new Dictionary<string, object?>(StringComparer.Ordinal);
         }
 
+        ValidateYamlStructure(yaml);
         var rawObj = YamlDeserializer.Deserialize<Dictionary<object, object?>>(yaml);
         if (rawObj is null)
         {
@@ -153,22 +167,51 @@ public static class FrontmatterParser
             return new T();
         }
 
+        ValidateYamlStructure(yaml);
         var result = YamlDeserializer.Deserialize<T>(yaml);
         return result ?? new T();
+    }
+
+    private static void ValidateYamlStructure(string yaml)
+    {
+        if (yaml.Length > 256 * 1024)
+        {
+            throw new InvalidDataException("Skill frontmatter exceeds the supported size.");
+        }
+        var parser = new Parser(new StringReader(yaml));
+        var depth = 0;
+        var events = 0;
+        while (parser.MoveNext())
+        {
+            if (++events > 16_384 || parser.Current is AnchorAlias)
+            {
+                throw new InvalidDataException("Skill frontmatter is too complex or contains unsupported aliases.");
+            }
+            if (parser.Current is MappingStart or SequenceStart)
+            {
+                if (++depth > 32)
+                {
+                    throw new InvalidDataException("Skill frontmatter is nested too deeply.");
+                }
+            }
+            else if (parser.Current is MappingEnd or SequenceEnd)
+            {
+                depth--;
+            }
+        }
     }
 
     public static string SerializeToDocument(object frontmatterObject, string markdownBody)
     {
         var yaml = YamlSerializer.Serialize(frontmatterObject).Trim();
         yaml = ContentHasher.NormalizeLineEndings(yaml);
-        var cleanBody = ContentHasher.NormalizeLineEndings(markdownBody ?? string.Empty).Trim();
+        var cleanBody = ContentHasher.NormalizeLineEndings(markdownBody ?? string.Empty);
 
         var sb = new StringBuilder();
         sb.Append("---\n");
         sb.Append(yaml);
         sb.Append("\n---\n\n");
         sb.Append(cleanBody);
-        sb.Append('\n');
         return sb.ToString();
     }
 

@@ -1,128 +1,50 @@
-/**
- * SkillHub REST API & Server-Sent Events Client
- */
-
-async function request(path, options = {}) {
-  const response = await fetch(path, {
-    headers: {
-      "Content-Type": "application/json",
-      ...(options.headers || {})
-    },
-    ...options
-  });
-
-  if (!response.ok) {
-    let errorMessage = response.statusText;
-    try {
-      const errorBody = await response.json();
-      if (errorBody && errorBody.error) {
-        errorMessage = errorBody.error;
-      }
-    } catch (_) {
-      // Ignore non-JSON error body
-    }
-    throw new Error(errorMessage);
-  }
-
-  return response.json();
+export class ApiError extends Error {
+  constructor(message, status) { super(message); this.status = status; }
 }
 
-export const api = {
-  getStatus: () => request("/api/v1/status"),
-  getProviders: () => request("/api/v1/providers"),
-  setWindowTheme: (theme) =>
-    request("/api/v1/window/theme", {
-      method: "POST",
-      body: JSON.stringify({ theme })
-    }),
-  initializeProvider: (providerName) =>
-    request(`/api/v1/providers/${encodeURIComponent(providerName)}/initialize`, {
-      method: "POST"
-    }),
-  injectMcpClients: () =>
-    request("/api/v1/mcp-clients/inject", {
-      method: "POST"
-    }),
-  listSkills: (query = "", tag = "", category = "") => {
-    const params = new URLSearchParams();
-    if (query) params.set("query", query);
-    if (tag) params.set("tag", tag);
-    if (category) params.set("category", category);
-    const qs = params.toString();
-    return request(`/api/v1/skills${qs ? `?${qs}` : ""}`);
-  },
-  getSkill: (name) => request(`/api/v1/skills/${encodeURIComponent(name)}`),
-  upsertSkill: (skillPayload) =>
-    request("/api/v1/skills", {
-      method: "POST",
-      body: JSON.stringify(skillPayload)
-    }),
-  importSkill: (importPayload) =>
-    request("/api/v1/skills/import", {
-      method: "POST",
-      body: JSON.stringify(importPayload)
-    }),
-  getCommunityRepos: () => request("/api/v1/community/repos"),
-  getCommunitySkills: (repo = "", query = "") => {
-    const params = new URLSearchParams();
-    if (repo) params.set("repo", repo);
-    if (query) params.set("q", query);
-    const qs = params.toString();
-    return request(`/api/v1/community/skills${qs ? `?${qs}` : ""}`);
-  },
-  getCommunitySkillPreview: (repo, path, gitRef = "HEAD") => {
-    const params = new URLSearchParams({ repo, path, git_ref: gitRef || "HEAD" });
-    return request(`/api/v1/community/preview?${params.toString()}`);
-  },
-  renameTag: (oldTag, newTag) =>
-    request("/api/v1/tags/rename", {
-      method: "POST",
-      body: JSON.stringify({ old_tag: oldTag, new_tag: newTag })
-    }),
-  deleteTag: (tag) =>
-    request("/api/v1/tags/delete", {
-      method: "POST",
-      body: JSON.stringify({ tag })
-    }),
-  toggleSkillProvider: (name, providerName, enabled) =>
-    request(`/api/v1/skills/${encodeURIComponent(name)}/providers/${encodeURIComponent(providerName)}`, {
-      method: "PATCH",
-      body: JSON.stringify({ enabled })
-    }),
-  deleteSkill: (name) =>
-    request(`/api/v1/skills/${encodeURIComponent(name)}`, {
-      method: "DELETE"
-    }),
-  previewTranspilation: (draftSkillPayload) =>
-    request("/api/v1/preview", {
-      method: "POST",
-      body: JSON.stringify(draftSkillPayload)
-    }),
-  forceResync: () =>
-    request("/api/v1/resync", {
-      method: "POST"
-    }),
-  toggleTunnel: (enable) =>
-    request("/api/v1/tunnel/toggle", {
-      method: "POST",
-      body: JSON.stringify({ enable })
-    }),
-  connectEventStream: ({ onConnected, onActivity, onError }) => {
-    const es = new EventSource("/api/v1/events");
-    es.addEventListener("connected", () => {
-      if (onConnected) onConnected();
-    });
-    es.addEventListener("activity", (event) => {
-      if (onActivity) {
-        try {
-          const parsed = JSON.parse(event.data);
-          onActivity(parsed);
-        } catch (_) {}
-      }
-    });
-    es.onerror = () => {
-      if (onError) onError();
-    };
-    return es;
+export async function request(path, { method = 'GET', data, signal } = {}) {
+  const response = await fetch('/api/v1' + path, {
+    method, signal, cache: 'no-store',
+    ...(data === undefined ? {} : { headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(data) })
+  });
+  if (!response.ok) {
+    let detail;
+    try { detail = await response.json(); } catch { /* The host can return a response without a JSON body. */ }
+    throw new ApiError(detail?.error ?? detail?.detail ?? ('Request failed (' + response.status + ').'), response.status);
   }
+  return response.status === 204 ? null : response.json();
+}
+
+const encode = encodeURIComponent;
+const pathFor = name => '/skills/' + encode(name);
+export const api = {
+  status: signal => request('/status', { signal }),
+  providers: signal => request('/providers', { signal }),
+  tags: signal => request('/tags', { signal }),
+  skills: (query, signal) => request('/skills' + (query ? '?query=' + encode(query) : ''), { signal }),
+  detail: (name, signal) => request(pathFor(name), { signal }),
+  save: (draft, cloneId) => request(cloneId ? '/catalog/' + encode(cloneId) + '/clone'
+    : draft.revision ? pathFor(draft.name) : '/skills', { method: draft.revision && !cloneId ? 'PUT' : 'POST', data: draft }),
+  preview: (draft, signal) => request('/preview', { method: 'POST', data: draft, signal }),
+  activate: id => request('/catalog/' + encode(id) + '/activate', { method: 'POST' }),
+  remove: name => request(pathFor(name), { method: 'DELETE' }),
+  restore: name => request(pathFor(name) + '/restore', { method: 'POST' }),
+  provider: (name, provider, enabled) => request(pathFor(name) + '/providers/' + encode(provider), { method: 'PATCH', data: { enabled } }),
+  repair: (name, provider) => request(pathFor(name) + '/providers/' + encode(provider) + '/repair', { method: 'POST' }),
+  skillTag: (name, tag, add) => request(pathFor(name) + '/tags', { method: 'PATCH', data: { tag, add } }),
+  createTag: tag => request('/tags', { method: 'POST', data: { tag } }),
+  renameTag: (oldTag, newTag) => request('/tags/rename', { method: 'POST', data: { old_tag: oldTag, new_tag: newTag } }),
+  deleteTag: tag => request('/tags/delete', { method: 'POST', data: { tag } }),
+  undoTag: id => request('/tags/undo/' + encode(id), { method: 'POST' }),
+  repositories: signal => request('/community/repos', { signal }),
+  community: (repo, q, signal) => request('/community/skills?' + new URLSearchParams({ repo, q }), { signal }),
+  prepare: (selection, signal) => request('/imports/prepare', { method: 'POST', data: selection, signal }),
+  import: (plan, name, providers) => request('/imports/' + encode(plan.plan_id) + '/apply', {
+    method: 'POST', data: { revision: plan.revision, name, providers }
+  }),
+  client: (id, action) => request('/mcp-clients/' + encode(id), { method: 'POST', data: { action } }),
+  preferences: (data, signal) => request('/preferences', data ? { method: 'PUT', data } : { signal }),
+  diagnostics: signal => request('/diagnostics', { signal }),
+  resync: () => request('/resync', { method: 'POST' }),
+  conflict: (id, revision) => request('/diagnostics/conflicts/recover', { method: 'POST', data: { id, revision } })
 };

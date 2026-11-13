@@ -1,324 +1,263 @@
 using System.Collections.Concurrent;
+using System.Threading.Channels;
 using SkillSync.Daemon.Core.Engine;
-using SkillSync.Daemon.Core.Models;
 
 namespace SkillSync.Daemon.Watchers;
 
 public sealed class MultiRootFileWatcher : BackgroundService
 {
+    private const int MaxPendingPaths = 4096;
     private readonly ProviderDiscoveryService _discovery;
-    private readonly SyncEngine _syncEngine;
+    private readonly SyncEngine _engine;
     private readonly ILogger<MultiRootFileWatcher> _logger;
-    private readonly int _debounceMs;
-    private readonly ConcurrentDictionary<string, FileSystemWatcher> _directoryWatchers = new(StringComparer.OrdinalIgnoreCase);
-    private readonly ConcurrentDictionary<(ProviderType Provider, string SkillSlug), PendingDebounceItem> _debounceMap = new();
-    private FileSystemWatcher? _homeDirectoryWatcher;
+    private readonly TimeSpan _debounce;
+    private readonly object _watcherLock = new();
+    private readonly Dictionary<string, FileSystemWatcher> _watchers = new(SkillPaths.Comparer);
+    private readonly ConcurrentDictionary<string, bool> _paths = new(SkillPaths.Comparer);
+    private readonly Channel<bool> _wake = Channel.CreateBounded<bool>(
+        new BoundedChannelOptions(1) { SingleReader = true, FullMode = BoundedChannelFullMode.DropWrite });
+    private readonly CancellationTokenSource _stop = new();
+    private Task? _pump;
+    private int _scanRequested;
+    private bool _disposed;
+    private string? _lastError;
 
-    public MultiRootFileWatcher(
-        ProviderDiscoveryService discovery,
-        SyncEngine syncEngine,
-        ILogger<MultiRootFileWatcher> logger,
-        int debounceMs = 250)
+    public MultiRootFileWatcher(ProviderDiscoveryService discovery, SyncEngine syncEngine,
+        ILogger<MultiRootFileWatcher> logger, int debounceMs = 250)
     {
         _discovery = discovery;
-        _syncEngine = syncEngine;
+        _engine = syncEngine;
         _logger = logger;
-        _debounceMs = debounceMs;
+        _debounce = TimeSpan.FromMilliseconds(debounceMs);
+    }
+
+    protected override async Task ExecuteAsync(CancellationToken stoppingToken)
+    {
+        RefreshProviderWatchers();
+        await _engine.SynchronizeAllAsync(stoppingToken).ConfigureAwait(false);
+        await BootstrapManager.EnsureBootstrapSkillSeededAsync(_engine, stoppingToken).ConfigureAwait(false);
+        StartWatchers();
+
+        using var cancellation = stoppingToken.Register(_stop.Cancel);
+        await _pump!.ConfigureAwait(false);
     }
 
     public void StartWatchers()
     {
         RefreshProviderWatchers();
-        StartHomeDirectoryWatcher();
+        lock (_watcherLock)
+        {
+            ObjectDisposedException.ThrowIf(_disposed, this);
+            _pump ??= PumpAsync(_stop.Token);
+        }
     }
 
-    protected override async Task ExecuteAsync(CancellationToken stoppingToken)
+    public (bool Running, int Roots, string? LastError) GetHealth()
     {
-        await BootstrapManager.EnsureBootstrapSkillSeededAsync(_syncEngine, stoppingToken).ConfigureAwait(false);
-        await _syncEngine.SynchronizeAllAsync(stoppingToken).ConfigureAwait(false);
-        StartWatchers();
-
-        try
+        lock (_watcherLock)
         {
-            await Task.Delay(Timeout.Infinite, stoppingToken).ConfigureAwait(false);
-        }
-        catch (OperationCanceledException)
-        {
+            return (_pump is { IsCompleted: false }, _watchers.Count, Volatile.Read(ref _lastError));
         }
     }
 
     public void RefreshProviderWatchers()
     {
-        foreach (var info in _discovery.DiscoverProviders())
+        if (RefreshRoots())
         {
-            if (!info.IsInstalled && info.Provider != ProviderType.Canonical)
+            RequestScan();
+        }
+    }
+
+    private bool RefreshRoots()
+    {
+        var roots = _discovery.GetObservableRoots().Select(item => item.Root).Where(Directory.Exists).ToHashSet(SkillPaths.Comparer);
+        if (Directory.Exists(_discovery.UserHomeRoot))
+        {
+            roots.Add(_discovery.UserHomeRoot);
+        }
+        lock (_watcherLock)
+        {
+            if (_disposed)
             {
-                continue;
+                return false;
             }
 
-            if (info.Provider == ProviderType.Codex)
+            var changed = false;
+            foreach (var stale in _watchers.Keys.Where(path => !roots.Contains(path)).ToArray())
             {
-                // Watch BOTH ~/.codex/skills and ~/.agents/skills when Codex is detected
-                foreach (var codexSkillsRoot in _discovery.GetAllCodexSkillsRoots())
-                {
-                    EnsureWatcherForDirectory(ProviderType.Codex, codexSkillsRoot);
-                }
+                _watchers[stale].Dispose();
+                _watchers.Remove(stale);
+                changed = true;
             }
-            else
+            foreach (var root in roots.Where(root => !_watchers.ContainsKey(root)))
             {
-                EnsureWatcherForDirectory(info.Provider, info.SkillsRootDirectory);
-
-                if (info.Provider == ProviderType.Gemini)
+                try
                 {
-                    var antigravityRoot = Path.Combine(_discovery.UserHomeRoot, ".gemini", "antigravity");
-                    if (Directory.Exists(antigravityRoot))
+                    SkillPaths.AssertNoReparsePoints(root);
+                    var isHome = SkillPaths.Comparer.Equals(root, _discovery.UserHomeRoot);
+                    var watcher = new FileSystemWatcher(root)
                     {
-                        EnsureWatcherForDirectory(ProviderType.Gemini, Path.Combine(antigravityRoot, "skills"));
+                        IncludeSubdirectories = !isHome,
+                        NotifyFilter = isHome ? NotifyFilters.DirectoryName :
+                            NotifyFilters.FileName | NotifyFilters.DirectoryName | NotifyFilters.LastWrite | NotifyFilters.Size
+                    };
+                    if (isHome)
+                    {
+                        watcher.Created += (_, _) => RequestScan();
+                        watcher.Deleted += (_, _) => RequestScan();
+                        watcher.Renamed += (_, _) => RequestScan();
+                    }
+                    else
+                    {
+                        watcher.Created += (_, item) => Observe(item.FullPath, structural: true);
+                        watcher.Changed += (_, item) => Observe(item.FullPath);
+                        watcher.Deleted += (_, item) => Observe(item.FullPath, structural: true);
+                        watcher.Renamed += (_, item) =>
+                        {
+                            Observe(item.OldFullPath, structural: true);
+                            Observe(item.FullPath, structural: true);
+                        };
+                    }
+
+                    watcher.Error += (_, item) =>
+                    {
+                        Volatile.Write(ref _lastError, item.GetException().Message);
+                        _logger.LogWarning(item.GetException(), "Watcher lost events at {Root}. Scheduling reconciliation.", root);
+                        RequestScan();
+                    };
+                    try
+                    {
+                        watcher.EnableRaisingEvents = true;
+                        _watchers.Add(root, watcher);
+                        changed = true;
+                    }
+                    catch
+                    {
+                        watcher.Dispose();
+                        throw;
                     }
                 }
+                catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or ArgumentException)
+                {
+                    Volatile.Write(ref _lastError, exception.Message);
+                    _logger.LogWarning(exception, "Could not watch {Root}", root);
+                }
             }
+
+            return changed;
         }
     }
 
-    private void EnsureWatcherForDirectory(ProviderType provider, string skillsRootDirectory)
+    private void Observe(string path, bool structural = false)
     {
-        var fullDir = Path.GetFullPath(skillsRootDirectory);
-        if (_directoryWatchers.ContainsKey(fullDir))
+        if (AtomicFileWriter.IsTemporaryOrIgnoredPath(path))
         {
             return;
         }
 
+        if (_paths.Count >= MaxPendingPaths)
+        {
+            RequestScan();
+            return;
+        }
+        _paths.AddOrUpdate(path, structural, (_, prior) => prior || structural);
+        _wake.Writer.TryWrite(true);
+    }
+
+    private void RequestScan()
+    {
+        Interlocked.Exchange(ref _scanRequested, 1);
+        _wake.Writer.TryWrite(true);
+    }
+
+    private async Task PumpAsync(CancellationToken ct)
+    {
         try
         {
-            Directory.CreateDirectory(fullDir);
-            var watcher = new FileSystemWatcher(fullDir)
+            using var timer = new PeriodicTimer(TimeSpan.FromSeconds(5));
+            var tick = timer.WaitForNextTickAsync(ct).AsTask();
+            var wake = _wake.Reader.WaitToReadAsync(ct).AsTask();
+            while (!ct.IsCancellationRequested)
             {
-                IncludeSubdirectories = true,
-                NotifyFilter = NotifyFilters.FileName
-                             | NotifyFilters.DirectoryName
-                             | NotifyFilters.LastWrite
-                             | NotifyFilters.Size
-                             | NotifyFilters.CreationTime,
-                EnableRaisingEvents = true
-            };
-
-            watcher.Created += (sender, e) => OnFileSystemEvent(e.FullPath, SyncChangeKind.CreatedOrModified);
-            watcher.Changed += (sender, e) => OnFileSystemEvent(e.FullPath, SyncChangeKind.CreatedOrModified);
-            watcher.Deleted += (sender, e) => OnFileSystemEvent(e.FullPath, SyncChangeKind.Deleted);
-            watcher.Renamed += (sender, e) =>
-            {
-                if (!string.IsNullOrEmpty(e.OldFullPath) &&
-                    !AtomicFileWriter.IsTemporaryOrIgnoredPath(e.OldFullPath) &&
-                    _discovery.TryResolveSkillFromFilePath(e.OldFullPath, out var oldProv, out var oldSlug) &&
-                    (!_discovery.TryResolveSkillFromFilePath(e.FullPath, out _, out var newSlug) ||
-                     !string.Equals(oldSlug, newSlug, StringComparison.OrdinalIgnoreCase)))
+                await Task.WhenAny(tick, wake).ConfigureAwait(false);
+                var scan = false;
+                if (tick.IsCompleted)
                 {
-                    ScheduleDebouncedEvent(oldProv, oldSlug, SyncChangeKind.Deleted, e.OldFullPath);
+                    await tick.ConfigureAwait(false);
+                    scan = RefreshRoots();
+                    tick = timer.WaitForNextTickAsync(ct).AsTask();
                 }
-
-                OnFileSystemEvent(e.FullPath, SyncChangeKind.CreatedOrModified);
-            };
-
-            if (_directoryWatchers.TryAdd(fullDir, watcher))
-            {
-                _logger.LogInformation("Watching {Provider} skills directory: {Path}", provider, fullDir);
-            }
-            else
-            {
-                watcher.Dispose();
-            }
-        }
-        catch (Exception ex)
-        {
-            _logger.LogWarning(ex, "Could not start FileSystemWatcher for {Provider} at {Path}", provider, fullDir);
-        }
-    }
-
-    private void StartHomeDirectoryWatcher()
-    {
-        if (_homeDirectoryWatcher is not null || !Directory.Exists(_discovery.UserHomeRoot))
-        {
-            return;
-        }
-
-        try
-        {
-            _homeDirectoryWatcher = new FileSystemWatcher(_discovery.UserHomeRoot)
-            {
-                IncludeSubdirectories = false,
-                NotifyFilter = NotifyFilters.DirectoryName | NotifyFilters.CreationTime,
-                EnableRaisingEvents = true
-            };
-
-            _homeDirectoryWatcher.Created += (_, e) =>
-            {
-                var dirName = Path.GetFileName(e.FullPath);
-                if (string.Equals(dirName, ".claude", StringComparison.OrdinalIgnoreCase) ||
-                    string.Equals(dirName, ".gemini", StringComparison.OrdinalIgnoreCase) ||
-                    string.Equals(dirName, ".codex", StringComparison.OrdinalIgnoreCase) ||
-                    string.Equals(dirName, ".agents", StringComparison.OrdinalIgnoreCase) ||
-                    string.Equals(dirName, ".cursor", StringComparison.OrdinalIgnoreCase))
+                if (wake.IsCompleted)
                 {
-                    _logger.LogInformation("Detected newly installed AI provider root: {Path}", e.FullPath);
-                    RefreshProviderWatchers();
-                    _ = _syncEngine.SynchronizeAllAsync();
-                }
-            };
-        }
-        catch (Exception ex)
-        {
-            _logger.LogWarning(ex, "Failed to watch user home directory for new providers.");
-        }
-    }
-
-    private void OnFileSystemEvent(string fullPath, SyncChangeKind kind)
-    {
-        if (AtomicFileWriter.IsTemporaryOrIgnoredPath(fullPath))
-        {
-            return;
-        }
-
-        if (_discovery.TryResolveSkillFromFilePath(fullPath, out var provider, out var skillSlug))
-        {
-            ScheduleDebouncedEvent(provider, skillSlug, kind, fullPath);
-            return;
-        }
-
-        if (kind == SyncChangeKind.Deleted)
-        {
-            var watchedDirs = new List<(ProviderType Provider, string Dir)>
-            {
-                (ProviderType.Canonical, _discovery.CanonicalSkillsRoot),
-                (ProviderType.Claude, Path.Combine(_discovery.UserHomeRoot, ".claude", "skills")),
-                (ProviderType.Gemini, Path.Combine(_discovery.UserHomeRoot, ".gemini", "skills")),
-                (ProviderType.Codex, Path.Combine(_discovery.UserHomeRoot, ".codex", "skills")),
-                (ProviderType.Codex, Path.Combine(_discovery.UserHomeRoot, ".agents", "skills"))
-            };
-
-            foreach (var (prov, rootDir) in watchedDirs)
-            {
-                var parent = Path.GetDirectoryName(fullPath);
-                if (parent is not null &&
-                    string.Equals(
-                        Path.GetFullPath(parent).TrimEnd(Path.DirectorySeparatorChar),
-                        Path.GetFullPath(rootDir).TrimEnd(Path.DirectorySeparatorChar),
-                        OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal))
-                {
-                    var folderSlug = ProviderDiscoveryService.NormalizeSlug(Path.GetFileName(fullPath));
-                    if (!string.IsNullOrEmpty(folderSlug))
+                    if (!await wake.ConfigureAwait(false))
                     {
-                        var primaryPath = Path.Combine(fullPath, "SKILL.md");
-                        ScheduleDebouncedEvent(prov, folderSlug, SyncChangeKind.Deleted, primaryPath);
+                        return;
+                    }
+                    await Task.Delay(_debounce, ct).ConfigureAwait(false);
+                    while (_wake.Reader.TryRead(out _))
+                    {
+                    }
+                    wake = _wake.Reader.WaitToReadAsync(ct).AsTask();
+                }
+
+                var paths = new List<string>();
+                var structuralPaths = new List<string>();
+                foreach (var path in _paths.Keys)
+                {
+                    if (_paths.TryRemove(path, out var structural))
+                    {
+                        paths.Add(path);
+                        if (structural)
+                        {
+                            structuralPaths.Add(path);
+                        }
                     }
                 }
+                scan |= Interlocked.Exchange(ref _scanRequested, 0) != 0;
+                try
+                {
+                    var hasDirectoryChange = structuralPaths.Any(path => _discovery.ResolveObservedPath(path) is null &&
+                        (Directory.Exists(path) || !File.Exists(path)));
+                    if (scan || hasDirectoryChange)
+                    {
+                        await _engine.SynchronizeAllAsync(ct).ConfigureAwait(false);
+                    }
+                    else if (paths.Count > 0)
+                    {
+                        await _engine.ObserveFileSystemChangesAsync(paths, ct).ConfigureAwait(false);
+                    }
+                }
+                catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or ArgumentException or InvalidOperationException)
+                {
+                    _logger.LogWarning(exception, "Could not reconcile watcher changes.");
+                    Interlocked.Exchange(ref _scanRequested, 1);
+                }
             }
         }
-    }
-
-    private void ScheduleDebouncedEvent(ProviderType provider, string skillSlug, SyncChangeKind kind, string fullPath)
-    {
-        var key = (provider, skillSlug.ToLowerInvariant());
-        var delay = kind == SyncChangeKind.Deleted ? _debounceMs * 2 : _debounceMs;
-
-        _debounceMap.AddOrUpdate(
-            key,
-            _ => new PendingDebounceItem(provider, skillSlug, kind, fullPath, delay, FlushDebouncedItem),
-            (_, existing) =>
-            {
-                existing.Update(kind, fullPath, delay);
-                return existing;
-            });
-    }
-
-    private void FlushDebouncedItem(PendingDebounceItem item)
-    {
-        var key = (item.Provider, item.SkillSlug.ToLowerInvariant());
-        _debounceMap.TryRemove(key, out _);
-
-        var checkPath = !string.IsNullOrWhiteSpace(item.FullPath)
-            ? item.FullPath
-            : _discovery.GetSkillPrimaryFilePath(item.Provider, item.SkillSlug);
-
-        var effectiveKind = item.Kind;
-
-        if (effectiveKind == SyncChangeKind.Deleted && File.Exists(checkPath))
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
         {
-            effectiveKind = SyncChangeKind.CreatedOrModified;
         }
-        else if (effectiveKind == SyncChangeKind.CreatedOrModified && !File.Exists(checkPath))
-        {
-            effectiveKind = SyncChangeKind.Deleted;
-        }
-
-        _syncEngine.EnqueueFileSystemEvent(item.Provider, item.SkillSlug, effectiveKind, checkPath);
     }
 
     public override void Dispose()
     {
-        _homeDirectoryWatcher?.Dispose();
-        foreach (var watcher in _directoryWatchers.Values)
+        lock (_watcherLock)
         {
-            watcher.Dispose();
-        }
-
-        foreach (var pending in _debounceMap.Values)
-        {
-            pending.Dispose();
-        }
-
-        base.Dispose();
-    }
-
-    private sealed class PendingDebounceItem : IDisposable
-    {
-        private readonly Action<PendingDebounceItem> _callback;
-        private readonly System.Threading.Timer _timer;
-        private readonly object _sync = new();
-
-        public PendingDebounceItem(
-            ProviderType provider,
-            string skillSlug,
-            SyncChangeKind kind,
-            string fullPath,
-            int delayMs,
-            Action<PendingDebounceItem> callback)
-        {
-            Provider = provider;
-            SkillSlug = skillSlug;
-            Kind = kind;
-            FullPath = fullPath;
-            _callback = callback;
-            _timer = new System.Threading.Timer(OnTimerElapsed, null, delayMs, Timeout.Infinite);
-        }
-
-        public ProviderType Provider { get; }
-        public string SkillSlug { get; }
-        public SyncChangeKind Kind { get; private set; }
-        public string FullPath { get; private set; }
-
-        public void Update(SyncChangeKind newKind, string newFullPath, int delayMs)
-        {
-            lock (_sync)
+            if (_disposed)
             {
-                if (newKind == SyncChangeKind.CreatedOrModified || Kind != SyncChangeKind.CreatedOrModified)
-                {
-                    Kind = newKind;
-                }
-
-                FullPath = newFullPath;
-                _timer.Change(delayMs, Timeout.Infinite);
+                return;
             }
+            _disposed = true;
+            _stop.Cancel();
+            _wake.Writer.TryComplete();
+            foreach (var watcher in _watchers.Values)
+            {
+                watcher.Dispose();
+            }
+            _watchers.Clear();
         }
-
-        private void OnTimerElapsed(object? state)
-        {
-            _callback(this);
-            Dispose();
-        }
-
-        public void Dispose()
-        {
-            _timer.Dispose();
-        }
+        _pump?.GetAwaiter().GetResult();
+        _stop.Dispose();
+        base.Dispose();
     }
 }

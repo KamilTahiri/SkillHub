@@ -1,0 +1,101 @@
+using SkillSync.Daemon.Core.Models;
+using SkillSync.Daemon.Core.Transpilers;
+using SkillSync.Daemon.Watchers;
+using YamlDotNet.Core;
+
+namespace SkillSync.Daemon.Core.Engine;
+
+internal sealed class SkillCatalog(ProviderDiscoveryService discovery)
+{
+    private sealed record Entry(CatalogSkillDescriptor Descriptor, CanonicalSkillModel Summary, HashSet<string> InstructionTerms);
+    private IReadOnlyDictionary<string, Entry> _entries = new Dictionary<string, Entry>();
+    private readonly CodexTranspiler _parser = new();
+
+    public void Refresh()
+    {
+        var next = new Dictionary<string, Entry>(StringComparer.Ordinal);
+        foreach (var descriptor in discovery.DiscoverExternalCatalogSkills())
+        {
+            try
+            {
+                var model = Load(descriptor, includeContents: false);
+                if (model is not null)
+                {
+                    var terms = InstructionTerms(model.InstructionsMarkdown);
+                    model.InstructionsMarkdown = string.Empty;
+                    next.TryAdd(descriptor.Id, new Entry(descriptor, model, terms));
+                }
+            }
+            catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or YamlException or InvalidOperationException or ArgumentException)
+            {
+                // An unavailable or malformed catalog entry is excluded from this snapshot.
+            }
+        }
+        Volatile.Write(ref _entries, next);
+    }
+
+    public IEnumerable<CanonicalSkillModel> Summaries() => Volatile.Read(ref _entries).Values.Select(entry => entry.Summary);
+
+    public bool MatchesInstructions(string id, string query)
+    {
+        if (!Volatile.Read(ref _entries).TryGetValue(id, out var entry))
+        {
+            return false;
+        }
+        var terms = InstructionTerms(query).ToArray();
+        return terms.Length > 0 && terms.All(entry.InstructionTerms.Contains);
+    }
+
+    private static HashSet<string> InstructionTerms(string text)
+    {
+        var words = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var match in System.Text.RegularExpressions.Regex.EnumerateMatches(text, @"[\p{L}\p{Nd}_-]+"))
+        {
+            if (match.Length <= 64)
+            {
+                words.Add(text.Substring(match.Index, match.Length));
+                if (words.Count == 2048)
+                {
+                    break;
+                }
+            }
+        }
+        return words;
+    }
+
+    public CanonicalSkillModel? Get(string id)
+    {
+        var entries = Volatile.Read(ref _entries);
+        var descriptor = entries.TryGetValue(id, out var exact)
+            ? exact.Descriptor
+            : entries.Values.Where(entry => entry.Descriptor.Slug.Equals(id, StringComparison.OrdinalIgnoreCase)).Take(2).ToArray() is [var unique] ? unique.Descriptor : null;
+        return descriptor is null ? null : Load(descriptor, includeContents: true);
+    }
+
+    private CanonicalSkillModel? Load(CatalogSkillDescriptor descriptor, bool includeContents)
+    {
+        var raw = SkillStorage.ReadText(descriptor.SkillMdPath, SkillStorage.MaxMarkdownBytes);
+        if (raw is null)
+        {
+            return null;
+        }
+
+        var model = _parser.MergeInbound(descriptor.Slug, raw, null);
+        model.Title = CanonicalSkillModel.HumanizeSlug(descriptor.Slug);
+        model.SourceCategory = descriptor.SourceCategory;
+        model.OriginProvider = descriptor.OriginProvider;
+        model.IsCatalogOnly = true;
+        model.CatalogId = descriptor.Id;
+        model.SourcePath = descriptor.SkillMdPath.Replace('\\', '/');
+        model.Tags = model.Tags.Union(descriptor.SuggestedTags, StringComparer.OrdinalIgnoreCase).ToList();
+        if (includeContents)
+        {
+            model.SupportingFiles = SkillStorage.ReadBundle(Path.GetDirectoryName(descriptor.SkillMdPath)!);
+        }
+        else
+        {
+            model.Passthrough.Clear();
+        }
+        return model;
+    }
+}

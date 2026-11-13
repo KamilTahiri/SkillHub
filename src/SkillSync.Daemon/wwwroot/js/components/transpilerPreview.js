@@ -1,57 +1,41 @@
-/**
- * Provider Transpiler Output Preview Screen Component
- */
-import { store, humanizeSlug, showToast } from "../state.js?v=20261112-v7";
+import { api } from '../api.js?v=20261112-v9';
+import { Latest, PROVIDERS } from '../state.js?v=20261112-v9';
+import { button, copy, errorText, field, h, modal, select } from '../ui.js?v=20261112-v9';
 
-export function initTranspilerPreview({ onClosePreview }) {
-  const el = {
-    btnClosePreview: document.getElementById("btn-close-preview"),
-    previewHeading: document.getElementById("preview-heading"),
-    previewSlugBadge: document.getElementById("preview-slug-badge"),
-    previewPathLabel: document.getElementById("preview-path-label"),
-    previewCodeBox: document.getElementById("preview-code-box"),
-    btnCopyPreview: document.getElementById("btn-copy-preview"),
-    tabs: document.querySelectorAll(".preview-tab")
-  };
-
-  function renderPreview() {
-    const { activePreviewTab, previews, currentSkillModel } = store.getState();
-    const slug = (currentSkillModel?.name || "skill").trim().toLowerCase();
-    const title = currentSkillModel?.title || humanizeSlug(slug);
-
-    el.previewHeading.textContent = `Provider Output — ${title}`;
-    el.previewSlugBadge.textContent = slug;
-
-    const pathMap = {
-      gemini: `~/.gemini/skills/${slug}/SKILL.md`,
-      codex: `~/.codex/skills/${slug}/SKILL.md`,
-      claude: `~/.claude/skills/${slug}/SKILL.md`,
-      cursor: `~/.cursor/rules/${slug}.mdc`,
-      canonical: `~/.skillhub/skills/${slug}/SKILL.md`
-    };
-
-    el.previewPathLabel.textContent = pathMap[activePreviewTab] || "";
-    el.previewCodeBox.textContent = (previews && previews[activePreviewTab]) || "";
-  }
-
-  el.btnClosePreview.addEventListener("click", onClosePreview);
-
-  el.tabs.forEach((btn) => {
-    btn.addEventListener("click", () => {
-      el.tabs.forEach((b) => b.classList.remove("active"));
-      btn.classList.add("active");
-      const target = btn.getAttribute("data-target");
-      store.update({ activePreviewTab: target }, "previews:updated");
-    });
+export function showProviderPreview(draft, { saved, providers = [] } = {}) {
+  const latest = new Latest();
+  const choices = [['canonical', 'Canonical Markdown'], ...Object.entries(PROVIDERS)];
+  const body = h('div', { class: 'stack', 'aria-busy': 'true' }, h('p', {}, 'Preparing output…'));
+  const dialog = modal('Provider output · ' + (draft.title || draft.name), body);
+  dialog.addEventListener('close', () => latest.cancel(), { once: true });
+  const job = latest.begin();
+  const pending = saved ? Promise.resolve(saved) : api.preview(draft, job.signal);
+  pending.then(result => {
+    if (!job.current()) return;
+    const outputs = result.transpiled_previews ?? {};
+    const chooser = select(choices, 'canonical');
+    const path = h('p', { class: 'path' });
+    const code = h('pre', { class: 'output-code', tabindex: '0' });
+    const warning = h('p', { class: 'muted' });
+    const copyOutput = button('Copy output', () => copy(code.textContent));
+    function change() {
+      const target = chooser.value;
+      const suffix = target === 'cursor' ? draft.name + '.mdc' : draft.name + '/SKILL.md';
+      const effective = result.effective_paths?.[target] ??
+        draft.destinations?.filter(item => item.provider === target).map(item => item.path);
+      const roots = providers.filter(provider => provider.provider === target).map(provider => provider.skills_root + '/' + suffix);
+      path.textContent = (effective?.length ? effective : roots).join(' · ');
+      code.textContent = outputs[target] ?? 'No output was returned for this target.';
+      warning.textContent = target === 'codex' ? 'Codex output uses the concise description and may shorten it.'
+        : target === 'gemini' ? 'Gemini combines the description and activation guidance.'
+        : target === 'cursor' ? 'Cursor output uses rule metadata. Referenced files remain in the canonical bundle.'
+        : target === 'claude' ? 'Claude output includes its allowed tools and model when set.' : 'This is the canonical skill document.';
+    }
+    chooser.addEventListener('change', change);
+    body.setAttribute('aria-busy', 'false');
+    body.replaceChildren(field('Target format', chooser), path, warning, code, copyOutput);
+    change();
+  }).catch(error => {
+    if (job.current()) { body.setAttribute('aria-busy', 'false'); body.replaceChildren(errorText(error.message)); }
   });
-
-  el.btnCopyPreview.addEventListener("click", async () => {
-    const { activePreviewTab, previews } = store.getState();
-    const text = (previews && previews[activePreviewTab]) || "";
-    await navigator.clipboard.writeText(text);
-    showToast("Copied transpiled file content to clipboard.");
-  });
-
-  store.subscribe("previews:updated", renderPreview);
-  store.subscribe("skill:selected", renderPreview);
 }

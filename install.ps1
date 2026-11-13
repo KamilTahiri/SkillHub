@@ -1,59 +1,32 @@
-$ErrorActionPreference = "Stop"
 
-Write-Host "Stopping any running SkillHub / legacy skillsync processes..." -ForegroundColor Cyan
-Get-Process -Name "SkillHub","skillsync","SkillSync.Daemon" -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+[CmdletBinding()]
+param([string]$Compiler = $env:SKILLHUB_ISCC)
 
-# Wait until port 45880 is completely released
-for ($i = 0; $i -lt 15; $i++) {
-  $inUse = Get-NetTCPConnection -LocalPort 45880 -State Listen -ErrorAction SilentlyContinue
-  if (-not $inUse) { break }
-  Get-Process -Name "SkillHub","skillsync","SkillSync.Daemon" -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
-  Start-Sleep -Milliseconds 300
+$ErrorActionPreference = 'Stop'
+$directory = Join-Path $PSScriptRoot 'dist'
+& (Join-Path $PSScriptRoot 'build-installer.ps1') -Compiler $Compiler -OutputDirectory $directory
+$setup = Join-Path $directory 'SkillHub-Setup.exe'
+$process = Start-Process -FilePath $setup -ArgumentList '/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART' -Wait -PassThru -WindowStyle Hidden
+if ($process.ExitCode -ne 0) { throw "SkillHub setup exited with code $($process.ExitCode)." }
+
+$installed = Join-Path $env:LOCALAPPDATA 'SkillHub'
+$manifest = Get-Content -LiteralPath (Join-Path $installed 'install-manifest.json') -Raw | ConvertFrom-Json
+$root = [IO.Path]::GetFullPath($installed) + '\'
+foreach ($file in $manifest.files) {
+    $path = [IO.Path]::GetFullPath((Join-Path $installed $file.path))
+    if (-not $path.StartsWith($root, [StringComparison]::OrdinalIgnoreCase)) { throw "Invalid installation manifest entry $($file.path)." }
+    if ((Get-FileHash -LiteralPath $path).Hash -ne $file.sha256) { throw "Installed file differs from its manifest: $($file.path)." }
 }
 
-$InstallDir = Join-Path $env:LOCALAPPDATA "SkillHub"
-New-Item -ItemType Directory -Force -Path $InstallDir | Out-Null
-
-# Purge old published wwwroot, legacy icon files, and WebView2 HTTP/JS caches
-$PublishedWwwroot = Join-Path $InstallDir "wwwroot"
-if (Test-Path $PublishedWwwroot) {
-  Remove-Item -Path $PublishedWwwroot -Recurse -Force -ErrorAction SilentlyContinue
-}
-$OldIco = Join-Path $InstallDir "skillhub.ico"
-if (Test-Path $OldIco) {
-  Remove-Item -Path $OldIco -Force -ErrorAction SilentlyContinue
-}
-
-foreach ($cacheSub in @("Cache", "Code Cache", "GPUCache")) {
-  $cacheDir = Join-Path $InstallDir "WebView2Data\EBWebView\Default\$cacheSub"
-  if (Test-Path $cacheDir) {
-    Remove-Item -Path $cacheDir -Recurse -Force -ErrorAction SilentlyContinue
-  }
-}
-
-$ProjectIco = Join-Path $PSScriptRoot "src\SkillSync.Daemon\skillhub-v2.ico"
-if (-not (Test-Path $ProjectIco)) {
-  Write-Host "Generating multi-resolution isometric prism icon (skillhub-v2.ico)..." -ForegroundColor Cyan
-  dotnet run --project "$PSScriptRoot\src\SkillSync.Daemon\SkillSync.Daemon.csproj" -- generate-ico "$ProjectIco"
-}
-
-Write-Host "Publishing SkillHub Desktop App (with embedded skillhub-v2.ico) to $InstallDir..." -ForegroundColor Cyan
-dotnet publish "$PSScriptRoot\src\SkillSync.Daemon\SkillSync.Daemon.csproj" `
-  -c Release `
-  -o $InstallDir `
-  -p:PublishSingleFile=false `
-  --nologo
-
-Copy-Item -Path $ProjectIco -Destination (Join-Path $InstallDir "skillhub-v2.ico") -Force
-
-$ExePath = Join-Path $InstallDir "SkillHub.exe"
-Write-Host "Configuring shortcuts, OS auto-start & MCP clients..." -ForegroundColor Cyan
-Start-Process -FilePath $ExePath -ArgumentList "install","--bin-path",$ExePath,"--no-spawn" -Wait
-
-Write-Host "Launching SkillHub Desktop Application..." -ForegroundColor Green
-try {
-  Invoke-CimMethod -ClassName Win32_Process -MethodName Create -Arguments @{ CommandLine = "`"$ExePath`"" } | Out-Null
-} catch {
-  Start-Process -FilePath $ExePath
-}
-Write-Host "SkillHub is now installed and running!" -ForegroundColor Green
+$exe = Join-Path $installed 'SkillHub.exe'
+Start-Process -FilePath $exe -WorkingDirectory $installed
+$deadline = [DateTime]::UtcNow.AddSeconds(15)
+do {
+    $window = Get-Process -Name SkillHub -ErrorAction SilentlyContinue |
+        Where-Object { $_.Path -eq $exe -and $_.MainWindowHandle -ne 0 -and $_.Responding } |
+        Select-Object -First 1
+    if ($window) { break }
+    Start-Sleep -Milliseconds 200
+} while ([DateTime]::UtcNow -lt $deadline)
+if (-not $window) { throw "SkillHub was installed, but its desktop window did not become ready." }
+Write-Host "Installed SkillHub $($manifest.version) ($($manifest.files.Count) files verified). The native window is open."
