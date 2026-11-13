@@ -5,8 +5,11 @@ using SkillSync.Daemon.Watchers;
 
 namespace SkillSync.Daemon.Core.Engine;
 
-public sealed record ConflictBackup(string Id, string Skill, string Destination, string Revision);
-public sealed record SyncDiagnostics(IReadOnlyList<ConflictBackup> Conflicts, IReadOnlyList<string> Trash);
+public sealed record ConflictBackup(string Id, string Skill, string Destination, string Revision, bool CanUndo);
+public sealed record TrashSkill(string Name, string Title, string? Origin, DateTimeOffset? DeletedAt,
+    IReadOnlyList<string> RestoreTargets);
+public sealed record SyncDiagnostics(IReadOnlyList<ConflictBackup> Conflicts, IReadOnlyList<TrashSkill> Trash,
+    IReadOnlyList<DestinationIssue> Issues);
 
 public sealed partial class SyncEngine
 {
@@ -16,7 +19,7 @@ public sealed partial class SyncEngine
         if (Directory.Exists(_discovery.ConflictsRoot))
         {
             foreach (var file in SkillStorage.EnumerateSafeFiles(_discovery.ConflictsRoot).Where(path => path.EndsWith(".json", StringComparison.OrdinalIgnoreCase))
-                .OrderDescending(StringComparer.Ordinal).Take(100))
+                .OrderByDescending(File.GetLastWriteTimeUtc).Take(100))
             {
                 try
                 {
@@ -26,7 +29,12 @@ public sealed partial class SyncEngine
                     var destination = document.RootElement.GetProperty("destination").GetString();
                     if (destination is not null && document.RootElement.GetProperty("markdown").ValueKind == JsonValueKind.String)
                     {
-                        backups.Add(new ConflictBackup(id, id.Split('/')[0], destination, ContentHasher.ComputeFileRevisionHash(content)));
+                        var slug = id.Split('/')[0];
+                        var entry = _ledger.Skills.GetValueOrDefault(slug);
+                        var target = entry?.Targets.GetValueOrDefault(destination);
+                        var canUndo = entry is { Deleted: false } && target is { State: "synced", Replacement: { } replacement } &&
+                            replacement.SnapshotId == id && replacement.Revision == entry.Revision;
+                        backups.Add(new ConflictBackup(id, slug, destination, ContentHasher.ComputeFileRevisionHash(content), canUndo));
                     }
                 }
                 catch (Exception exception) when (exception is IOException or ArgumentException or JsonException or KeyNotFoundException or InvalidOperationException)
@@ -35,10 +43,31 @@ public sealed partial class SyncEngine
                 }
             }
         }
+        var installed = InstalledProviderNames();
         var trash = _ledger.Skills.Where(pair => pair.Value.Deleted && pair.Value.Tombstone is not null)
-            .Select(pair => pair.Key).Order(StringComparer.Ordinal).ToArray();
-        return Task.FromResult(new SyncDiagnostics(backups, trash));
+            .Select(pair => ReadTrashSkill(pair.Key, pair.Value, installed)).OrderByDescending(item => item.DeletedAt).ToArray();
+        var issues = _managed.Values.SelectMany(skill => GetEntry(skill.Name).Targets.Values
+            .Where(target => installed.Contains(target.Provider) && target.State is "conflict" or "missing" or "error")
+            .Where(target => ResolveLedgerDestination(skill.Name, target.Path) is { } destination && skill.IsEnabledFor(destination.Provider))
+            .Select(target => Issue(skill, target))).OrderBy(issue => issue.Title, StringComparer.OrdinalIgnoreCase).ToArray();
+        return Task.FromResult(new SyncDiagnostics(backups, trash, issues));
     }, ct);
+
+    private TrashSkill ReadTrashSkill(string slug, SkillLedgerEntry entry, HashSet<string> installed)
+    {
+        var fallback = new TrashSkill(slug, CanonicalSkillModel.HumanizeSlug(slug), null, entry.DeletedAt, []);
+        try
+        {
+            var path = SkillPaths.Resolve(_discovery.TrashRoot, entry.Tombstone! + "/SKILL.md");
+            var text = SkillStorage.ReadText(path, SkillStorage.MaxMarkdownBytes);
+            if (text is null) return fallback;
+            var model = _transpilers[ProviderType.Canonical].MergeInbound(slug, text, null);
+            var targets = _transpilers.Keys.Where(provider => installed.Contains(ProviderName(provider)) && model.IsEnabledFor(provider))
+                .Select(ProviderName).ToArray();
+            return new(slug, model.GetEffectiveTitle(), model.OriginProvider, entry.DeletedAt, targets);
+        }
+        catch (Exception error) when (IsDiskOrInputFailure(error)) { return fallback; }
+    }
 
     public Task<CanonicalSkillModel> RecoverConflictCopyAsync(string id, string revision, CancellationToken ct = default) => RunAsync(async () =>
     {

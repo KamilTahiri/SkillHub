@@ -50,35 +50,54 @@ public static class SkillRestEndpoints
             return Results.Ok(new { status = "shown" });
         });
 
-        api.MapGet("/preferences", ([FromServices] DesktopPreferencesStore preferences, InstallManager install) =>
+        api.MapGet("/preferences", ([FromServices] DesktopPreferencesStore preferences, IDesktopStartup startup) =>
         {
             var settings = preferences.Read();
-            return Results.Ok(new { theme = settings.Theme, close_to_tray = settings.CloseToTray, auto_start = install.GetStatusReport().IsAutoStartRegistered });
+            return Results.Ok(new { theme = settings.Theme, close_to_tray = settings.CloseToTray, auto_start = startup.IsRegistered });
         });
         api.MapPatch("/preferences/theme", (ThemeRequest request, [FromServices] DesktopPreferencesStore preferences) =>
             Results.Ok(new { theme = preferences.SetTheme(request.Theme).Theme }));
 
+        api.MapPatch("/preferences/tray", (BooleanPreferenceRequest request, [FromServices] DesktopPreferencesStore preferences) =>
+            Results.Ok(new { enabled = preferences.SetCloseToTray(RequireEnabled(request)).CloseToTray }));
+        api.MapPatch("/preferences/startup", (BooleanPreferenceRequest request, IDesktopStartup startup, HttpContext context) =>
+        {
+            var enabled = RequireEnabled(request);
+            UpdateStartup(startup, context, enabled);
+            return Results.Ok(new { enabled });
+        });
+
         api.MapPut("/preferences", (DesktopPreferenceRequest request, [FromServices] DesktopPreferencesStore preferences,
-            InstallManager install, HttpContext context) =>
+            IDesktopStartup startup, HttpContext context) =>
         {
             if (request.Theme is not ("system" or "light" or "dark")) throw new ArgumentException("Choose a valid theme.");
-            var registered = install.GetStatusReport().IsAutoStartRegistered;
-            if (registered != request.AutoStart)
+            if (request.CloseToTray is not { } closeToTray || request.AutoStart is not { } autoStart)
+                throw new ArgumentException("Supply close_to_tray and auto_start explicitly.");
+            UpdateStartup(startup, context, autoStart);
+            var settings = preferences.SetOptions(request.Theme, closeToTray);
+            return Results.Ok(new { theme = settings.Theme, close_to_tray = settings.CloseToTray, auto_start = autoStart });
+        });
+
+        static bool RequireEnabled(BooleanPreferenceRequest request) =>
+            request.Enabled ?? throw new ArgumentException("Supply enabled explicitly.");
+
+        static void UpdateStartup(IDesktopStartup startup, HttpContext context, bool enabled)
+        {
+            var registered = startup.IsRegistered;
+            if (registered != enabled)
             {
-                if (request.AutoStart)
+                if (enabled)
                 {
-                    var update = install.RegisterOsAutoStart(port: context.Connection.LocalPort);
+                    var update = startup.RegisterOsAutoStart(port: context.Connection.LocalPort);
                     if (!update.Success) throw new ArgumentException(update.Details);
                 }
                 else
                 {
-                    var update = install.UnregisterOsAutoStart();
+                    var update = startup.UnregisterOsAutoStart();
                     if (!update.Success) throw new ArgumentException(update.Details);
                 }
             }
-            var settings = preferences.SetOptions(request.Theme, request.CloseToTray);
-            return Results.Ok(new { theme = settings.Theme, close_to_tray = settings.CloseToTray, auto_start = request.AutoStart });
-        });
+        }
 
         api.MapPost("/mcp-clients/{id}", (string id, ClientConfigurationRequest request, InstallManager install) =>
             Results.Json(install.ConfigureClient(id, request.Action), WebJsonOptions));
@@ -89,6 +108,12 @@ public static class SkillRestEndpoints
                 statusCode: health.Running ? StatusCodes.Status200OK : StatusCodes.Status503ServiceUnavailable);
         });
 
+        api.MapGet("/skills/{name}/destination-review", async (string name, string path, SyncEngine engine, CancellationToken ct) =>
+            Results.Json(await engine.ReviewDestinationAsync(name, path, ct).ConfigureAwait(false), WebJsonOptions));
+        api.MapPost("/skills/{name}/destination-review", async (string name, ResolveDestinationRequest request,
+            SyncEngine engine, CancellationToken ct) => SkillResult(engine,
+                await engine.ResolveDestinationAsync(name, request.Path, request.Version, request.Action, ct).ConfigureAwait(false)));
+
         api.MapGet("/diagnostics", async (SyncEngine engine, MultiRootFileWatcher watcher, CancellationToken ct) =>
         {
             var data = await engine.GetDiagnosticsAsync(ct).ConfigureAwait(false);
@@ -97,12 +122,16 @@ public static class SkillRestEndpoints
             {
                 watcher = new { running = health.Running, roots = health.Roots, last_error = health.LastError },
                 conflicts = data.Conflicts,
+                issues = data.Issues,
                 trash = data.Trash,
                 recent_activity = engine.GetRecentActivity().Reverse().Take(40)
             }, WebJsonOptions);
         });
         api.MapPost("/diagnostics/conflicts/recover", async (ConflictRecoveryRequest request, SyncEngine engine, CancellationToken ct) =>
             SkillResult(engine, await engine.RecoverConflictCopyAsync(request.Id, request.Revision, ct).ConfigureAwait(false)));
+
+        api.MapPost("/diagnostics/conflicts/undo", async (ConflictRecoveryRequest request, SyncEngine engine, CancellationToken ct) =>
+            SkillResult(engine, await engine.UndoDestinationReplacementAsync(request.Id, request.Revision, ct).ConfigureAwait(false)));
 
         // 1. Daemon Status, Install Status & MCP Configuration Snippets
         api.MapGet("/status", (
@@ -569,3 +598,7 @@ public sealed record TagDeleteRequest(
 public sealed record SkillTagPatch(string Tag, bool Add);
 
 internal sealed record ThemeRequest(string Theme);
+
+internal sealed record BooleanPreferenceRequest(bool? Enabled);
+
+internal sealed record ResolveDestinationRequest(string Path, string Version, string Action);

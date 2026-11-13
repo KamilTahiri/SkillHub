@@ -21,6 +21,7 @@ public sealed class LocalContractTests : IAsyncLifetime
     private const string McpToken = "test-only-http-mcp-token-with-32-characters";
     private readonly LocalHttpAccess _access = new(McpToken);
     private ProviderDiscoveryService _discovery = null!;
+    private readonly StartupFixture _startup = new();
     private SyncEngine _engine = null!;
     private McpJsonRpcHandler _rpc = null!;
     private WebApplication _app = null!;
@@ -40,6 +41,7 @@ public sealed class LocalContractTests : IAsyncLifetime
         builder.Services.AddSingleton(_engine);
         builder.Services.AddSingleton(_rpc);
         builder.Services.AddSingleton(new InstallManager(_home, Path.Combine(_home, "appdata")));
+        builder.Services.AddSingleton<IDesktopStartup>(_startup);
         builder.Services.AddSingleton(importer);
         builder.Services.AddSingleton<DesktopPreferencesStore>();
         builder.Services.AddSingleton<SkillHubWindowController>();
@@ -274,10 +276,38 @@ public sealed class LocalContractTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task PreferencePutRequiresBothSnakeCaseBooleansBeforeChangingAnything()
+    {
+        async Task<HttpResponseMessage> Put(object body)
+        {
+            using var request = new HttpRequestMessage(HttpMethod.Put, "/api/v1/preferences") { Content = JsonContent.Create(body) };
+            request.Headers.Add(LocalHttpAccess.DesktopHeader, _access.DesktopToken);
+            return await _client.SendAsync(request);
+        }
+        _startup.IsRegistered = true;
+        new DesktopPreferencesStore(_discovery).SetOptions("light", true);
+        using var missing = await Put(new { theme = "dark", close_to_tray = false });
+        Assert.Equal(HttpStatusCode.BadRequest, missing.StatusCode);
+        Assert.Equal("light", new DesktopPreferencesStore(_discovery).Read().Theme);
+        Assert.True(new DesktopPreferencesStore(_discovery).Read().CloseToTray);
+        Assert.True(_startup.IsRegistered);
+        Assert.Equal(0, _startup.Changes);
+        using var saved = await Put(new { theme = "dark", close_to_tray = true, auto_start = false });
+        saved.EnsureSuccessStatusCode();
+        using var result = JsonDocument.Parse(await saved.Content.ReadAsStringAsync());
+        Assert.True(result.RootElement.GetProperty("close_to_tray").GetBoolean());
+        Assert.False(result.RootElement.GetProperty("auto_start").GetBoolean());
+        Assert.False(_startup.IsRegistered);
+        Assert.Equal(1, _startup.Changes);
+        Assert.Equal("dark", new DesktopPreferencesStore(_discovery).Read().Theme);
+    }
+
+    [Fact]
     public async Task QuickThemeChangesOnlyTheTheme()
     {
         var prefs = new DesktopPreferencesStore(_discovery);
-        prefs.SetOptions("light", false);
+        _startup.IsRegistered = true;
+        prefs.SetOptions("light", true);
         var bounds = new DesktopBounds(40, 40, 900, 720, false);
         prefs.SetBounds(bounds);
         using var request = new HttpRequestMessage(HttpMethod.Patch, "/api/v1/preferences/theme")
@@ -289,7 +319,14 @@ public sealed class LocalContractTests : IAsyncLifetime
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
         var saved = new DesktopPreferencesStore(_discovery).Read();
         Assert.Equal("dark", saved.Theme);
-        Assert.False(saved.CloseToTray);
+        Assert.True(saved.CloseToTray);
+        Assert.True(_startup.IsRegistered);
+        Assert.Equal(0, _startup.Changes);
+        using var settingsRequest = Desktop(HttpMethod.Get, "/api/v1/preferences");
+        using var settingsResponse = await _client.SendAsync(settingsRequest);
+        using var settings = JsonDocument.Parse(await settingsResponse.Content.ReadAsStringAsync());
+        Assert.True(settings.RootElement.GetProperty("auto_start").GetBoolean());
+        Assert.True(settings.RootElement.GetProperty("close_to_tray").GetBoolean());
         Assert.Equal(bounds, saved.Bounds);
     }
 
@@ -302,6 +339,26 @@ public sealed class LocalContractTests : IAsyncLifetime
         store.SetOptions("light", false);
         Assert.Throws<ArgumentException>(() => store.SetOptions("unknown", true));
         Assert.Equal(new DesktopPreferences("light", false, bounds), new DesktopPreferencesStore(_discovery).Read());
+    }
+
+    private sealed class StartupFixture : IDesktopStartup
+    {
+        public bool IsRegistered { get; set; }
+        public int Changes { get; private set; }
+
+        public (bool Success, string Method, string Details) RegisterOsAutoStart(string? overrideExecutablePath = null, int port = 45880)
+        {
+            Changes++;
+            IsRegistered = true;
+            return (true, "test", string.Empty);
+        }
+
+        public (bool Success, string Details) UnregisterOsAutoStart()
+        {
+            Changes++;
+            IsRegistered = false;
+            return (true, string.Empty);
+        }
     }
 
     private sealed class GithubFixture(string commit) : HttpMessageHandler

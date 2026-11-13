@@ -1,7 +1,7 @@
-import { api } from '../api.js?v=20261113-v10';
-import { Latest, PROVIDERS, slugify } from '../state.js?v=20261113-v10';
-import { renderMarkdown } from '../markdown.js?v=20261113-v10';
-import { h, button, heading, field, select, panel, modal, errorText, busy, notify, disclosure } from '../ui.js?v=20261113-v10';
+import { api } from '../api.js?v=20261113-v11';
+import { Latest, PROVIDERS, slugify } from '../state.js?v=20261113-v11';
+import { renderMarkdown } from '../markdown.js?v=20261113-v11';
+import { h, button, heading, field, select, panel, modal, errorText, busy, notify, disclosure } from '../ui.js?v=20261113-v11';
 
 const TOPICS = [['', 'All topics'], ['coding', 'Coding'], ['web', 'Web and design'], ['data', 'Data'],
   ['devops', 'Infrastructure'], ['productivity', 'Productivity'], ['testing', 'Testing and security']];
@@ -59,6 +59,7 @@ export function createExplore(root, app) {
     }
   }
   async function load() {
+    if (isApplying) return;
     clearTimeout(timer);
     const job = listJob.begin();
     items = [];
@@ -91,7 +92,8 @@ export function createExplore(root, app) {
           h('span', { class: 'result-description' }, skill.description),
           h('span', { class: 'result-meta' }, skill.is_installed ? 'Already in library · ' + skill.repo : skill.repo));
         row.skill = skill;
-        return h('li', { class: 'result-row' }, row);
+        return h('li', { class: 'result-row' }, row, skill.existing_name &&
+          button('Open existing skill', () => app.read(skill.existing_name), 'quiet small'));
       })));
     if (filtered.length > visibleCount) results.append(button('Show more results', () => {
       const index = visibleCount;
@@ -101,6 +103,7 @@ export function createExplore(root, app) {
     }));
   }
   function resetPreview(restoreFocus = false) {
+    if (isApplying) return;
     previewJob.cancel();
     plan = undefined;
     selected = undefined;
@@ -113,6 +116,7 @@ export function createExplore(root, app) {
     }
   }
   async function prepare(selection, skill) {
+    if (isApplying) return;
     const job = previewJob.begin();
     plan = undefined;
     selected = skill;
@@ -129,11 +133,15 @@ export function createExplore(root, app) {
       const next = await api.prepare(selection, job.signal);
       if (!job.current()) return;
       plan = next;
+      const restoreFocus = preview.contains(document.activeElement);
       renderPlan(next);
+      if (restoreFocus) preview.querySelector('h2').focus({ preventScroll: true });
     } catch (error) {
       if (!job.current()) return;
-      preview.replaceChildren(panel(h('h2', {}, 'Preview unavailable'), errorText(error.message),
+      const restoreFocus = preview.contains(document.activeElement);
+      preview.replaceChildren(panel(h('h2', { tabindex: '-1' }, 'Preview unavailable'), errorText(error.message),
         button('Retry preview', () => prepare(selection, skill)), button('Import skill', () => {}, 'primary', { disabled: true })));
+      if (restoreFocus) preview.querySelector('h2').focus({ preventScroll: true });
     }
   }
   function renderPlan(review) {
@@ -152,20 +160,35 @@ export function createExplore(root, app) {
       }
       busy(apply, async () => {
         isApplying = true;
+        layout.setAttribute('aria-busy', 'true');
+        const blocked = [...root.querySelectorAll('button, input, select')].filter(control => control !== apply && !control.disabled);
+        for (const control of blocked) control.disabled = true;
         try {
           const response = await api.import(review, dest, targets.filter(target => target.control.checked).map(target => target.id));
-          resetPreview();
           isApplying = false;
+          resetPreview();
           await app.read(response.skill.name, response);
           notify('Imported ' + response.skill.title + '.');
-        } finally { isApplying = false; }
+        } finally {
+          isApplying = false;
+          layout.removeAttribute('aria-busy');
+          for (const control of blocked) control.disabled = false;
+        }
       }, error => feedback.replaceChildren(errorText(error.message)));
     }, 'primary');
+    apply.textContent = 'Add to My Skills';
     const files = Object.entries(review.supporting_files ?? {});
-    preview.replaceChildren(panel(
-      h('h2', {}, review.title),
-      h('div', { class: 'summary' }, h('p', {}, review.description), h('p', {}, review.source, ' · ', review.license),
-        h('code', { class: 'path' }, review.path), h('code', { class: 'path', title: review.revision }, 'Revision ' + review.revision.slice(0, 12))),
+    const existing = app.snapshot.skills.find(skill => !skill.is_catalog_only && skill.name === (review.existing_name ?? review.name));
+    const sources = h('div', { class: 'summary stack import-source' },
+      h('h2', { tabindex: '-1' }, review.title),
+      review.description && h('p', {}, review.description),
+      h('p', {}, review.source, ' · ', review.license),
+      h('p', { class: 'muted' }, files.length + ' supporting files', review.skipped_files?.length ? ' · ' + review.skipped_files.length + ' excluded' : ''),
+      h('details', {}, h('summary', {}, 'Source and revision'), h('code', { class: 'path' }, review.path),
+        h('code', { class: 'path' }, 'Revision ' + review.revision)),
+      review.name_exists && h('p', { class: 'warning' }, 'This name is already in the library. Choose a unique name to keep both.'),
+      existing && button('Open existing skill', () => app.read(existing.name), 'quiet small'));
+    const documentBody = h('div', { class: 'stack import-document' },
       h('article', { class: 'markdown' }, renderMarkdown(review.instructions_markdown, { title: review.title,
         openFile: path => {
           const file = files.find(([filePath]) => filePath === path);
@@ -174,22 +197,23 @@ export function createExplore(root, app) {
         } })),
       disclosure('Supporting files (' + files.length + ')', h('div', { class: 'stack' },
         files.map(([path, text]) => button(path, () => modal(path, h('pre', { class: 'file-code', tabindex: '0' }, text)), 'quiet')),
-        (review.skipped_files ?? []).map(path => h('p', { class: 'warning' }, 'Excluded: ' + path)))),
-      h('div', { class: 'stack' },
-        review.name_exists && h('p', { class: 'warning' }, 'A skill already uses the original name. Choose a unique name.'),
-        field('Save as', name),
-        h('fieldset', {}, h('legend', {}, 'Deploy after import'),
-          targets.length ? h('div', { class: 'checks' }, targets.map(target => h('label', {}, target.control, target.label)))
-            : h('p', { class: 'muted' }, 'No providers detected.')),
-        feedback, apply)));
+        (review.skipped_files ?? []).map(path => h('p', { class: 'warning' }, 'Excluded: ' + path)))));
+    const actionBar = h('div', { class: 'import-action-bar stack' }, feedback,
+      h('details', {}, h('summary', {}, 'Name and optional deployment'),
+        field('Save as', name), targets.length && h('div', { class: 'checks' }, targets.map(target => h('label', {}, target.control, target.label)))),
+      h('div', { class: 'spread' }, h('p', { class: 'muted' }, 'Saved locally unless you select providers.'), apply));
+    preview.replaceChildren(h('div', { class: 'import-review' }, sources, documentBody, actionBar));
   }
+
   function directImport() {
+    if (isApplying) return;
     const input = h('input', { class: 'input', type: 'text', placeholder: 'GitHub or skills.sh link', autofocus: true });
     const file = h('input', { class: 'input', type: 'file', accept: '.md,.mdc,text/markdown,text/plain' });
     const feedback = h('div', { role: 'status' });
     const review = button('Review skill', () => busy(review, async () => {
       const selectedFile = file.files[0];
       let selection;
+      if (selectedFile && input.value.trim()) throw new Error('Choose either a link or a Markdown file.');
       if (selectedFile) {
         if (selectedFile.size > 2 * 1024 * 1024) throw new Error('Choose a file smaller than 2 MB.');
         selection = { file_name: selectedFile.name, raw_markdown: await selectedFile.text() };

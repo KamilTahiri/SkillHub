@@ -1,12 +1,12 @@
-import { api } from '../api.js?v=20261113-v10';
-import { deployment, installedProviders, PROVIDERS, slugify, tagSlug } from '../state.js?v=20261113-v10';
-import { renderMarkdown } from '../markdown.js?v=20261113-v10';
-import { h, button, heading, field, disclosure, errorText, modal, notify } from '../ui.js?v=20261113-v10';
-import { showProviderPreview } from './transpilerPreview.js?v=20261113-v10';
+import { api } from '../api.js?v=20261113-v11';
+import { deployment, installedProviders, PROVIDERS, slugify, tagSlug } from '../state.js?v=20261113-v11';
+import { renderMarkdown } from '../markdown.js?v=20261113-v11';
+import { h, button, heading, field, disclosure, errorText, modal, notify } from '../ui.js?v=20261113-v11';
+import { showProviderPreview } from './transpilerPreview.js?v=20261113-v11';
 
 const blank = () => ({
   title: '', name: '', description: '', when_to_use: '', instructions_markdown: '', tags: [],
-  targets: Object.fromEntries(Object.keys(PROVIDERS).map(name => [name, { enabled: true }])), supporting_files: {}
+  targets: Object.fromEntries(Object.keys(PROVIDERS).map(name => [name, { enabled: false }])), supporting_files: {}
 });
 const supported = new Set(['scripts', 'resources', 'references', 'examples', 'assets', 'agents']);
 const windowsDevice = /^(?:con|prn|aux|nul|conin\$|conout\$|com[0-9¹²³]|lpt[0-9¹²³])$/i;
@@ -71,65 +71,143 @@ export function createEditor(root, app) {
     const globs = h('input', { class: 'input', value: (baseline.targets?.cursor?.globs ?? []).join(', ') });
     const always = h('input', { type: 'checkbox', checked: baseline.targets?.cursor?.always_apply === true });
     const concise = h('input', { class: 'input', value: baseline.summary_short ?? '', maxlength: '1024' });
+    const bundleDraft = Object.entries(baseline.supporting_files ?? {});
     const files = h('div', { class: 'stack' });
-    function addFile(path, text) {
-      const name = h('input', { class: 'input', value: path, placeholder: 'references/example.md' });
-      const content = h('textarea', { rows: '4' }, text);
-      const row = h('div', { class: 'panel stack' }, field('Relative path', name), field('File contents', content),
-        button('Remove file', () => { row.remove(); edited(); }, 'danger small'));
-      row.readFile = () => [name.value, content.value];
-      row.writeFile = (p, c) => { name.value = p; content.value = c; };
-      files.append(row);
-      return name;
+    const fileList = h('div', { class: 'file-selector stack', 'aria-label': 'Supporting files' });
+    const fileEditor = h('div', { class: 'stack' });
+    let selectedFile = 0;
+    function showFiles(focus = false) {
+      fileList.replaceChildren(...bundleDraft.map(([path], index) => button(path || 'Untitled file', () => {
+        selectedFile = index;
+        showFiles(true);
+      }, 'quiet small', { 'aria-pressed': String(index === selectedFile) })));
+      fileEditor.replaceChildren();
+      const file = bundleDraft[selectedFile];
+      if (!file) {
+        fileEditor.append(h('p', { class: 'muted' }, 'No supporting files.'));
+        return;
+      }
+      const pathError = h('small', { class: 'error', role: 'status' });
+      const name = h('input', { class: 'input', value: file[0], placeholder: 'references/example.md', oninput: event => {
+        file[0] = event.target.value;
+        fileList.children[selectedFile].textContent = file[0] || 'Untitled file';
+        checkPath();
+      } });
+      function checkPath() {
+        try {
+          const path = validatePath(file[0]).toLowerCase();
+          if (bundleDraft.some(other => other !== file && other[0].trim().replaceAll('\\', '/').toLowerCase() === path))
+            throw new Error('Supporting files need unique paths.');
+          pathError.textContent = '';
+          name.removeAttribute('aria-invalid');
+        } catch (error) {
+          pathError.textContent = error.message;
+          name.setAttribute('aria-invalid', 'true');
+        }
+      }
+      const content = h('textarea', { rows: '8', oninput: event => { file[1] = event.target.value; } }, file[1]);
+      fileEditor.append(field('Relative path', name), pathError, field('File contents', content),
+        button('Remove file', () => {
+          bundleDraft.splice(selectedFile, 1);
+          selectedFile = Math.max(0, Math.min(selectedFile, bundleDraft.length - 1));
+          showFiles();
+          edited();
+        }, 'quiet danger small'));
+      if (file[0]) checkPath();
+      if (focus) name.focus();
     }
-    for (const [path, text] of Object.entries(baseline.supporting_files ?? {})) addFile(path, text);
-    const deploymentSection = disclosure('Deployment and provider settings',
-      h('div', { class: 'stack' }, h('fieldset', {}, h('legend', {}, 'Providers'),
-        h('div', { class: 'checks' }, Object.entries(deploy).map(([key, item]) => h('label', {}, item.control,
-          item.label + (snapshot.providers.some(provider => provider.provider === key && provider.is_installed) ? '' : ' · not detected'))))),
-        field('Codex concise summary', concise), field('Claude allowed tools', tooling, 'Separate tool names with commas.'),
-        field('Cursor file globs', globs, 'Separate glob patterns with commas.'), h('label', { class: 'actions' }, always, 'Always apply Cursor rule')));
-    const fileSection = disclosure('Supporting files',
-      h('div', { class: 'stack' }, files, button('Add file', () => { addFile('', '').focus(); edited(); })));
-    const saveButton = h('button', { type: 'submit', class: 'btn primary' }, 'Save skill');
+    files.append(h('div', { class: 'file-workspace' }, fileList, fileEditor));
+    showFiles();
     const preview = button('Provider output', () => {
       try { showProviderPreview(readDraft(true), { providers: snapshot.providers }); }
       catch (error) { feedback.replaceChildren(errorText(error.message)); }
     });
+    const deploymentSection = disclosure('Deployment and provider settings',
+      h('div', { class: 'stack' }, h('div', { class: 'spread' }, h('h3', {}, 'Deployment'), preview),
+        h('fieldset', {}, h('legend', {}, 'Providers'),
+        h('div', { class: 'checks' }, Object.entries(deploy).map(([key, item]) => h('label', {}, item.control,
+          item.label + (snapshot.providers.some(provider => provider.provider === key && provider.is_installed) ? '' : ' · not detected'))))),
+        field('Codex concise summary', concise), field('Claude allowed tools', tooling, 'Separate tool names with commas.'),
+        field('Cursor file globs', globs, 'Separate glob patterns with commas.'), h('label', { class: 'actions' }, always, 'Always apply Cursor rule')));
+    const fileSection = disclosure('Supporting files', files, button('Add file', () => {
+      bundleDraft.push(['', '']);
+      selectedFile = bundleDraft.length - 1;
+      showFiles(true);
+      edited();
+    }, 'small'));
+    const saveButton = h('button', { type: 'submit', class: 'btn primary' }, 'Save skill');
     const cancel = button('Cancel', () => app.cancelEditor(returnKey));
     const draftStatus = h('span', { class: 'muted', role: 'status' });
-    const markdownPreview = button('Preview Markdown', () => modal('Markdown preview',
-      h('article', { class: 'markdown' }, renderMarkdown(instructions.value, { title: formTitle.value }))));
-    form.append(h('div', { class: 'editor-actions spread' }, h('div', { class: 'actions' }, saveButton, preview, cancel), draftStatus),
-      feedback, field('Title', formTitle), h('div', { class: 'columns' }, field('Description', summary), field('When to use', trigger)),
-      field('Instructions', instructions), markdownPreview, field('Tags', tags, 'Separate tags with commas.'), suggestionList, deploymentSection, fileSection);
+    const markdownPreview = h('article', { class: 'markdown', hidden: true, 'aria-label': 'Markdown preview' });
+    const write = button('Write', () => showMarkdown(false), 'quiet small', { 'aria-pressed': 'true' });
+    const previewMarkdown = button('Preview', () => showMarkdown(true), 'quiet small', { 'aria-pressed': 'false' });
+    function showMarkdown(show) {
+      instructions.hidden = show;
+      markdownPreview.hidden = !show;
+      write.setAttribute('aria-pressed', String(!show));
+      previewMarkdown.setAttribute('aria-pressed', String(show));
+      if (show) markdownPreview.replaceChildren(renderMarkdown(instructions.value, { title: formTitle.value }));
+    }
+    const titleError = h('small', { class: 'error', role: 'status' });
+    function checkTitle() {
+      const slug = baseline.revision ? baseline.name : slugify(formTitle.value);
+      const valid = formTitle.value.trim() && slug && slug.length <= 64 && !windowsDevice.test(slug);
+      titleError.textContent = valid ? '' : 'Enter a title with a valid skill name of up to 64 characters.';
+      formTitle.setAttribute('aria-invalid', String(!valid));
+      return Boolean(valid);
+    }
+    formTitle.addEventListener('input', checkTitle);
+    const scope = h('small', { class: 'muted' });
+    function updateScope() {
+      const targets = installedProviders(snapshot.providers).filter(id => deploy[id].control.checked);
+      scope.textContent = targets.length ? 'Deploy to ' + targets.map(id => PROVIDERS[id]).join(', ') : 'Save to My Skills only';
+    }
+    updateScope();
+    const headingRow = h('div', { class: 'editor-actions stack' },
+      h('div', { class: 'spread' }, field('Title', formTitle), h('div', { class: 'actions' }, saveButton, cancel)),
+      titleError, h('div', { class: 'spread' }, scope, draftStatus));
+    form.append(headingRow, feedback, h('div', { class: 'columns' }, field('Description', summary), field('When to use', trigger)),
+      h('div', { class: 'spread' }, h('h2', {}, 'Instructions'), h('div', { class: 'actions' }, write, previewMarkdown)),
+      h('div', { class: 'field' }, instructions, markdownPreview), field('Tags', tags, 'Separate tags with commas.'),
+      suggestionList, deploymentSection, fileSection);
+    instructions.setAttribute('aria-label', 'Instructions');
     const list = text => text.split(',').map(item => item.trim()).filter(Boolean);
     const raw = () => ({
       title: formTitle.value, description: summary.value, when_to_use: trigger.value, instructions_markdown: instructions.value,
       tags: tags.value, targets: Object.fromEntries(Object.entries(deploy).map(([key, item]) => [key, item.control.checked])),
       summary_short: concise.value, tools: tooling.value, globs: globs.value, always: always.checked,
-      files: Array.from(files.children, child => child.readFile())
+      files: bundleDraft.map(file => [...file])
     });
     const restore = draft => {
       formTitle.value = draft.title; summary.value = draft.description; trigger.value = draft.when_to_use;
       instructions.value = draft.instructions_markdown; tags.value = draft.tags; concise.value = draft.summary_short;
       tooling.value = draft.tools; globs.value = draft.globs; always.checked = draft.always;
       for (const key of Object.keys(deploy)) deploy[key].control.checked = draft.targets[key];
-      files.replaceChildren();
-      for (const [path, text] of draft.files) addFile(path, text);
+      bundleDraft.splice(0, bundleDraft.length, ...draft.files);
+      selectedFile = 0;
+      showFiles();
+      updateScope();
     };
     readDraft = validate => {
       const values = raw();
       const name = baseline.revision ? baseline.name : slugify(values.title);
-      if (validate && (!values.title.trim() || !name || name.length > 64 || windowsDevice.test(name))) {
+      if (validate && !checkTitle()) {
         formTitle.focus();
         throw new Error('Enter a title that creates a valid skill name of up to 64 characters.');
       }
       const bundle = Object.create(null);
       const paths = new Set();
-      for (const [path, contents] of values.files) {
-        const safe = validatePath(path);
-        if (paths.has(safe.toLowerCase())) throw new Error('Supporting files need unique paths.');
+      for (const [index, [path, contents]] of values.files.entries()) {
+        let safe;
+        try {
+          safe = validatePath(path);
+          if (paths.has(safe.toLowerCase())) throw new Error('Supporting files need unique paths.');
+        } catch (error) {
+          selectedFile = index;
+          fileSection.open = true;
+          showFiles(true);
+          throw error;
+        }
         paths.add(safe.toLowerCase());
         bundle[safe] = contents;
       }
@@ -148,10 +226,14 @@ export function createEditor(root, app) {
     dirty = false;
     isSaving = false;
     function edited() {
+      updateScope();
       dirty = JSON.stringify(raw()) !== initial;
       draftStatus.textContent = dirty ? 'Draft · unsaved changes' : '';
       clearTimeout(storageTimer);
-      storageTimer = setTimeout(() => draftStorage(draftKey, dirty ? { revision: baseline.revision ?? 0, fields: raw() } : null), 100);
+      storageTimer = setTimeout(() => {
+        const stored = draftStorage(draftKey, dirty ? { revision: baseline.revision ?? 0, fields: raw() } : null);
+        if (dirty && stored === null) draftStatus.textContent = 'Draft · automatic recovery unavailable';
+      }, 100);
     }
     form.addEventListener('input', edited);
     async function save() {
@@ -188,7 +270,26 @@ export function createEditor(root, app) {
         feedback.textContent = 'Recovered your unsaved draft.';
       } else {
         feedback.replaceChildren(h('p', { class: 'warning' }, 'This skill changed after your draft was saved.'),
-          button('Recover draft text', () => modal('Draft from an earlier revision', h('pre', { class: 'file-code' }, restored.fields.instructions_markdown))));
+          button('Compare saved draft', () => {
+            const current = raw();
+            const labels = { title: 'Title', description: 'Description', when_to_use: 'When to use',
+              instructions_markdown: 'Instructions', tags: 'Tags', summary_short: 'Short description',
+              tools: 'Tools', globs: 'File patterns', always: 'Always apply', targets: 'Destinations', files: 'Supporting files' };
+            const display = value => typeof value === 'string' ? value : JSON.stringify(value, null, 2);
+            const changed = Object.keys(labels).filter(key => display(current[key]) !== display(restored.fields[key]));
+            const comparison = h('div', { class: 'stack' }, changed.map(key => disclosure(labels[key],
+              h('div', { class: 'columns review-compare' },
+                h('section', {}, h('h3', {}, 'Current'), h('pre', { class: 'file-code', tabindex: '0' }, display(current[key]))),
+                h('section', {}, h('h3', {}, 'Saved draft'), h('pre', { class: 'file-code', tabindex: '0' }, display(restored.fields[key])))))));
+            if (!changed.length) comparison.append(h('p', {}, 'The draft matches this revision.'));
+            const recover = button('Use draft in editor', () => {
+              restore(restored.fields);
+              edited();
+              dialog.close();
+              feedback.textContent = 'Draft loaded. Save to apply these changes.';
+            }, 'primary');
+            const dialog = modal('Draft from an earlier revision', comparison, changed.length ? recover : null);
+          }));
       }
     }
     root.saveDraft = save;

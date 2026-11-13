@@ -22,6 +22,7 @@ public sealed class SkillLedgerEntry
     public Dictionary<string, string> CanonicalFiles { get; set; } = new(SkillPaths.Comparer);
     public string? Tombstone { get; set; }
     public bool Deleted { get; set; }
+    public DateTimeOffset? DeletedAt { get; set; }
     public string? CatalogId { get; set; }
 
     [JsonPropertyName("lastUpdatedUtc")]
@@ -66,12 +67,17 @@ public sealed class TargetFileLedger
     public Dictionary<string, string> Files { get; set; } = new(SkillPaths.Comparer);
     public Dictionary<string, string> OwnedFiles { get; set; } = new(SkillPaths.Comparer);
     public PendingProjection? Pending { get; set; }
+    public ReviewedReplacement? Replacement { get; set; }
+    public string? AcknowledgedHash { get; set; }
     public string? ConflictHash { get; set; }
     public string? Error { get; set; }
     public string? AppliedDescription { get; set; }
 }
 
-public sealed record PendingProjection(string? RawHash, Dictionary<string, string> Files, bool Withdraw, Dictionary<string, string>? OwnedFiles = null, string? PreviousRawHash = null);
+public sealed record PendingProjection(string? RawHash, Dictionary<string, string> Files, bool Withdraw, Dictionary<string, string>? OwnedFiles = null, string? PreviousRawHash = null,
+    string? RestoreSnapshotId = null);
+
+public sealed record ReviewedReplacement(string SnapshotId, long Revision, string AppliedManifest);
 
 public sealed record SyncDestinationStatus(
     [property: JsonPropertyName("provider")] string Provider,
@@ -79,4 +85,3 @@ public sealed record SyncDestinationStatus(
     [property: JsonPropertyName("state")] string State,
     [property: JsonPropertyName("applied_revision")] long AppliedRevision,
     [property: JsonPropertyName("error")] string? Error);
-

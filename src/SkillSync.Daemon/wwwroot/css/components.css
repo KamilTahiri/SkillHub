@@ -120,3 +120,50 @@ dialog::backdrop { background: #10111bb5; }
   .result-meta { max-width: 32ch; }
   .panel { padding: 12px; }
 }
+
+/* The Library, Reader and Settings share quiet rows. Exceptions carry their own action. */
+.library-body .results { border: 0; border-radius: 0; background: transparent; }
+.library-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 10px; align-items: center; }
+.library-row .result-button { padding-inline: 8px; }
+.library-row-status { display: flex; align-items: center; justify-content: flex-end; gap: 8px; flex-wrap: wrap; padding-inline: 6px; }
+.library-row-status .provider-badge { border: 0; background: transparent; padding: 3px; color: var(--secondary); }
+.library-row-status .provider-badge .ui-icon { width: 16px; height: 16px; }
+.library-row .chip { border: 0; background: var(--raised); }
+.library-row-status .warning { color: var(--warn); }
+.reader-tabs { display: flex; gap: 8px; position: sticky; top: var(--app-bar-height); z-index: 2; background: var(--surface); padding: 8px 0; border-bottom: 1px solid var(--line); scroll-margin-top: var(--app-bar-height); }
+.reader-tabs [aria-pressed="true"], .editor-form [aria-pressed="true"] { background: var(--accent-soft); }
+.reader-grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(150px, 220px); gap: 28px; align-items: start; }
+.reader-inspector { position: sticky; top: calc(var(--app-bar-height) + 52px); padding-inline-start: 14px; border-inline-start: 1px solid var(--line); }
+.reader-inspector > summary { display: none; }
+.reader-inspector .disclosure { padding: 5px 0; border: 0; }
+.review-action { flex: 1 1 145px; display: grid; align-content: start; gap: 3px; }
+.review-action p { font-size: .8rem; }
+.issue-banner { background: var(--raised); border-inline-start: 3px solid var(--warn); border-radius: 6px; padding: 9px 12px; }
+.settings-group { display: grid; gap: 3px; padding-block: 4px 14px; }
+.settings-group > h2 { margin-bottom: 6px; }
+.settings-row { border-bottom: 1px solid var(--line); padding: 9px 4px; }
+.settings-row details { font-size: .83rem; }
+.settings-row details code, .import-source details code { display: block; }
+.settings-row .select { min-width: 125px; }
+.file-workspace { display: grid; grid-template-columns: minmax(110px, .65fr) minmax(0, 1.5fr); gap: 14px; align-items: start; }
+.file-selector { align-content: start; max-height: 320px; overflow: auto; }
+.file-selector button { justify-content: flex-start; overflow-wrap: anywhere; text-align: left; }
+.editor-actions > .spread > .field { flex: 1 1 180px; }
+.editor-actions .field + .actions { align-self: end; }
+.editor-actions { gap: 7px; }
+.import-review { min-width: 0; }
+.import-source, .import-action-bar { background: var(--surface); padding: 10px 12px; }
+.import-action-bar { border-top: 1px solid var(--line); box-shadow: 0 -8px 12px -10px var(--shadow); }
+.import-action-bar details { max-height: 22vh; overflow: auto; }
+.import-document { padding: 14px 12px; min-width: 0; }
+.review-compare .file-code { max-height: min(34vh, 360px); }
+@media (max-width: 600px) {
+  .library-row { grid-template-columns: minmax(0, 1fr); gap: 0; padding-bottom: 6px; }
+  .library-row-status { justify-content: flex-start; padding-inline: 8px; }
+  .reader-grid { grid-template-columns: minmax(0, 1fr); gap: 10px; }
+  .reader-inspector { position: static; grid-row: 1; border-inline-start: 0; padding-inline-start: 0; }
+  .reader-inspector > summary { display: list-item; cursor: pointer; }
+  .reader-inspector[open] > summary { margin-bottom: 8px; }
+  .file-workspace { grid-template-columns: minmax(0, 1fr); }
+  .file-selector { max-height: 125px; }
+}

@@ -1,3 +1,4 @@
+using System.Text.Json.Serialization;
 using System.Text.Json;
 using SkillSync.Daemon.Core.Engine;
 using SkillSync.Daemon.Watchers;
@@ -6,7 +7,9 @@ namespace SkillSync.Daemon.Desktop;
 
 public sealed record DesktopBounds(int X, int Y, int Width, int Height, bool Maximized);
 public sealed record DesktopPreferences(string Theme = "system", bool CloseToTray = true, DesktopBounds? Bounds = null);
-public sealed record DesktopPreferenceRequest(string Theme, bool CloseToTray, bool AutoStart);
+public sealed record DesktopPreferenceRequest(string Theme,
+    [property: JsonPropertyName("close_to_tray")] bool? CloseToTray,
+    [property: JsonPropertyName("auto_start")] bool? AutoStart);
 
 public sealed class DesktopPreferencesStore(ProviderDiscoveryService discovery)
 {
@@ -42,6 +45,8 @@ public sealed class DesktopPreferencesStore(ProviderDiscoveryService discovery)
         ValidateTheme(theme);
         return Update(current => current with { Theme = theme });
     }
+
+    public DesktopPreferences SetCloseToTray(bool enabled) => Update(current => current with { CloseToTray = enabled });
 
     private static void ValidateTheme(string theme)
     {

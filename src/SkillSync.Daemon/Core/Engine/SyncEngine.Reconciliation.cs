@@ -288,7 +288,7 @@ public sealed partial class SyncEngine
         }
         else if (slug != BootstrapSkillName)
         {
-            var changed = observations.Where(item => HasExternalChange(item)).ToList();
+            var changed = observations.Where(item => item.Target.AcknowledgedHash is null && HasExternalChange(item)).ToList();
             if (changed.Count == 1 && allowInbound && model.IsEnabledFor(changed[0].Destination.Provider) &&
                 changed[0].Target.AppliedRevision == entry.Revision && changed[0].Target.LastWrittenRawHash.Length > 0)
             {
@@ -393,19 +393,20 @@ public sealed partial class SyncEngine
         bool allowMissingRepair = false)
     {
         var (destination, target, observed) = item;
-        if (target.State == "conflict" && target.ConflictHash == SnapshotHash(observed))
+        if (target.AcknowledgedHash is not null && target.AcknowledgedHash == SnapshotHash(observed))
         {
+            await SetStateAsync(target, "external", null).ConfigureAwait(false);
             return;
         }
+        var intended = IntendedProjection(model, destination);
+        if (await TryRecognizeLegacyMirrorAsync(model, entry, item, intended).ConfigureAwait(false)) return;
+        if (target.State == "conflict" && target.ConflictHash == SnapshotHash(observed)) return;
         if (observed.Markdown is null && target.LastWrittenRawHash.Length != 0 && target.State != "withdrawn" && !allowMissingRepair)
         {
             await SetStateAsync(target, "missing", "The provider copy was removed outside SkillHub.").ConfigureAwait(false);
             return;
         }
 
-        var markdown = _transpilers[destination.Provider].TranspileOutbound(model, Path.GetDirectoryName(_storage.CanonicalPath(slug)));
-        var files = destination.HasBundle ? model.SupportingFiles : new Dictionary<string, string>(SkillPaths.Comparer);
-        var intended = new SkillDiskSnapshot(markdown, files);
         var expected = intended.Hash!;
         var desired = intended.FileHashes();
         var observedFiles = observed.FileHashes();
@@ -430,7 +431,7 @@ public sealed partial class SyncEngine
             }
             return;
         }
-        if (HasExternalChange(item) || !CanApplyFiles(destination.Directory, observedFiles, target.OwnedFiles, desired))
+        if (target.AcknowledgedHash is not null || HasExternalChange(item) || !CanApplyFiles(destination.Directory, observedFiles, target.OwnedFiles, desired))
         {
             await SaveConflictAsync(slug, item, "The destination has edits or unowned files.").ConfigureAwait(false);
             return;
@@ -472,6 +473,11 @@ public sealed partial class SyncEngine
         Destination destination, TargetFileLedger target, SkillDiskSnapshot observed)
     {
         var pending = target.Pending!;
+        if (pending.RestoreSnapshotId is { } snapshotId)
+        {
+            await RestoreReviewedDestinationAsync(slug, model, entry, destination, target, observed, snapshotId).ConfigureAwait(false);
+            return;
+        }
         if (pending.Withdraw)
         {
             await WithdrawAsync(slug, destination, target, observed).ConfigureAwait(false);
@@ -531,6 +537,7 @@ public sealed partial class SyncEngine
         target.State = "withdrawn";
         target.Error = null;
         target.ConflictHash = null;
+        target.AcknowledgedHash = null;
         _guards.TryRemove((slug, destination.Path), out _);
         await PersistAsync().ConfigureAwait(false);
         PublishActivity(slug, target.Provider, "withdrawn", $"Withdrew the owned copy at '{destination.Path}'.");
@@ -548,7 +555,8 @@ public sealed partial class SyncEngine
         }
     }
 
-    private async Task RecordAppliedAsync(string slug, SkillLedgerEntry entry, CanonicalSkillModel model, Observation item, bool owned)
+    private async Task RecordAppliedAsync(string slug, SkillLedgerEntry entry, CanonicalSkillModel model, Observation item, bool owned,
+        string? acknowledgedHash = null)
     {
         var (destination, target, snapshot) = item;
         target.LastWrittenRawHash = snapshot.Hash!;
@@ -562,6 +570,7 @@ public sealed partial class SyncEngine
         target.State = owned ? "synced" : "external";
         target.Error = null;
         target.ConflictHash = null;
+        target.AcknowledgedHash = acknowledgedHash;
         target.AppliedDescription = destination.Provider switch
         {
             ProviderType.Codex => CodexTranspiler.BuildConciseDescription(model),
@@ -576,10 +585,10 @@ public sealed partial class SyncEngine
         }
     }
 
-    private async Task SaveConflictAsync(string slug, Observation item, string details)
+    private async Task<string?> SaveConflictAsync(string slug, Observation item, string details, bool forceSnapshot = false)
     {
         var hash = SnapshotHash(item.Snapshot);
-        if (item.Target.ConflictHash != hash)
+        if (forceSnapshot || item.Target.ConflictHash != hash)
         {
             var relative = $"{slug}/{DateTimeOffset.UtcNow:yyyyMMdd-HHmmssfff}-{Guid.NewGuid():N}.json";
             var path = SkillPaths.Resolve(_discovery.ConflictsRoot, relative);
@@ -594,7 +603,9 @@ public sealed partial class SyncEngine
             item.Target.Error = $"{details} Snapshot saved at '{path}'.";
             await PersistAsync().ConfigureAwait(false);
             PublishActivity(slug, item.Target.Provider, "conflict", item.Target.Error);
+            return relative;
         }
+        return null;
     }
 
     private static string SnapshotHash(SkillDiskSnapshot snapshot) =>

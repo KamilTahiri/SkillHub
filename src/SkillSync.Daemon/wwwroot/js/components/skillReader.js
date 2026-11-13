@@ -1,12 +1,19 @@
-import { api } from '../api.js?v=20261113-v10';
-import { deployment, installedProviders, destinationLabel, PROVIDERS, skillKey, tagSlug } from '../state.js?v=20261113-v10';
-import { renderMarkdown } from '../markdown.js?v=20261113-v10';
-import { h, button, heading, panel, disclosure, copy, download, busy, notify, modal, confirmAction, field, errorText } from '../ui.js?v=20261113-v10';
-import { showProviderPreview } from './transpilerPreview.js?v=20261113-v10';
+import { api } from '../api.js?v=20261113-v11';
+import { deployment, installedProviders, destinationLabel, targetIssues, PROVIDERS, skillKey, tagSlug } from '../state.js?v=20261113-v11';
+import { renderMarkdown } from '../markdown.js?v=20261113-v11';
+import { h, button, heading, panel, disclosure, copy, download, busy, notify, modal, confirmAction, field, errorText } from '../ui.js?v=20261113-v11';
+import { showProviderPreview } from './transpilerPreview.js?v=20261113-v11';
 
 export function createReader(root, app) {
   let modelKey;
   let lastRender;
+  let activeSection = 'Instructions';
+  let narrowDetailsOpen = false;
+  const narrow = matchMedia('(max-width: 600px)');
+  narrow.addEventListener('change', () => {
+    const details = root.querySelector('.reader-inspector');
+    if (details) details.open = !narrow.matches || narrowDetailsOpen;
+  });
   const openDisclosures = new Set();
   root.classList.add('reading');
 
@@ -25,7 +32,7 @@ export function createReader(root, app) {
     const sameSkill = modelKey === id;
     const scroll = window.scrollY;
     const focused = root.contains(document.activeElement) ? document.activeElement.dataset.focusKey : null;
-    if (!sameSkill) openDisclosures.clear();
+    if (!sameSkill) { openDisclosures.clear(); activeSection = 'Instructions'; narrowDetailsOpen = false; }
     modelKey = id;
     lastRender = identity;
     const readOnly = skill.is_catalog_only || skill.source_category === 'system';
@@ -42,7 +49,7 @@ export function createReader(root, app) {
     const actions = button('Actions', () => showActions(detail, snapshot, readOnly), '', { 'data-focus-key': 'actions' });
     const title = heading(skill.title || skill.name, h('div', { class: 'actions' }, primary, actions),
       h('p', { class: 'result-count' }, skill.origin_provider || 'Personal', ' · ',
-        h('span', { class: sync.tone ?? 'muted' }, sync.label)));
+        h('span', { class: 'muted' }, sync.key === 'issue' ? 'Managed skill' : sync.label)));
 
     const tags = h('div', { class: 'chips', 'aria-label': 'Skill tags' },
       ...(skill.tags ?? []).map(tag => readOnly ? h('span', { class: 'chip' }, '#' + tag)
@@ -50,20 +57,45 @@ export function createReader(root, app) {
           onclick: event => busy(event.currentTarget, async () => changes(await api.skillTag(skill.name, tag, false))) }, '#' + tag, ' ×')),
       !readOnly && button('Add tag', () => addTag(skill, snapshot, changes), 'small', { 'data-focus-key': 'add-tag' }));
 
+    const issues = targetIssues(skill, installedProviders(snapshot.providers));
+    const content = h('div', { class: 'stack reader-section' });
+    const tabs = h('nav', { class: 'reader-tabs', 'aria-label': 'Skill sections' });
+    const sections = {
+      Instructions: () => h('article', { class: 'markdown reader-document', 'aria-label': 'Skill instructions' },
+        renderMarkdown(skill.instructions_markdown, { title: skill.title, query, openFile })),
+      Files: () => Object.keys(files).length ? h('div', { class: 'stack' },
+        Object.keys(files).sort().map(path => button(path, () => openFile(path), 'quiet')))
+        : h('p', { class: 'muted' }, 'This skill has no supporting files.'),
+      Destinations: () => destinations(skill, snapshot, changes, readOnly)
+    };
+    function showSection() {
+      for (const tab of tabs.children) tab.setAttribute('aria-pressed', String(tab.dataset.section === activeSection));
+      content.replaceChildren(sections[activeSection]());
+    }
+    tabs.append(...Object.keys(sections).map(name => button(name, event => {
+      activeSection = name;
+      showSection();
+      if (tabs.getBoundingClientRect().top <= 61) tabs.scrollIntoView({ block: 'start' });
+      event.currentTarget.focus({ preventScroll: true });
+    }, 'quiet small', { 'data-section': name, 'data-focus-key': 'section-' + name })));
+    showSection();
+    const source = disclosure('Source details', h('p', { class: 'path' }, skill.source_path ?? skill.name),
+      skill.revision && h('p', { class: 'muted' }, 'Canonical revision ' + skill.revision));
+    const inspector = h('details', { class: 'reader-inspector' }, h('summary', {}, 'Skill details'),
+      h('div', { class: 'stack' }, tags, source));
+    inspector.open = !narrow.matches || narrowDetailsOpen;
+    inspector.addEventListener('toggle', () => { if (narrow.matches) narrowDetailsOpen = inspector.open; });
     const section = h('div', { class: 'stack' }, h('div', { class: 'actions' }, button('← Library', () => app.navigate('library'), 'quiet')),
-      title, tags,
+      title,
+      issues.length > 0 && h('div', { class: 'issue-banner stack' }, issues.map(issue => h('div', { class: 'spread' },
+        h('p', {}, issue.label + (issue.state === 'missing' ? ' copy is missing.' : ' needs review.')),
+        button('Review ' + issue.label, () => app.review(skill.name, issue), 'small', { 'data-focus-key': 'review-' + issue.path })))),
       h('div', { class: 'summary' },
         skill.description && h('p', {}, skill.description),
         skill.when_to_use && h('p', {}, h('strong', {}, 'When to use '), skill.when_to_use)),
-      h('article', { class: 'markdown reader-document', 'aria-label': 'Skill instructions' },
-        renderMarkdown(skill.instructions_markdown, { title: skill.title, query, openFile })),
-      destinations(skill, snapshot, changes, readOnly),
-      Object.keys(files).length && disclosure('Supporting files (' + Object.keys(files).length + ')',
-        h('div', { class: 'stack' }, Object.keys(files).sort().map(path => button(path, () => openFile(path), 'quiet')))),
-      disclosure('Source details', h('p', { class: 'path' }, skill.source_path ?? skill.name),
-        skill.revision && h('p', { class: 'muted' }, 'Canonical revision ' + skill.revision)));
-
+      tabs, h('div', { class: 'reader-grid' }, content, inspector));
     for (const details of section.querySelectorAll('details')) {
+      if (details === inspector) continue;
       const label = details.firstElementChild.textContent;
       details.open = openDisclosures.has(label);
       details.addEventListener('toggle', () => details.open ? openDisclosures.add(label) : openDisclosures.delete(label));
@@ -148,7 +180,7 @@ function destinations(skill, snapshot, change, readOnly) {
         : h('p', { class: 'muted' }, provider?.is_installed ? enabled ? 'Awaiting deployment' : 'Disabled' : 'Client not detected')),
     h('div', { class: 'actions' }, actions));
   });
-  return disclosure('Sync destinations', rows);
+  return h('div', { class: 'stack' }, rows);
 }
 
 function addTag(skill, snapshot, change) {

@@ -49,6 +49,64 @@ public sealed class SyncSafetyTests : IDisposable
     }
 
     [Fact]
+    public async Task IdenticalAntigravityMirrorIsRecognizedWithoutRewritingItsBundle()
+    {
+        var discovery = CreateDiscovery();
+        await using var engine = new SyncEngine(discovery);
+        var skill = await engine.CreateSkillAsync(Fixture(), "test");
+        var primary = discovery.GetSkillPrimaryFilePath(ProviderType.Gemini, skill.Name);
+        var mirror = Path.Combine(_root, ".gemini", "antigravity", "skills", skill.Name, "SKILL.md");
+        var mirrorFolder = Path.GetDirectoryName(mirror)!;
+        Directory.CreateDirectory(mirrorFolder);
+        var primaryFolder = Path.GetDirectoryName(primary)!;
+        foreach (var file in Directory.GetFiles(primaryFolder, "*", SearchOption.AllDirectories))
+        {
+            var destination = Path.Combine(mirrorFolder, Path.GetRelativePath(primaryFolder, file));
+            Directory.CreateDirectory(Path.GetDirectoryName(destination)!);
+            File.Copy(file, destination);
+        }
+        var bytes = File.ReadAllBytes(mirror);
+        var timestamp = File.GetLastWriteTimeUtc(mirror);
+        await engine.SynchronizeAllAsync();
+        Assert.Equal(bytes, File.ReadAllBytes(mirror));
+        Assert.Equal(timestamp, File.GetLastWriteTimeUtc(mirror));
+        Assert.Contains(engine.GetSkill(skill.Name)!.Destinations, target => target.Path == mirror && target.State == "synced");
+        Assert.Empty((await engine.GetDiagnosticsAsync()).Issues);
+    }
+
+    [Fact]
+    public async Task DestinationReviewRejectsStaleFilesAndCanKeepSkillHubVersion()
+    {
+        var discovery = CreateDiscovery();
+        await using var engine = new SyncEngine(discovery);
+        var skill = await engine.CreateSkillAsync(Fixture(), "test");
+        var mirror = Path.Combine(_root, ".gemini", "antigravity", "skills", skill.Name, "SKILL.md");
+        Directory.CreateDirectory(Path.GetDirectoryName(mirror)!);
+        await File.WriteAllTextAsync(mirror, "---\nname: safety-probe\ndescription: existing\n---\nProvider content.\n");
+        await engine.SynchronizeAllAsync();
+        var review = await engine.ReviewDestinationAsync(skill.Name, mirror);
+        Assert.Equal("different", review.Reason);
+        Assert.Contains("keep", review.Actions);
+        await File.AppendAllTextAsync(mirror, "Later edit.");
+        await Assert.ThrowsAsync<SkillConflictException>(() =>
+            engine.ResolveDestinationAsync(skill.Name, mirror, review.Version, "keep"));
+        Assert.Contains("Later edit.", await File.ReadAllTextAsync(mirror));
+
+        review = await engine.ReviewDestinationAsync(skill.Name, mirror);
+        var result = await engine.ResolveDestinationAsync(skill.Name, mirror, review.Version, "keep");
+        Assert.Contains("Original instructions.", await File.ReadAllTextAsync(mirror));
+        Assert.Contains(result.Destinations, target => target.Path == mirror && target.State == "synced");
+        Assert.Empty((await engine.GetDiagnosticsAsync()).Issues);
+        var snapshot = Assert.Single((await engine.GetDiagnosticsAsync()).Conflicts, backup => backup.CanUndo);
+        var restored = await engine.UndoDestinationReplacementAsync(snapshot.Id, snapshot.Revision);
+        Assert.Contains("Later edit.", await File.ReadAllTextAsync(mirror));
+        Assert.Contains(restored.Destinations, target => target.Path == mirror && target.State == "external");
+        await engine.SynchronizeAllAsync();
+        Assert.Contains("Later edit.", await File.ReadAllTextAsync(mirror));
+        Assert.Empty((await engine.GetDiagnosticsAsync()).Issues);
+    }
+
+    [Fact]
     public async Task UninstalledProviderDoesNotKeepSkillActiveOrCountAsSyncFailure()
     {
         Directory.CreateDirectory(Path.Combine(_root, ".claude", "skills"));

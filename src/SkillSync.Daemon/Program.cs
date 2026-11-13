@@ -303,6 +303,7 @@ public static class Program
         builder.Services.AddSingleton(windowController);
         builder.Services.AddSingleton(_ => new ProviderDiscoveryService(customHome));
         builder.Services.AddSingleton(_ => new InstallManager(customHome));
+        builder.Services.AddSingleton<IDesktopStartup>(services => services.GetRequiredService<InstallManager>());
         builder.Services.AddSingleton<SyncEngine>();
         builder.Services.AddSingleton<DesktopPreferencesStore>();
         builder.Services.AddSingleton<SkillImporterService>();
@@ -324,7 +325,7 @@ public static class Program
         {
             OnPrepareResponse = ctx =>
             {
-                ctx.Context.Response.Headers.CacheControl = ctx.Context.Request.Query["v"] == "20261113-v10" &&
+                ctx.Context.Response.Headers.CacheControl = ctx.Context.Request.Query["v"] == "20261113-v11" &&
                     Path.GetExtension(ctx.File.Name) is ".js" or ".css" ? "private, max-age=31536000, immutable" : "no-store";
             }
         });

@@ -17,7 +17,7 @@ const sample = {
   name: 'fixture', title: 'Fixture', revision: 1, source_category: 'user', origin_provider: 'Personal',
   description: 'A test skill', tags: ['one', 'two', 'three', 'four', 'five'],
   targets: { codex: { enabled: false }, claude: { enabled: false }, gemini: { enabled: false }, cursor: { enabled: false } },
-  destinations: [], supporting_files: {}, x_passthrough: { external: 'retained' },
+  destinations: [], supporting_files: { 'references/notes.md': 'Supporting notes' }, x_passthrough: { external: 'retained' },
   instructions_markdown: '# Fixture\n\n#### Fourth\n##### Fifth\n###### Sixth\n\n| A | B |\n| --- | --- |\n| 1 | 2 |\n\n- Parent\n  - Child\n\n[Search here](https://example.com/?q=fixture&mode=2)'
 };
 const installed = [
@@ -38,7 +38,7 @@ const item = name => ({ slug: name.toLowerCase(), title: name, description: name
   path: name + '/SKILL.md', git_ref: 'main' });
 
 async function fixtureServer() {
-  const fixture = { theme: 'dark', applied: null, preparing: new Set(), events: null, reads: 0 };
+  const fixture = { theme: 'dark', tray: true, startup: true, reviewed: null, applied: null, preparing: new Set(), events: null, reads: 0 };
   const server = createServer(async (req, res) => {
     const url = new URL(req.url, 'http://localhost');
     const send = (value, status = 200) => {
@@ -61,6 +61,16 @@ async function fixtureServer() {
         return send([sample, healthy, needsAttention]);
       }
       if (route === '/skills/fixture') return send({ skill: sample });
+      if (route === '/skills/conflicted') return send({ skill: needsAttention });
+      if (route === '/skills/conflicted/destination-review') {
+        if (req.method === 'POST') {
+          fixture.reviewed = data;
+          return send({ skill: needsAttention });
+        }
+        return send({ issue: { title: 'Conflicted' }, reason: 'different', version: 'review-hash',
+          files: [{ path: 'SKILL.md', change: 'Different', skill_hub: '---\nname: skill\n---\nOld body',
+            provider: '---\nname: skill\n---\nNew body' }], actions: ['keep', 'accept', 'copy', 'leave'] });
+      }
       if (route === '/tags') return send([{ tag: 'one', skill_count: 1 }]);
       if (route === '/providers') return send(installed);
       if (route === '/preferences/theme' && req.method === 'PATCH') {
@@ -68,10 +78,18 @@ async function fixtureServer() {
         return send({ theme: fixture.theme });
       }
       if (route === '/status') return send({ install: { mcp_clients: [] } });
-      if (route === '/diagnostics') return send({ watcher: { running: true, roots: 1 } });
+      if (route === '/diagnostics') return send({ watcher: { running: true, roots: 1 },
+        issues: [{ title: 'Conflicted', label: 'Gemini', state: 'conflict', path: '/gemini', skill: 'conflicted' }],
+        recent_activity: [{ event_type: 'synced', timestamp_utc: '2026-11-13T12:00:00Z', details: 'Applied a projection' }],
+        trash: [] });
+      if (route === '/preferences/tray' || route === '/preferences/startup') {
+        const key = route.split('/').at(-1);
+        fixture[key] = data.enabled;
+        return send({ enabled: fixture[key] });
+      }
       if (route === '/preferences') {
         if (req.method === 'PUT') fixture.theme = data.theme;
-        return send({ theme: fixture.theme, close_to_tray: true, auto_start: false });
+        return send({ theme: fixture.theme, close_to_tray: fixture.tray, auto_start: fixture.startup });
       }
       if (route === '/community/repos') return send({ repositories: [{ repo: 'featured/all', title: 'Featured' }] });
       if (route === '/community/skills') return send({ skills: ['Slow', 'Fast', 'Broken'].map(item) });
@@ -194,12 +212,12 @@ test('workbench at desktop and docked sizes, with keyboard, themes, Markdown and
       const size = (width, height, deviceScaleFactor) =>
         send('Emulation.setDeviceMetricsOverride', { width, height, deviceScaleFactor, mobile: false });
 
-      await size(460, 500, 1.5);
+      await size(480, 600, 1.5);
       await wait('document.querySelector("#library-results .result-button") && document.documentElement.dataset.theme === "dark"');
       assert.ok(await evaluate('document.documentElement.scrollWidth <= innerWidth'));
       assert.ok(await evaluate('document.querySelector(".result-button").getBoundingClientRect().top < innerHeight'));
       await verifyContrast(evaluate);
-      assert.match(await evaluate('document.querySelector(".result-button").textContent'), /Disabled/);
+      assert.match(await evaluate('document.querySelector(".library-row").textContent'), /Disabled/);
       assert.match(await evaluate('document.querySelector(".result-button").textContent'), /\+[1-9]/);
       const assertNoSerializedElements = async () =>
         assert.equal(await evaluate('document.body.textContent.includes("[object HTML")'), false);
@@ -221,9 +239,15 @@ test('workbench at desktop and docked sizes, with keyboard, themes, Markdown and
       await click('#quick-theme');
       await until(() => fixture.theme === 'dark', 'Quick theme was not restored');
 
-      assert.deepEqual(await evaluate('[...document.querySelectorAll("[data-control=row-mirrored] [data-synced-provider]")].map(e => e.textContent)'), ['Codex', 'Gemini']);
-      assert.equal(await evaluate('document.querySelector("[data-control=row-mirrored] .warning")'), null);
-      assert.match(await evaluate('document.querySelector("[data-control=row-conflicted] .warning").textContent'), /Needs attention/);
+      assert.deepEqual(await evaluate('[...document.querySelectorAll("[data-control=row-mirrored] + div [data-synced-provider]")].map(e => e.textContent)'), ['Codex', 'Gemini']);
+      assert.equal(await evaluate('document.querySelector("[data-control=row-mirrored] + div .warning")'), null);
+      assert.match(await evaluate('document.querySelector("[data-control=row-conflicted] + div .warning").textContent'), /Gemini needs review/);
+      await click('[data-control=row-conflicted] + div .warning');
+      await wait('document.querySelector("dialog[open]")?.textContent.includes("Frontmatter unchanged · Instructions changed")');
+      await textButton('Leave provider-managed');
+      await until(() => fixture.reviewed, 'Destination review action was not submitted');
+      assert.deepEqual(fixture.reviewed, { path: '/gemini', version: 'review-hash', action: 'leave' });
+      await wait('!document.querySelector("dialog[open]")');
       await click('[data-control="category-synced"]');
       assert.equal(await rowCount(), 2);
       await click('[data-control="category-user"]');
@@ -235,12 +259,12 @@ test('workbench at desktop and docked sizes, with keyboard, themes, Markdown and
       assert.equal(await rowCount(), 1);
       await click('[data-tag="three"]');
       assert.equal(await rowCount(), 1);
-      assert.equal(await evaluate('document.querySelectorAll("[data-tag][aria-pressed=true]").length'), 2);
+      assert.equal(await evaluate('document.querySelectorAll(".active-filters button.chip").length'), 2);
       await evaluate('const mode = document.querySelector("[aria-label=\\"Tag matching\\"]"); mode.value = "any"; mode.dispatchEvent(new Event("change"));');
       assert.equal(await rowCount(), 3);
       await assertNoSerializedElements();
       await textButton('Clear filters');
-      assert.equal(await evaluate('document.querySelectorAll("[data-tag][aria-pressed=true]").length'), 0);
+      assert.equal(await evaluate('document.querySelectorAll(".active-filters button.chip").length'), 0);
       await evaluate('document.querySelector("[data-tag=one]").focus()');
       await key('Escape');
       await wait('document.querySelector("#library-filters").hidden && document.activeElement.id === "library-filters-toggle"');
@@ -254,6 +278,14 @@ test('workbench at desktop and docked sizes, with keyboard, themes, Markdown and
       assert.equal(await evaluate('document.querySelectorAll("#reader-screen li li").length'), 1);
       assert.equal(await evaluate('document.querySelector("#reader-screen article a")?.href'), 'https://example.com/?q=fixture&mode=2');
 
+      await textButton('Files');
+      await textButton('references/notes.md');
+      await wait('document.querySelector("dialog[open]")?.textContent.includes("Supporting notes")');
+      await key('Escape');
+      await wait('!document.querySelector("dialog[open]")');
+      await textButton('Destinations');
+      await textButton('Instructions');
+      await click('.reader-inspector summary');
       await textButton('Add tag');
       await wait('document.querySelector("dialog[open] input") === document.activeElement');
       await key('Escape');
@@ -278,7 +310,7 @@ test('workbench at desktop and docked sizes, with keyboard, themes, Markdown and
       await wait('document.querySelector("#explore-preview h2")?.textContent === "Fast review"');
       await delay(800);
       assert.equal(await evaluate('document.querySelector("#explore-preview h2").textContent'), 'Fast review');
-      await size(460, 500, 1);
+      await size(480, 600, 1);
       assert.equal(await evaluate('getComputedStyle(document.querySelector(".explore-results")).display'), 'none');
       await textButton('← Back to results');
       await click('#explore-screen .result-row:nth-child(3) button');
@@ -287,7 +319,7 @@ test('workbench at desktop and docked sizes, with keyboard, themes, Markdown and
       await textButton('← Back to results');
       await click('#explore-screen .result-row:nth-child(2) button');
       await wait('document.querySelector("#explore-preview h2")?.textContent === "Fast review"');
-      await textButton('Import skill');
+      await textButton('Add to My Skills');
       await until(() => fixture.applied, 'No import request received');
       assert.deepEqual(fixture.applied, { route: '/imports/Fast-plan/apply', data: { revision: 'Fast-commit', name: 'fixture', providers: [] } });
       await wait('!document.querySelector("#reader-screen").hidden');
@@ -295,15 +327,29 @@ test('workbench at desktop and docked sizes, with keyboard, themes, Markdown and
       await click('[data-route="settings"]');
       await textButton('Appearance & Startup');
       await wait('document.querySelector("#settings-screen select")');
-      await evaluate('document.querySelector("#settings-screen select").value = "light"');
-      await textButton('Save preferences');
+      await evaluate('const themeSelect = document.querySelector("#settings-screen select"); themeSelect.value = "light"; themeSelect.dispatchEvent(new Event("change"));');
       await wait('document.documentElement.dataset.theme === "light"');
       await verifyContrast(evaluate);
       assert.ok(await evaluate('document.documentElement.scrollWidth <= innerWidth'));
       await textButton('Diagnostics');
-      await wait('document.querySelector("#settings-screen").textContent.includes("1 watched roots")');
+      await wait('document.querySelector("#settings-screen").textContent.includes("Watching 1 folders")');
+      await textButton('Review Gemini');
+      await wait('document.querySelector("dialog[open]")?.textContent.includes("Frontmatter unchanged")');
+      await key('Escape');
+      await wait('!document.querySelector("dialog[open]")');
+      await textButton('Recent Operations');
+      await wait('document.querySelector("#settings-screen").textContent.includes("Applied a projection")');
+      await textButton('Trash');
+      await wait('!document.querySelector("#settings-screen").textContent.includes("Applied a projection")');
+      assert.equal(fixture.startup, true);
+      assert.equal(fixture.tray, true);
 
       await delay(250);
+      await size(1280, 820, 1.25);
+      await verifyContrast(evaluate);
+      await click('#quick-theme');
+      await wait('document.documentElement.dataset.theme === "dark"');
+      await verifyContrast(evaluate);
       const baseline = fixture.reads;
       for (let id = 1; id <= 8; id++) fixture.events.write('id: ' + id + '\nevent: activity\ndata: {}\n\n');
       await until(() => fixture.reads > baseline, 'Activity did not refresh the snapshot');

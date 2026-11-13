@@ -1,12 +1,13 @@
-import { api } from './api.js?v=20261113-v10';
-import { Latest, PROVIDERS, deployment, installedProviders, skillKey, tagSlug } from './state.js?v=20261113-v10';
-import { icon } from './icons.js?v=20261113-v10';
-import { button, confirmAction, h, modal, notify } from './ui.js?v=20261113-v10';
-import { createLibrary } from './components/skillList.js?v=20261113-v10';
-import { createReader } from './components/skillReader.js?v=20261113-v10';
-import { createEditor } from './components/skillEditor.js?v=20261113-v10';
-import { createExplore } from './components/explore.js?v=20261113-v10';
-import { createSettings } from './components/statusBar.js?v=20261113-v10';
+import { api } from './api.js?v=20261113-v11';
+import { Latest, PROVIDERS, deployment, installedProviders, skillKey, tagSlug } from './state.js?v=20261113-v11';
+import { icon } from './icons.js?v=20261113-v11';
+import { button, confirmAction, h, modal, notify } from './ui.js?v=20261113-v11';
+import { createLibrary } from './components/skillList.js?v=20261113-v11';
+import { createReader } from './components/skillReader.js?v=20261113-v11';
+import { createEditor } from './components/skillEditor.js?v=20261113-v11';
+import { createExplore } from './components/explore.js?v=20261113-v11';
+import { showDestinationReview } from './components/destinationReview.js?v=20261113-v11';
+import { createSettings } from './components/statusBar.js?v=20261113-v11';
 
 const views = Object.fromEntries(['library', 'reader', 'editor', 'explore', 'settings']
   .map(name => [name, document.getElementById(name + '-screen')]));
@@ -40,6 +41,10 @@ const app = {
   cancelEditor: key => key ? read(key) : navigate('library'),
   updateDetail,
   applyTheme,
+  setTheme,
+  get theme() { return theme; },
+  review: (skill, target) => showDestinationReview(app, skill, target),
+  refreshDiagnostics: () => { if (route === 'settings') settings.refreshDiagnostics(); },
   exploreCatalog: () => navigate('explore', { catalog: true })
 };
 const library = createLibrary(views.library, app);
@@ -145,6 +150,7 @@ async function refresh() {
     renderProviderButton();
     library.update(snapshot);
     if (route === 'reader') await loadDetail();
+    if (route === 'settings') settings.refreshDiagnostics();
   } catch (error) {
     if (job.current()) {
       if (!loaded) library.error(error.message);
@@ -223,6 +229,7 @@ function applyTheme(value) {
   themeButton.replaceChildren(icon(effective === 'dark' ? 'sun' : 'moon'));
   themeButton.setAttribute('aria-label', switchLabel);
   themeButton.title = switchLabel;
+  settings.syncTheme(theme);
   window.chrome?.webview?.postMessage(JSON.stringify({ type: 'theme', theme: effective }));
 }
 systemTheme.addEventListener('change', () => { if (theme === 'system') applyTheme(theme); });
@@ -261,17 +268,31 @@ async function migrateTags() {
     localStorage.removeItem('skillhub_custom_tags');
   } catch { /* Leave the old copy available for retry on next startup. */ }
 }
+let themeWrites = 0;
+let confirmedTheme = theme;
+let themeQueue = Promise.resolve();
+function setTheme(next) {
+  const id = ++themeWrites;
+  applyTheme(next);
+  const operation = themeQueue.then(() => api.theme(next)).then(result => {
+    confirmedTheme = result.theme;
+    if (id === themeWrites) applyTheme(confirmedTheme);
+  }).catch(error => {
+    if (id === themeWrites) applyTheme(confirmedTheme);
+    throw error;
+  });
+  themeQueue = operation.catch(() => {});
+  return operation;
+}
 themeButton.addEventListener('click', async () => {
-  const previous = theme;
   const next = document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark';
   themeButton.disabled = true;
-  applyTheme(next);
-  try { await api.theme(next); }
-  catch (error) { applyTheme(previous); notify(error.message); }
+  try { await setTheme(next); }
+  catch (error) { notify(error.message); }
   finally { themeButton.disabled = false; }
 });
 applyTheme('system');
-api.preferences().then(data => applyTheme(data.theme)).catch(() => {}).finally(() => { themeButton.disabled = false; });
+api.preferences().then(data => { if (!themeWrites) applyTheme(confirmedTheme = data.theme); }).catch(() => {}).finally(() => { themeButton.disabled = false; });
 migrateTags().finally(() => {
   refresh();
   startEvents();

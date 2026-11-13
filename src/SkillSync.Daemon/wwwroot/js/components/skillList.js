@@ -1,8 +1,8 @@
-import { api } from '../api.js?v=20261113-v10';
-import { COLLECTIONS, PROVIDERS, Latest, deployment, installedProviders, matchesFilters, inCollection, skillKey, slugify, tagSlug } from '../state.js?v=20261113-v10';
-import { icon, PROVIDER_NAMES } from '../icons.js?v=20261113-v10';
-import { highlighted } from '../markdown.js?v=20261113-v10';
-import { h, button, heading, field, select, modal, confirmAction, errorText, notify, busy } from '../ui.js?v=20261113-v10';
+import { api } from '../api.js?v=20261113-v11';
+import { COLLECTIONS, PROVIDERS, Latest, deployment, installedProviders, matchesFilters, inCollection, skillKey, targetIssues, slugify, tagSlug } from '../state.js?v=20261113-v11';
+import { icon, PROVIDER_NAMES } from '../icons.js?v=20261113-v11';
+import { highlighted } from '../markdown.js?v=20261113-v11';
+import { h, button, heading, field, select, modal, confirmAction, errorText, notify, busy } from '../ui.js?v=20261113-v11';
 
 const STATUSES = { synced: 'Synced', issue: 'Needs attention', disabled: 'Disabled', pending: 'Pending or undeployed', catalog: 'Catalog' };
 const EMPTY_FILTERS = { tags: [], tagMode: 'all', origin: '', provider: '', status: '' };
@@ -45,7 +45,7 @@ export function createLibrary(root, app) {
   const provider = select([], '', { onchange: event => setFilter('provider', event.target.value) });
   const status = select([], '', { onchange: event => setFilter('status', event.target.value) });
   const tagTools = h('div', { class: 'filter-tag-tools' }, tagSearch, tagMode,
-    button('Manage tags', () => showTagManager(app, snapshot.tags), 'quiet small'));
+    button('Manage tags', () => showTagManager(app, snapshot.tags, tag => { if (!filters.tags.includes(tag)) toggleTag(tag); }), 'quiet small'));
   filterPanel.append(h('div', { class: 'stack filter-tags' }, tagTools, tagOptions),
     h('div', { class: 'filter-facets' }, field('Origin', origin), field('Provider', provider),
       field('Sync status', status), field('Search scope', scope)));
@@ -81,11 +81,14 @@ export function createLibrary(root, app) {
     const tags = [...new Set([...snapshot.tags.map(tag => tag.tag), ...filters.tags, ...snapshot.skills
       .flatMap(skill => skill.tags ?? []).map(slugify).filter(Boolean)])].sort();
     const term = tagSearch.value.trim().toLowerCase();
-    const available = tags.filter(tag => filters.tags.includes(tag) || tag.includes(term));
-    tagOptions.replaceChildren(...available.map(tag => button('#' + tag, () => toggleTag(tag), 'filter-tag', {
+    const available = tags.filter(tag => !filters.tags.includes(tag) && tag.includes(term));
+    tagOptions.replaceChildren(...available.map(tag => button('#' + tag, () => {
+      toggleTag(tag);
+      active.querySelector('[data-control="active-tag-' + CSS.escape(tag) + '"]')?.focus({ preventScroll: true });
+    }, 'filter-tag', {
       'data-control': 'filter-tag-' + tag, 'data-tag': tag, 'aria-pressed': String(filters.tags.includes(tag))
     })));
-    if (!available.length) tagOptions.append(h('p', { class: 'muted' }, term ? 'No matching tags' : 'No tags in the library'));
+    if (!available.length) tagOptions.append(h('p', { class: 'muted' }, term ? 'No matching tags' : tags.length ? 'All tags are applied' : 'No tags in the library'));
   }
 
   function renderFilterPanel() {
@@ -155,7 +158,7 @@ export function createLibrary(root, app) {
     count.textContent = state === 'loading' ? 'Loading skills…' : state === 'searching' ? 'Searching…'
       : state === 'error' ? 'Search unavailable' : visible.length + (visible.length === 1 ? ' skill' : ' skills');
     navigation.replaceChildren(...Object.entries(COLLECTIONS).map(([key, name]) => button([
-      name, h('span', { class: 'collection-count' }, filtered.filter(skill => scoped(skill, key)).length)
+      name
     ], () => setCollection(key), '', {
       'aria-pressed': String(!allScope && key === collection), 'data-control': 'category-' + key
     })));
@@ -168,18 +171,22 @@ export function createLibrary(root, app) {
       filters = { ...EMPTY_FILTERS };
       tagSearch.value = '';
       allScope = false;
-      search.value = '';
-      scheduleSearch();
-      search.focus({ preventScroll: true });
+      limit = 50;
+      render();
+      filtersButton.focus({ preventScroll: true });
     };
     const chip = (label, action) => h('button', { type: 'button', class: 'chip', 'aria-label': 'Remove filter ' + label,
       onclick: () => { action(); filtersButton.focus({ preventScroll: true }); } }, label, ' ×');
     active.replaceChildren(
-      ...filters.tags.map(tag => chip('#' + tag, () => toggleTag(tag))),
+      ...filters.tags.map(tag => h('button', { type: 'button', class: 'chip', 'aria-label': 'Remove filter #' + tag,
+        'data-control': 'active-tag-' + tag, onclick: () => {
+          toggleTag(tag);
+          (root.querySelector('[data-control="filter-tag-' + CSS.escape(tag) + '"]') ?? filtersButton).focus({ preventScroll: true });
+        } }, '#' + tag, ' ×')),
       ...current.map(key => chip(labels[key], () => setFilter(key, ''))),
-      ...(query ? [chip(query, () => { search.value = ''; scheduleSearch(); })] : []),
+      query && button('Clear search', () => { search.value = ''; scheduleSearch(); search.focus(); }, 'quiet small'),
       ...(allScope ? [chip('All skills', () => { allScope = false; render(); })] : []),
-      button('Clear filters', clear, 'quiet small', { 'data-control': 'clear-filters' })
+      ...(allScope || current.length || filters.tags.length ? [button('Clear filters', clear, 'quiet small', { 'data-control': 'clear-filters' })] : [])
     );
     if (!filterPanel.hidden) renderFilterPanel();
     if (state === 'error') {
@@ -195,26 +202,27 @@ export function createLibrary(root, app) {
         const key = skillKey(skill);
         const sync = syncFor(skill);
         const tags = skill.tags ?? [];
+        const issues = targetIssues(skill, installed);
+        const origin = skill.origin_provider;
         const row = h('button', { type: 'button', class: 'result-button', 'data-control': 'row-' + key,
-          'aria-label': [skill.title || skill.name, ...sync.synced.map(id => 'Synced to ' + PROVIDER_NAMES[id]),
-            sync.issues.length ? 'Needs attention: ' + sync.issues.map(id => PROVIDER_NAMES[id]).join(', ') : !sync.synced.length && sync.label]
-            .filter(Boolean).join(', '), onclick: () => {
+          'aria-label': skill.title || skill.name, onclick: () => {
             selectedKey = key;
             savedScroll = window.scrollY;
             app.read(key);
           } },
-          h('span', { class: 'result-top' }, h('span', { class: 'result-title' }, highlighted(skill.title || skill.name, query)),
-            h('span', { class: 'result-providers' },
-              sync.synced.map(id => h('span', { class: 'provider-badge', title: 'Synced to ' + PROVIDERS[id], 'data-synced-provider': id },
-                icon(id), PROVIDER_NAMES[id])),
-              (sync.issues.length > 0 || !sync.synced.length) &&
-                h('span', { class: 'result-status ' + (sync.tone ?? 'muted'),
-                  title: sync.issues.map(id => PROVIDERS[id]).join(', ') }, sync.label))),
+          h('span', { class: 'result-title' }, highlighted(skill.title || skill.name, query)),
           h('span', { class: 'result-description' }, highlighted(skill.instruction_match ?? skill.description ?? '', query)),
-          h('span', { class: 'chips' }, h('span', { class: 'result-meta', title: skill.origin_provider }, skill.origin_provider || 'Personal'),
+          h('span', { class: 'chips' }, origin && !['My Skill', 'Personal', 'SkillHub'].includes(origin) &&
+            h('span', { class: 'result-meta', title: origin }, origin),
             tags.slice(0, 2).map(tag => h('span', { class: 'chip' }, '#' + tag)),
             tags.length > 2 && h('span', { class: 'chip', title: tags.slice(2).join(', ') }, '+' + (tags.length - 2))));
-        return h('li', { class: 'result-row' }, row);
+        const providers = h('div', { class: 'result-providers' },
+          sync.synced.map(id => h('span', { class: 'provider-badge', title: 'Synced to ' + PROVIDERS[id],
+            'aria-label': 'Synced to ' + PROVIDER_NAMES[id], 'data-synced-provider': id }, icon(id), h('span', { class: 'sr-only' }, PROVIDER_NAMES[id]))),
+          !sync.synced.length && !issues.length && h('span', { class: 'result-status muted' }, sync.label));
+        const exceptions = issues.map(issue => button(issue.label + (issue.state === 'missing' ? ' copy missing' : ' needs review') + ' →',
+          () => app.review(skill.name, issue), 'quiet small warning', { 'data-control': 'review-' + issue.path }));
+        return h('li', { class: 'result-row library-row' }, row, h('div', { class: 'library-row-status' }, providers, exceptions));
       }));
       results.replaceChildren(list);
       if (visible.length > limit) results.append(button('Show more skills', () => {
@@ -247,11 +255,14 @@ export function createLibrary(root, app) {
   };
 }
 
-function showTagManager(app, initialTags) {
+function showTagManager(app, initialTags, onUsage) {
   const body = h('div', { class: 'stack' });
   const input = h('input', { class: 'input', 'aria-label': 'New tag' });
   const outcome = h('div', { role: 'status' });
   const list = h('div', { class: 'stack' });
+  let tags = initialTags;
+  const search = h('input', { class: 'input', type: 'search', placeholder: 'Find a tag', 'aria-label': 'Search tags',
+    oninput: () => render(tags) });
   const refresh = async () => {
     render(await api.tags());
     app.refresh();
@@ -262,10 +273,15 @@ function showTagManager(app, initialTags) {
     outcome.textContent = '#' + response.tag + ' saved.';
     await refresh();
   }, error => outcome.replaceChildren(errorText(error.message))));
-  body.append(h('div', { class: 'search-row' }, input, create), outcome, list);
-  function render(tags) {
-    list.replaceChildren(...tags.map(({ tag, skill_count: count }) => h('div', { class: 'spread' },
-      h('span', {}, '#' + tag + ' · ' + count + (count === 1 ? ' skill' : ' skills')),
+  body.append(h('div', { class: 'search-row' }, input, create), search, outcome, list);
+  function render(values) {
+    tags = values;
+    const visible = tags.filter(item => item.tag.includes(search.value.trim().toLowerCase()));
+    list.replaceChildren(...visible.map(({ tag, skill_count: count }) => h('div', { class: 'spread' },
+      h('span', {}, '#' + tag),
+      button(count + (count === 1 ? ' skill' : ' skills'), () => { manager.close(); onUsage(tag); }, 'quiet small', {
+        'aria-label': 'Show skills tagged ' + tag
+      }),
       h('div', { class: 'actions' },
         button('Rename', () => {
           const editor = h('input', { class: 'input', value: tag, autofocus: true });
@@ -273,6 +289,10 @@ function showTagManager(app, initialTags) {
           const save = button('Rename tag', () => busy(save, async () => {
             const next = tagSlug(editor.value);
             if (next === tag) { dialog.close(); return; }
+            const existing = tags.find(item => item.tag === next);
+            if (!await confirmAction(existing ? 'Merge tags' : 'Rename tag', existing
+              ? 'Move #' + tag + ' to #' + next + ' on ' + count + ' skills. #' + next + ' already has ' + existing.skill_count + ' skills.'
+              : 'Rename #' + tag + ' to #' + next + ' on ' + count + ' skills.', existing ? 'Merge tags' : 'Rename tag', false)) return;
             const result = await api.renameTag(tag, next);
             dialog.close();
             await after(result);
@@ -297,5 +317,5 @@ function showTagManager(app, initialTags) {
     await refresh();
   }
   render(initialTags);
-  modal('Manage tags', body);
+  const manager = modal('Manage tags', body);
 }

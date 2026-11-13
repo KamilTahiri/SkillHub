@@ -18,6 +18,9 @@ export async function request(path, { method = 'GET', data, signal } = {}) {
 const encode = encodeURIComponent;
 const pathFor = name => '/skills/' + encode(name);
 export const api = {
+  reviewDestination: (name, path, signal) => request(pathFor(name) + '/destination-review?' + new URLSearchParams({ path }), { signal }),
+  resolveDestination: (name, path, version, action) => request(pathFor(name) + '/destination-review', { method: 'POST', data: { path, version, action } }),
+  setPreference: (key, enabled) => request('/preferences/' + key, { method: 'PATCH', data: { enabled } }),
   status: signal => request('/status', { signal }),
   providers: signal => request('/providers', { signal }),
   tags: signal => request('/tags', { signal }),
@@ -47,5 +50,6 @@ export const api = {
   preferences: (data, signal) => request('/preferences', data ? { method: 'PUT', data } : { signal }),
   diagnostics: signal => request('/diagnostics', { signal }),
   resync: () => request('/resync', { method: 'POST' }),
+  undoConflict: (id, revision) => request('/diagnostics/conflicts/undo', { method: 'POST', data: { id, revision } }),
   conflict: (id, revision) => request('/diagnostics/conflicts/recover', { method: 'POST', data: { id, revision } })
 };

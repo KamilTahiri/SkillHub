@@ -37,7 +37,8 @@ public sealed record CommunitySkillSummary(
     [property: JsonPropertyName("source")] string Source,
     [property: JsonPropertyName("description")] string Description,
     [property: JsonPropertyName("is_installed")] bool IsInstalled,
-    [property: JsonPropertyName("topic")] string Topic = "coding"
+    [property: JsonPropertyName("topic")] string Topic = "coding",
+    [property: JsonPropertyName("existing_name")] string? ExistingName = null
 );
 
 public sealed record CommunitySkillPreview(
@@ -133,7 +134,7 @@ public sealed partial class SkillImporterService
             var localResults = new List<CommunitySkillSummary>();
             foreach (var p in plugins)
             {
-                var isUserInstalled = _engine.HasManagedCatalogCopy(p.CatalogId!);
+                var existingName = _engine.FindManagedCatalogCopy(p.CatalogId!);
 
                 var topic = InferTopic(p.Name, p.Description);
                 localResults.Add(new CommunitySkillSummary(
@@ -144,7 +145,8 @@ public sealed partial class SkillImporterService
                     Path: $"plugins/{p.CatalogId}/SKILL.md",
                     Source: $"local/catalog/{p.CatalogId}",
                     Description: p.Description ?? $"Offline catalog skill: {p.GetEffectiveTitle()}",
-                    IsInstalled: isUserInstalled,
+                    IsInstalled: existingName is not null,
+                    ExistingName: existingName,
                     Topic: topic
                 ));
             }
@@ -179,7 +181,7 @@ public sealed partial class SkillImporterService
 
             foreach (var p in featuredPlugins)
             {
-                var isUserInstalled = _engine.HasManagedCatalogCopy(p.CatalogId!);
+                var existingName = _engine.FindManagedCatalogCopy(p.CatalogId!);
 
                 allHighlights.Add(new CommunitySkillSummary(
                     Slug: p.Name,
@@ -189,7 +191,8 @@ public sealed partial class SkillImporterService
                     Path: $"plugins/{p.CatalogId}/SKILL.md",
                     Source: $"local/catalog/{p.CatalogId}",
                     Description: p.Description ?? $"Offline catalog skill: {p.GetEffectiveTitle()}",
-                    IsInstalled: isUserInstalled,
+                    IsInstalled: existingName is not null,
+                    ExistingName: existingName,
                     Topic: InferTopic(p.Name, p.Description)
                 ));
             }
@@ -236,7 +239,7 @@ public sealed partial class SkillImporterService
                 ? $"{fullRepo}/{dirPrefix}"
                 : fullRepo;
 
-            var isInstalled = _engine.HasImportedSkill(fullRepo, relPath);
+            var existingName = _engine.FindImportedSkill(fullRepo, relPath);
             var desc = GetCuratedSkillHint(fullRepo, slug) ?? $"Community skill from {fullRepo} ({relPath})";
 
             results.Add(new CommunitySkillSummary(
@@ -247,7 +250,8 @@ public sealed partial class SkillImporterService
                 Path: relPath,
                 Source: sourceSpec,
                 Description: desc,
-                IsInstalled: isInstalled,
+                IsInstalled: existingName is not null,
+                ExistingName: existingName,
                 Topic: InferTopic(slug, desc)));
         }
 
@@ -352,7 +356,7 @@ public sealed partial class SkillImporterService
             .Select(x =>
             {
                 var dirPrefix = x.Path[..x.Path.LastIndexOf('/')];
-                var existing = _engine.GetSkill(x.Slug);
+                var existing = _engine.FindImportedSkill(x.Repo, x.Path);
                 return new CommunitySkillSummary(
                     Slug: x.Slug,
                     Title: x.Title,
@@ -361,7 +365,8 @@ public sealed partial class SkillImporterService
                     Path: x.Path,
                     Source: $"{x.Repo}/{dirPrefix}",
                     Description: x.Desc,
-                    IsInstalled: existing is not null && !existing.IsCatalogOnly,
+                    IsInstalled: existing is not null,
+                    ExistingName: existing,
                     Topic: InferTopic(x.Slug, x.Desc));
             });
     }

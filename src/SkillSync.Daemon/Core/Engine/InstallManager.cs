@@ -25,7 +25,14 @@ public sealed record InstallStatusReport(
     IReadOnlyList<McpClientConfigTarget> McpClientConfigs
 );
 
-public sealed partial class InstallManager
+public interface IDesktopStartup
+{
+    bool IsRegistered { get; }
+    (bool Success, string Method, string Details) RegisterOsAutoStart(string? overrideExecutablePath = null, int port = 45880);
+    (bool Success, string Details) UnregisterOsAutoStart();
+}
+
+public sealed partial class InstallManager : IDesktopStartup
 {
     public const string McpServerKey = "skillhub";
     public const string LegacyMcpServerKey = "skillsync";
@@ -487,6 +494,8 @@ public sealed partial class InstallManager
         {
         }
     }
+
+    public bool IsRegistered => CheckAutoStartRegistration().IsRegistered;
 
     public InstallStatusReport GetStatusReport(string? overrideExecutablePath = null)
     {

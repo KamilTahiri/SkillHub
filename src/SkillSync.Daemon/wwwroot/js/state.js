@@ -43,6 +43,13 @@ export function installedProviders(providers) {
   return Object.keys(PROVIDERS).filter(id => providers.some(provider => provider.provider === id && provider.is_installed));
 }
 
+export function targetIssues(skill, installed) {
+  return (skill.destinations ?? []).filter(target => installed.includes(target.provider) &&
+    skill.targets?.[target.provider]?.enabled !== false && ['error', 'conflict', 'missing'].includes(target.state))
+    .map(target => ({ ...target, label: target.provider === 'gemini'
+      ? (/[\\/]antigravity[\\/]/i.test(target.path) ? 'Antigravity' : 'Gemini') : PROVIDERS[target.provider] }));
+}
+
 export function deployment(skill, installed) {
   const synced = [];
   const issues = [];

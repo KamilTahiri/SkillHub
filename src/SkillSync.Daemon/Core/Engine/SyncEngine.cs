@@ -212,12 +212,14 @@ public sealed partial class SyncEngine : IAsyncDisposable
 
     public CanonicalSkillModel? GetCatalogSkill(string id) => _catalog.Get(id);
 
-    public bool HasManagedCatalogCopy(string id) => _managed.Values.Any(skill => skill.CatalogId == id ||
-        string.Equals(skill.Passthrough.GetValueOrDefault("import_catalog_id")?.ToString(), id, StringComparison.OrdinalIgnoreCase));
+    public string? FindManagedCatalogCopy(string id) => _managed.Values.Where(skill => skill.CatalogId == id ||
+        string.Equals(skill.Passthrough.GetValueOrDefault("import_catalog_id")?.ToString(), id, StringComparison.OrdinalIgnoreCase))
+        .Select(skill => skill.Name).Order(StringComparer.Ordinal).FirstOrDefault();
 
-    public bool HasImportedSkill(string repository, string path) => _managed.Values.Any(skill =>
+    public string? FindImportedSkill(string repository, string path) => _managed.Values.Where(skill =>
         string.Equals(skill.Passthrough.GetValueOrDefault("import_source")?.ToString(), repository, StringComparison.OrdinalIgnoreCase) &&
-        string.Equals(skill.Passthrough.GetValueOrDefault("import_path")?.ToString(), path, StringComparison.Ordinal));
+        string.Equals(skill.Passthrough.GetValueOrDefault("import_path")?.ToString(), path, StringComparison.Ordinal))
+        .Select(skill => skill.Name).Order(StringComparer.Ordinal).FirstOrDefault();
 
     public Dictionary<string, string[]> PreviewDestinationPaths(CanonicalSkillModel draft)
     {
@@ -365,6 +367,7 @@ public sealed partial class SyncEngine : IAsyncDisposable
             ProtectSystemCategory(current, originator);
             entry.Deleted = true;
             entry.Tombstone = $"{slug}-{Guid.NewGuid():N}";
+            entry.DeletedAt = DateTimeOffset.UtcNow;
             await PersistAsync().ConfigureAwait(false);
             await FinishDeleteAsync(slug, entry).ConfigureAwait(false);
             PublishActivity(slug, originator, "deleted", $"Moved '{slug}' to SkillHub trash and withdrew its owned projections.");
@@ -391,6 +394,7 @@ public sealed partial class SyncEngine : IAsyncDisposable
             Directory.Move(source, destination);
             entry.Deleted = false;
             entry.Tombstone = null;
+            entry.DeletedAt = null;
             entry.CanonicalDiskHash = null;
             await PersistAsync().ConfigureAwait(false);
             var model = await LoadCurrentAsync(slug, entry).ConfigureAwait(false)

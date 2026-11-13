@@ -19,7 +19,8 @@ public sealed record SkillImportSelection(
 
 public sealed record SkillImportPlan(Guid PlanId, string Revision, string Source, string? Repository,
     string Path, string License, string Name, string Title, string Description, string InstructionsMarkdown,
-    IReadOnlyDictionary<string, string> SupportingFiles, IReadOnlyList<string> SkippedFiles, bool NameExists, DateTimeOffset ExpiresAt);
+    IReadOnlyDictionary<string, string> SupportingFiles, IReadOnlyList<string> SkippedFiles, bool NameExists, DateTimeOffset ExpiresAt,
+    string? ExistingName = null);
 
 public sealed record SkillImportApplyRequest(string Revision, string? Name, IReadOnlyList<string>? Providers);
 public sealed class CommunitySourceException(string message, int statusCode) : InvalidOperationException(message)
@@ -118,11 +119,13 @@ public sealed partial class SkillImporterService
         }
 
         SkillStorage.ValidateModel(model);
+        var existingName = model.CatalogId is { } catalogId ? _engine.FindManagedCatalogCopy(catalogId)
+            : repository is not null ? _engine.FindImportedSkill(repository, path) : null;
         var plan = new SkillImportPlan(Guid.NewGuid(), revision, source, repository, path, license, model.Name,
             model.GetEffectiveTitle(), model.Description, model.InstructionsMarkdown,
             new Dictionary<string, string>(model.SupportingFiles), skipped.ToArray(),
             _engine.ListSkills().Any(skill => !skill.IsCatalogOnly && skill.Name == model.Name),
-            DateTimeOffset.UtcNow.AddMinutes(15));
+            DateTimeOffset.UtcNow.AddMinutes(15), existingName);
         lock (_plansLock)
         {
             foreach (var id in _plans.Where(pair => !pair.Value.Applying && pair.Value.Plan.ExpiresAt < DateTimeOffset.UtcNow).Select(pair => pair.Key).ToArray())
