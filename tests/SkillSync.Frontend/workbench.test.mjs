@@ -41,7 +41,9 @@ const item = name => ({ slug: name.toLowerCase(), title: name, description: name
   path: name + '/SKILL.md', git_ref: 'main' });
 
 async function fixtureServer() {
-  const fixture = { theme: 'dark', tray: true, startup: true, reviewed: null, applied: null, preparing: new Map(), prefetched: new Map(), events: null, reads: 0 };
+  let releaseSlow;
+  const slowPreview = new Promise(resolve => { releaseSlow = resolve; });
+  const fixture = { releaseSlow, slowFinished: false, theme: 'dark', tray: true, startup: true, reviewed: null, applied: null, preparing: new Map(), prefetched: new Map(), events: null, reads: 0 };
   const server = createServer(async (req, res) => {
     const url = new URL(req.url, 'http://localhost');
     const send = (value, status = 200) => {
@@ -100,7 +102,7 @@ async function fixtureServer() {
       if (route === '/community/preview') {
         const path = url.searchParams.get('path');
         fixture.prefetched.set(path, (fixture.prefetched.get(path) ?? 0) + 1);
-        if (path.startsWith('Slow')) await delay(1250);
+        if (path.startsWith('Slow')) { await slowPreview; fixture.slowFinished = true; }
         if (path.startsWith('Broken')) { await delay(200); return send({ error: 'Upstream unavailable' }, 503); }
         const title = path.split('/')[0];
         return send({ title: title + ' review', revision: title + '-commit', repo: 'fixture/repo', source: 'fixture/repo',
@@ -135,12 +137,13 @@ async function fixtureServer() {
   return { fixture, server, url: 'http://127.0.0.1:' + server.address().port };
 }
 
-async function until(check, message) {
-  for (let i = 0; i < 150; i++) {
+async function until(check, message, timeoutMs = 5000) {
+  const deadline = Date.now() + timeoutMs;
+  do {
     const value = await check();
     if (value) return value;
     await delay(30);
-  }
+  } while (Date.now() < deadline);
   throw new Error(message);
 }
 
@@ -200,19 +203,28 @@ async function verifyContrast(evaluate) {
 }
 
 test('workbench at desktop and docked sizes, with keyboard, themes, Markdown and pinned imports',
-  { skip: !browser && 'Set SKILLHUB_BROWSER to a Chromium executable.', timeout: 30000 }, async () => {
+  { skip: !browser && 'Set SKILLHUB_BROWSER to a Chromium executable.', timeout: 60000 }, async () => {
     const { server, fixture, url } = await fixtureServer();
     const profile = await mkdtemp(join(tmpdir(), 'skillhub-browser-'));
     const chrome = spawn(browser, ['--headless=new', '--disable-gpu', '--no-first-run', '--no-default-browser-check',
-      '--remote-debugging-port=0', '--user-data-dir=' + profile, url], { windowsHide: true, stdio: 'ignore' });
+      '--remote-debugging-port=0', '--user-data-dir=' + profile, url], { windowsHide: true, stdio: ['ignore', 'ignore', 'pipe'] });
+    let startupError = '';
+    let browserLog = '';
+    chrome.once('error', error => { startupError = error.message; });
+    chrome.stderr.setEncoding('utf8').on('data', chunk => { browserLog = (browserLog + chunk).slice(-2000); });
     let page;
     try {
-      const port = await until(async () => {
-        try { return (await readFile(join(profile, 'DevToolsActivePort'), 'utf8')).split('\n')[0]; }
-        catch { return null; }
-      }, 'Chromium never opened DevTools');
-      const pages = await (await fetch('http://127.0.0.1:' + port + '/json/list')).json();
-      page = await devTools(pages.find(tab => tab.type === 'page').webSocketDebuggerUrl);
+      const endpoint = await until(async () => {
+        if (startupError || chrome.exitCode !== null) throw new Error(startupError || 'Chromium exited with code ' + chrome.exitCode);
+        try {
+          const port = (await readFile(join(profile, 'DevToolsActivePort'), 'utf8')).split('\n')[0];
+          const pages = await (await fetch('http://127.0.0.1:' + port + '/json/list', { signal: AbortSignal.timeout(1500) })).json();
+          return pages.find(tab => tab.type === 'page')?.webSocketDebuggerUrl;
+        } catch { return null; }
+      }, 'Chromium never opened DevTools', 25000).catch(error => {
+        throw new Error(error.message + (browserLog ? '\n' + browserLog : ''));
+      });
+      page = await devTools(endpoint);
       const { send, evaluate } = page;
       const wait = (expression, label = expression) => until(() => evaluate("Boolean(" + expression + ")"), label);
       const click = selector => evaluate('document.querySelector(' + JSON.stringify(selector) + ').click()');
@@ -359,7 +371,9 @@ test('workbench at desktop and docked sizes, with keyboard, themes, Markdown and
       await size(768, 660, 1);
       await wait('innerWidth === 768');
       assert.equal(await evaluate('getComputedStyle(document.querySelector(".explore-back")).display'), 'none');
-      await delay(1300);
+      fixture.releaseSlow();
+      await until(() => fixture.slowFinished, 'Slow preview never completed');
+      await wait('document.querySelector("#explore-screen .result-row:nth-child(1) .result-title")?.textContent === "Slow review"');
       assert.equal(await evaluate('document.querySelector("#explore-preview h2").textContent'), 'Fast review');
       assert.equal(fixture.prefetched.get('Fast/SKILL.md'), 1);
       await size(480, 600, 1);
@@ -416,6 +430,7 @@ test('workbench at desktop and docked sizes, with keyboard, themes, Markdown and
       assert.equal(fixture.reads, baseline + 1);
       await assertNoSerializedElements();
     } finally {
+      fixture.releaseSlow();
       page?.socket.close();
       if (chrome.exitCode === null && chrome.signalCode === null && chrome.pid) {
         const closed = once(chrome, 'exit');
