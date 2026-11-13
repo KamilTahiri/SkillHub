@@ -1,16 +1,20 @@
-import { api } from '../api.js?v=20261112-v9';
-import { COLLECTIONS, PROVIDERS, Latest, deployment, filterSkills, inCollection, skillKey, slugify, tagSlug } from '../state.js?v=20261112-v9';
-import { highlighted } from '../markdown.js?v=20261112-v9';
-import { h, button, heading, field, select, modal, confirmAction, errorText, notify, busy } from '../ui.js?v=20261112-v9';
+import { api } from '../api.js?v=20261113-v10';
+import { COLLECTIONS, PROVIDERS, Latest, deployment, installedProviders, matchesFilters, inCollection, skillKey, slugify, tagSlug } from '../state.js?v=20261113-v10';
+import { icon, PROVIDER_NAMES } from '../icons.js?v=20261113-v10';
+import { highlighted } from '../markdown.js?v=20261113-v10';
+import { h, button, heading, field, select, modal, confirmAction, errorText, notify, busy } from '../ui.js?v=20261113-v10';
 
 const STATUSES = { synced: 'Synced', issue: 'Needs attention', disabled: 'Disabled', pending: 'Pending or undeployed', catalog: 'Catalog' };
-const EMPTY_FILTERS = { tag: '', origin: '', provider: '', status: '' };
+const EMPTY_FILTERS = { tags: [], tagMode: 'all', origin: '', provider: '', status: '' };
+const FACETS = ['origin', 'provider', 'status'];
 
 export function createLibrary(root, app) {
   let collection = 'user';
   let allScope = false;
   let filters = { ...EMPTY_FILTERS };
   let snapshot = { skills: [], tags: [] };
+  let installed = [];
+  let health = new WeakMap();
   let query = '';
   let matches = [];
   let state = 'loading';
@@ -24,14 +28,84 @@ export function createLibrary(root, app) {
   const title = heading('My Skills', button('+ New skill', () => app.newSkill(), 'primary', { id: 'new-skill' }), count);
   const search = h('input', { type: 'search', id: 'library-search', class: 'input', 'aria-label': 'Search skills',
     placeholder: 'Search skills, tags, and instructions', oninput: () => scheduleSearch() });
-  const filtersButton = button('Filters', () => showFilters());
+  const filtersButton = button([icon('filters'), 'Tags & filters'], toggleFilters, '', {
+    id: 'library-filters-toggle', 'aria-expanded': 'false', 'aria-controls': 'library-filters'
+  });
   const navigation = h('nav', { class: 'collections', 'aria-label': 'Skill collections' });
-  const compact = select([], 'user', { 'aria-label': 'Skill collection', onchange: event => setCollection(event.target.value) });
-  const active = h('div', { class: 'chips', 'aria-label': 'Active filters' });
+  const active = h('div', { class: 'chips active-filters', 'aria-label': 'Active filters' });
+  const filterPanel = h('section', { class: 'library-filters stack', id: 'library-filters', 'aria-label': 'Tags and filters', hidden: true });
+  const tagOptions = h('div', { class: 'chips tag-options', role: 'group', 'aria-label': 'Filter by tags' });
+  const tagMode = select([['all', 'Match all tags'], ['any', 'Match any tag']], 'all', {
+    'aria-label': 'Tag matching', onchange: event => setFilter('tagMode', event.target.value)
+  });
+  const tagSearch = h('input', { class: 'input', type: 'search', placeholder: 'Find a tag', 'aria-label': 'Find a tag',
+    oninput: () => renderTags() });
+  const scope = button('All skills', () => { allScope = !allScope; limit = 50; render(); }, '', { 'aria-pressed': 'false' });
+  const origin = select([], '', { onchange: event => setFilter('origin', event.target.value) });
+  const provider = select([], '', { onchange: event => setFilter('provider', event.target.value) });
+  const status = select([], '', { onchange: event => setFilter('status', event.target.value) });
+  const tagTools = h('div', { class: 'filter-tag-tools' }, tagSearch, tagMode,
+    button('Manage tags', () => showTagManager(app, snapshot.tags), 'quiet small'));
+  filterPanel.append(h('div', { class: 'stack filter-tags' }, tagTools, tagOptions),
+    h('div', { class: 'filter-facets' }, field('Origin', origin), field('Provider', provider),
+      field('Sync status', status), field('Search scope', scope)));
+  filterPanel.addEventListener('keydown', event => {
+    if (event.key === 'Escape') {
+      event.preventDefault();
+      toggleFilters();
+      filtersButton.focus();
+    }
+  });
   const results = h('div', { id: 'library-results' });
-  root.append(title, h('div', { class: 'stack' },
+  root.append(title, h('div', { class: 'stack library-body' },
     h('div', { class: 'search-row' }, h('div', { class: 'search-field' }, search), filtersButton),
-    navigation, h('div', { class: 'collection-picker' }, compact), active, results));
+    navigation, active, filterPanel, results));
+
+  function toggleFilters() {
+    filterPanel.hidden = !filterPanel.hidden;
+    filtersButton.setAttribute('aria-expanded', String(!filterPanel.hidden));
+    if (!filterPanel.hidden) renderFilterPanel();
+  }
+
+  function setFilter(key, value) {
+    filters[key] = value;
+    limit = 50;
+    render();
+  }
+
+  function toggleTag(tag) {
+    setFilter('tags', filters.tags.includes(tag) ? filters.tags.filter(value => value !== tag) : [...filters.tags, tag]);
+  }
+
+  function renderTags() {
+    const tags = [...new Set([...snapshot.tags.map(tag => tag.tag), ...filters.tags, ...snapshot.skills
+      .flatMap(skill => skill.tags ?? []).map(slugify).filter(Boolean)])].sort();
+    const term = tagSearch.value.trim().toLowerCase();
+    const available = tags.filter(tag => filters.tags.includes(tag) || tag.includes(term));
+    tagOptions.replaceChildren(...available.map(tag => button('#' + tag, () => toggleTag(tag), 'filter-tag', {
+      'data-control': 'filter-tag-' + tag, 'data-tag': tag, 'aria-pressed': String(filters.tags.includes(tag))
+    })));
+    if (!available.length) tagOptions.append(h('p', { class: 'muted' }, term ? 'No matching tags' : 'No tags in the library'));
+  }
+
+  function renderFilterPanel() {
+    renderTags();
+    tagMode.value = filters.tagMode;
+    const origins = [...new Set(snapshot.skills.map(skill => skill.origin_provider).filter(Boolean))].sort();
+    const replaceOptions = (control, entries, value) => {
+      control.replaceChildren(h('option', { value: '' }, 'Any'), ...entries.map(([key, label]) => h('option', { value: key }, label)));
+      control.value = value;
+    };
+    replaceOptions(origin, origins.map(value => [value, value]), filters.origin);
+    replaceOptions(provider, installed.map(id => [id, PROVIDERS[id]]), filters.provider);
+    replaceOptions(status, Object.entries(STATUSES), filters.status);
+    scope.setAttribute('aria-pressed', String(allScope));
+  }
+
+  function syncFor(skill) {
+    if (!health.has(skill)) health.set(skill, deployment(skill, installed));
+    return health.get(skill);
+  }
 
   function setCollection(next) {
     collection = next;
@@ -74,61 +148,68 @@ export function createLibrary(root, app) {
 
   function render() {
     const focused = root.contains(document.activeElement) ? document.activeElement.dataset.control : null;
-    const filtered = filterSkills(matches, filters);
-    const visible = filtered.filter(skill => inCollection(skill, allScope ? 'all' : collection));
+    const filtered = matches.filter(skill => matchesFilters(skill, filters, syncFor(skill)));
+    const scoped = (skill, category) => inCollection(skill, category, syncFor(skill));
+    const visible = filtered.filter(skill => scoped(skill, allScope ? 'all' : collection));
     title.querySelector('h1').textContent = allScope ? 'All Skills' : COLLECTIONS[collection];
     count.textContent = state === 'loading' ? 'Loading skills…' : state === 'searching' ? 'Searching…'
       : state === 'error' ? 'Search unavailable' : visible.length + (visible.length === 1 ? ' skill' : ' skills');
-    const categories = Object.entries(COLLECTIONS).map(([key, name]) =>
-      [key, name + ' (' + filtered.filter(skill => inCollection(skill, key)).length + ')']);
-    navigation.replaceChildren(categories.map(([key, name]) => button(name, () => setCollection(key), '', {
+    navigation.replaceChildren(...Object.entries(COLLECTIONS).map(([key, name]) => button([
+      name, h('span', { class: 'collection-count' }, filtered.filter(skill => scoped(skill, key)).length)
+    ], () => setCollection(key), '', {
       'aria-pressed': String(!allScope && key === collection), 'data-control': 'category-' + key
     })));
-    compact.replaceChildren(categories.map(([key, name]) => h('option', { value: key }, name)),
-      ...(allScope ? [h('option', { value: 'all' }, 'All Skills')] : []));
-    compact.value = allScope ? 'all' : collection;
 
-    const current = Object.entries(filters).filter(([, value]) => value);
-    const labels = { tag: '#' + filters.tag, origin: filters.origin, provider: PROVIDERS[filters.provider], status: STATUSES[filters.status] };
-    active.hidden = !allScope && !query && !current.length;
+    const current = FACETS.filter(key => filters[key]);
+    const labels = { origin: filters.origin, provider: PROVIDERS[filters.provider], status: STATUSES[filters.status] };
+    const hasFilters = Boolean(allScope || query || current.length || filters.tags.length);
+    active.hidden = !hasFilters;
     const clear = () => {
       filters = { ...EMPTY_FILTERS };
+      tagSearch.value = '';
       allScope = false;
       search.value = '';
       scheduleSearch();
       search.focus({ preventScroll: true });
     };
+    const chip = (label, action) => h('button', { type: 'button', class: 'chip', 'aria-label': 'Remove filter ' + label,
+      onclick: () => { action(); filtersButton.focus({ preventScroll: true }); } }, label, ' ×');
     active.replaceChildren(
-      ...current.map(([key]) => h('button', { type: 'button', class: 'chip', 'aria-label': 'Remove filter ' + labels[key],
-        onclick: () => { filters[key] = ''; render(); filtersButton.focus({ preventScroll: true }); } }, labels[key], ' ×')),
-      ...(query ? [h('button', { type: 'button', class: 'chip', 'aria-label': 'Clear search',
-        onclick: () => { search.value = ''; scheduleSearch(); search.focus(); } }, query, ' ×')] : []),
-      ...(allScope ? [h('button', { class: 'chip', type: 'button', 'aria-label': 'Return to current collection',
-        onclick: () => { allScope = false; render(); filtersButton.focus(); } }, 'All Skills ×')] : []),
-      button('Clear Filters', clear, 'quiet small', { 'data-control': 'clear-filters' })
+      ...filters.tags.map(tag => chip('#' + tag, () => toggleTag(tag))),
+      ...current.map(key => chip(labels[key], () => setFilter(key, ''))),
+      ...(query ? [chip(query, () => { search.value = ''; scheduleSearch(); })] : []),
+      ...(allScope ? [chip('All skills', () => { allScope = false; render(); })] : []),
+      button('Clear filters', clear, 'quiet small', { 'data-control': 'clear-filters' })
     );
+    if (!filterPanel.hidden) renderFilterPanel();
     if (state === 'error') {
       results.replaceChildren(h('div', { class: 'empty' }, errorText(problem), button('Try again', loadMatches)));
     } else if (state === 'loading' || state === 'searching') {
       results.replaceChildren(h('p', { class: 'muted' }, state === 'loading' ? 'Loading the library…' : 'Finding matching skills…'));
     } else if (!visible.length) {
       results.replaceChildren(h('div', { class: 'empty' },
-        h('h2', {}, query || current.length ? 'No matching skills' : 'No skills in this collection'),
-        h('div', { class: 'actions' }, query || current.length ? button('Clear Filters', clear) : null,
-          button('Browse Plugin Catalog', () => app.exploreCatalog()))));
+        h('h2', {}, hasFilters ? 'No matching skills' : 'No skills in this collection'),
+        h('div', { class: 'actions' }, button('Browse Plugin Catalog', () => app.exploreCatalog()))));
     } else {
       const list = h('ul', { class: 'results' }, visible.slice(0, limit).map(skill => {
         const key = skillKey(skill);
-        const sync = deployment(skill);
+        const sync = syncFor(skill);
         const tags = skill.tags ?? [];
         const row = h('button', { type: 'button', class: 'result-button', 'data-control': 'row-' + key,
-          'aria-label': skill.title + ', ' + sync.label, onclick: () => {
+          'aria-label': [skill.title || skill.name, ...sync.synced.map(id => 'Synced to ' + PROVIDER_NAMES[id]),
+            sync.issues.length ? 'Needs attention: ' + sync.issues.map(id => PROVIDER_NAMES[id]).join(', ') : !sync.synced.length && sync.label]
+            .filter(Boolean).join(', '), onclick: () => {
             selectedKey = key;
             savedScroll = window.scrollY;
             app.read(key);
           } },
           h('span', { class: 'result-top' }, h('span', { class: 'result-title' }, highlighted(skill.title || skill.name, query)),
-            h('span', { class: 'result-status ' + (sync.tone ?? 'muted') }, sync.label)),
+            h('span', { class: 'result-providers' },
+              sync.synced.map(id => h('span', { class: 'provider-badge', title: 'Synced to ' + PROVIDERS[id], 'data-synced-provider': id },
+                icon(id), PROVIDER_NAMES[id])),
+              (sync.issues.length > 0 || !sync.synced.length) &&
+                h('span', { class: 'result-status ' + (sync.tone ?? 'muted'),
+                  title: sync.issues.map(id => PROVIDERS[id]).join(', ') }, sync.label))),
           h('span', { class: 'result-description' }, highlighted(skill.instruction_match ?? skill.description ?? '', query)),
           h('span', { class: 'chips' }, h('span', { class: 'result-meta', title: skill.origin_provider }, skill.origin_provider || 'Personal'),
             tags.slice(0, 2).map(tag => h('span', { class: 'chip' }, '#' + tag)),
@@ -146,33 +227,13 @@ export function createLibrary(root, app) {
     if (focused) root.querySelector('[data-control="' + CSS.escape(focused) + '"]')?.focus({ preventScroll: true });
   }
 
-  function showFilters() {
-    const pool = snapshot.skills;
-    const tags = [...new Set([...snapshot.tags.map(tag => tag.tag), ...pool.filter(skill => skill.source_category !== 'system')
-      .flatMap(skill => skill.tags ?? []).map(slugify).filter(Boolean)])].sort();
-    const origins = [...new Set(pool.map(skill => skill.origin_provider).filter(Boolean))].sort();
-    const chooser = (label, values, current) => field(label, select([['', 'Any'], ...values], current));
-    const scope = select([['current', 'Current Tab · ' + COLLECTIONS[collection]], ['all', 'All Skills']], allScope ? 'all' : 'current');
-    const tag = chooser('Tag', tags.map(value => [value, '#' + value]), filters.tag);
-    const origin = chooser('Origin', origins.map(value => [value, value]), filters.origin);
-    const provider = chooser('Provider', Object.entries(PROVIDERS), filters.provider);
-    const status = chooser('Deployment', Object.entries(STATUSES), filters.status);
-    const get = control => control.querySelector('select').value;
-    const dialog = modal('Filters', [field('Scope', scope), tag, origin, provider, status,
-      button('Manage tags', () => showTagManager(app, snapshot.tags), 'quiet')],
-      button('Apply filters', () => {
-        filters = { tag: get(tag), origin: get(origin), provider: get(provider), status: get(status) };
-        allScope = scope.value === 'all';
-        limit = 50;
-        render();
-        dialog.close();
-      }, 'primary'));
-  }
-
   render();
   return {
     update(data) {
       snapshot = data;
+      installed = installedProviders(data.providers);
+      health = new WeakMap();
+      if (filters.provider && !installed.includes(filters.provider)) filters.provider = '';
       if (query) { clearTimeout(searchTimer); loadMatches(); }
       else { matches = snapshot.skills; state = 'ready'; render(); }
     },

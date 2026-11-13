@@ -80,7 +80,9 @@ public sealed partial class SyncEngine
             await ReconcileSafelyAsync(slug, bySkill.GetValueOrDefault(slug) ?? [], "resync").ConfigureAwait(false);
         }
         _catalog.Refresh();
-        var destinations = _managed.Values.SelectMany(skill => skill.Destinations).ToArray();
+        var installed = InstalledProviderNames();
+        var destinations = _managed.Values.SelectMany(skill => skill.Destinations)
+            .Where(target => installed.Contains(target.Provider)).ToArray();
         var changed = checked((int)(_projectionCount - previousProjectionCount));
         return new SyncReconciliationReport(Guid.NewGuid(), _managed.Count, changed,
             destinations.Count(target => target.State == "synced"), destinations.Count(target => target.State == "conflict"),
@@ -178,7 +180,10 @@ public sealed partial class SyncEngine
             destinations.TryAdd(absolutePath, new Destination(provider, absolutePath));
         }
 
-        foreach (var info in _discovery.DiscoverProviders().Where(info => info.Provider != ProviderType.Canonical && info.IsInstalled))
+        var installed = _discovery.DiscoverProviders()
+            .Where(info => info.Provider != ProviderType.Canonical && info.IsInstalled)
+            .ToDictionary(info => info.Provider);
+        foreach (var info in installed.Values)
         {
             if (info.Provider == ProviderType.Codex)
             {
@@ -197,7 +202,7 @@ public sealed partial class SyncEngine
             }
         }
 
-        foreach (var hint in hints.Where(hint => hint.Provider != ProviderType.Canonical))
+        foreach (var hint in hints.Where(hint => installed.ContainsKey(hint.Provider)))
         {
             Add(hint.Provider, hint.PrimaryPath);
         }
@@ -205,7 +210,7 @@ public sealed partial class SyncEngine
         foreach (var path in entry.Targets.Keys)
         {
             var destination = ResolveLedgerDestination(slug, path);
-            if (destination is not null)
+            if (destination is not null && installed.ContainsKey(destination.Provider))
             {
                 Add(destination.Provider, path);
             }

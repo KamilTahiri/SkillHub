@@ -55,6 +55,9 @@ public static class SkillRestEndpoints
             var settings = preferences.Read();
             return Results.Ok(new { theme = settings.Theme, close_to_tray = settings.CloseToTray, auto_start = install.GetStatusReport().IsAutoStartRegistered });
         });
+        api.MapPatch("/preferences/theme", (ThemeRequest request, [FromServices] DesktopPreferencesStore preferences) =>
+            Results.Ok(new { theme = preferences.SetTheme(request.Theme).Theme }));
+
         api.MapPut("/preferences", (DesktopPreferenceRequest request, [FromServices] DesktopPreferencesStore preferences,
             InstallManager install, HttpContext context) =>
         {
@@ -564,3 +567,5 @@ public sealed record TagDeleteRequest(
 
 
 public sealed record SkillTagPatch(string Tag, bool Add);
+
+internal sealed record ThemeRequest(string Theme);

@@ -1,6 +1,6 @@
-import { api } from '../api.js?v=20261112-v9';
-import { Latest } from '../state.js?v=20261112-v9';
-import { h, button, heading, panel, field, select, disclosure, confirmAction, errorText, busy, notify } from '../ui.js?v=20261112-v9';
+import { api } from '../api.js?v=20261113-v10';
+import { Latest } from '../state.js?v=20261113-v10';
+import { h, button, heading, panel, field, select, disclosure, confirmAction, errorText, busy, notify } from '../ui.js?v=20261113-v10';
 
 export function createSettings(root, app) {
   let tab = 'Connections';
@@ -140,5 +140,14 @@ export function createSettings(root, app) {
     if (!trash.childElementCount) trash.append(h('p', { class: 'muted' }, 'Trash is empty.'));
   }
   renderTabs();
-  return { show: load, leave: () => jobs.cancel() };
+  return {
+    show(section = tab) {
+      if (section !== tab) {
+        tab = section;
+        renderTabs();
+      }
+      return load();
+    },
+    leave: () => jobs.cancel()
+  };
 }

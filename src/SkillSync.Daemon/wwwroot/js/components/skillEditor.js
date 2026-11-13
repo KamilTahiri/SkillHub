@@ -1,8 +1,8 @@
-import { api } from '../api.js?v=20261112-v9';
-import { deployment, PROVIDERS, slugify, tagSlug } from '../state.js?v=20261112-v9';
-import { renderMarkdown } from '../markdown.js?v=20261112-v9';
-import { h, button, heading, field, disclosure, errorText, modal, notify } from '../ui.js?v=20261112-v9';
-import { showProviderPreview } from './transpilerPreview.js?v=20261112-v9';
+import { api } from '../api.js?v=20261113-v10';
+import { deployment, installedProviders, PROVIDERS, slugify, tagSlug } from '../state.js?v=20261113-v10';
+import { renderMarkdown } from '../markdown.js?v=20261113-v10';
+import { h, button, heading, field, disclosure, errorText, modal, notify } from '../ui.js?v=20261113-v10';
+import { showProviderPreview } from './transpilerPreview.js?v=20261113-v10';
 
 const blank = () => ({
   title: '', name: '', description: '', when_to_use: '', instructions_markdown: '', tags: [],
@@ -170,7 +170,7 @@ export function createEditor(root, app) {
         dirty = false;
         isSaving = false;
         await app.read(detail.skill.name, detail);
-        const sync = deployment(detail.skill);
+        const sync = deployment(detail.skill, installedProviders(snapshot.providers));
         notify(sync.key === 'issue' ? 'Saved. A deployment needs attention.' : 'Skill saved.');
       } catch (error) {
         feedback.replaceChildren(errorText(error.message));

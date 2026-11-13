@@ -49,6 +49,32 @@ public sealed class SyncSafetyTests : IDisposable
     }
 
     [Fact]
+    public async Task UninstalledProviderDoesNotKeepSkillActiveOrCountAsSyncFailure()
+    {
+        Directory.CreateDirectory(Path.Combine(_root, ".claude", "skills"));
+        var discovery = new ProviderDiscoveryService(_root);
+        await using var engine = new SyncEngine(discovery);
+        var skill = Fixture();
+        skill.SetEnabledFor(ProviderType.Gemini, false);
+        skill.SetEnabledFor(ProviderType.Codex, false);
+        skill.SetEnabledFor(ProviderType.Cursor, false);
+        await engine.CreateSkillAsync(skill, "test");
+        Assert.Single(engine.ListSkills(category: "synced"));
+
+        File.Delete(discovery.GetSkillPrimaryFilePath(ProviderType.Claude, skill.Name));
+        var missing = await engine.SynchronizeAllAsync();
+        Assert.Equal(1, missing.MissingDestinations);
+
+        var providerRoot = Path.Combine(_root, ".claude");
+        Directory.Delete(providerRoot, recursive: true);
+        var removed = await engine.SynchronizeAllAsync();
+        Assert.Empty(engine.ListSkills(category: "synced"));
+        Assert.Equal(0, removed.MissingDestinations);
+        Assert.Equal(0, removed.FailedDestinations);
+        Assert.False(Directory.Exists(providerRoot));
+    }
+
+    [Fact]
     public async Task DisableProvider_WithLiveWatcher_WithdrawsOnlyItsOwnedFiles()
     {
         var discovery = CreateDiscovery();

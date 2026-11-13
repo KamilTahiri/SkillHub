@@ -20,6 +20,20 @@ const sample = {
   destinations: [], supporting_files: {}, x_passthrough: { external: 'retained' },
   instructions_markdown: '# Fixture\n\n#### Fourth\n##### Fifth\n###### Sixth\n\n| A | B |\n| --- | --- |\n| 1 | 2 |\n\n- Parent\n  - Child\n\n[Search here](https://example.com/?q=fixture&mode=2)'
 };
+const installed = [
+  { provider: 'canonical', is_installed: true },
+  { provider: 'codex', is_installed: true, skills_root: '/codex' },
+  { provider: 'gemini', is_installed: true, skills_root: '/gemini' },
+  { provider: 'claude', is_installed: false },
+  { provider: 'cursor', is_installed: false }
+];
+const destination = (provider, state, path = '/' + provider) => ({ provider, state, path, applied_revision: 1 });
+const healthy = { ...sample, name: 'mirrored', title: 'Mirrored', tags: ['two', 'three'],
+  targets: { codex: { enabled: true }, gemini: { enabled: true }, claude: { enabled: true }, cursor: { enabled: true } },
+  destinations: [destination('codex', 'synced', '/codex'), destination('codex', 'synced', '/agents'),
+    destination('gemini', 'synced'), destination('claude', 'missing'), destination('cursor', 'conflict')] };
+const needsAttention = { ...healthy, name: 'conflicted', title: 'Conflicted', tags: ['three'],
+  destinations: [destination('codex', 'synced'), destination('gemini', 'conflict')] };
 const item = name => ({ slug: name.toLowerCase(), title: name, description: name, repo: 'fixture/repo',
   path: name + '/SKILL.md', git_ref: 'main' });
 
@@ -44,11 +58,15 @@ async function fixtureServer() {
       const data = body ? JSON.parse(body) : {};
       if (route === '/skills') {
         fixture.reads++;
-        return send([sample]);
+        return send([sample, healthy, needsAttention]);
       }
       if (route === '/skills/fixture') return send({ skill: sample });
       if (route === '/tags') return send([{ tag: 'one', skill_count: 1 }]);
-      if (route === '/providers') return send([]);
+      if (route === '/providers') return send(installed);
+      if (route === '/preferences/theme' && req.method === 'PATCH') {
+        fixture.theme = data.theme;
+        return send({ theme: fixture.theme });
+      }
       if (route === '/status') return send({ install: { mcp_clients: [] } });
       if (route === '/diagnostics') return send({ watcher: { running: true, roots: 1 } });
       if (route === '/preferences') {
@@ -183,10 +201,49 @@ test('workbench at desktop and docked sizes, with keyboard, themes, Markdown and
       await verifyContrast(evaluate);
       assert.match(await evaluate('document.querySelector(".result-button").textContent'), /Disabled/);
       assert.match(await evaluate('document.querySelector(".result-button").textContent'), /\+[1-9]/);
-      await textButton('Filters');
+      const assertNoSerializedElements = async () =>
+        assert.equal(await evaluate('document.body.textContent.includes("[object HTML")'), false);
+      const rowCount = () => evaluate('document.querySelectorAll("#library-results .result-button").length');
+      await assertNoSerializedElements();
+      assert.equal(await evaluate('document.querySelectorAll(".collections button").length'), 4);
+      assert.ok(await evaluate('[...document.querySelectorAll(".collections button")].every(tab => tab.getBoundingClientRect().width > 0)'));
+      assert.equal(await evaluate('document.querySelectorAll("[data-route] svg").length'), 3);
+      assert.equal(await evaluate('document.querySelector("#provider-overview .provider-overview-label").textContent'), '2 AI Providers Connected');
+      assert.equal(await evaluate('document.querySelectorAll("#provider-overview svg").length'), 2);
+      await click('#provider-overview');
       await wait('document.querySelector("dialog[open]")?.getAttribute("aria-modal") === "true"');
+      assert.equal(await evaluate('document.querySelectorAll(".provider-overview-row").length'), 4);
       await key('Escape');
-      await wait('!document.querySelector("dialog[open]") && document.activeElement.textContent === "Filters"');
+      await wait('!document.querySelector("dialog[open]")');
+      await click('#quick-theme');
+      await until(() => fixture.theme === 'light', 'Quick theme was not saved');
+      await wait('!document.querySelector("#quick-theme").disabled');
+      await click('#quick-theme');
+      await until(() => fixture.theme === 'dark', 'Quick theme was not restored');
+
+      assert.deepEqual(await evaluate('[...document.querySelectorAll("[data-control=row-mirrored] [data-synced-provider]")].map(e => e.textContent)'), ['Codex', 'Gemini']);
+      assert.equal(await evaluate('document.querySelector("[data-control=row-mirrored] .warning")'), null);
+      assert.match(await evaluate('document.querySelector("[data-control=row-conflicted] .warning").textContent'), /Needs attention/);
+      await click('[data-control="category-synced"]');
+      assert.equal(await rowCount(), 2);
+      await click('[data-control="category-user"]');
+      assert.equal(await rowCount(), 3);
+
+      await textButton('Tags & filters');
+      assert.equal(await evaluate('document.querySelector("dialog[open]")'), null);
+      await click('[data-tag="one"]');
+      assert.equal(await rowCount(), 1);
+      await click('[data-tag="three"]');
+      assert.equal(await rowCount(), 1);
+      assert.equal(await evaluate('document.querySelectorAll("[data-tag][aria-pressed=true]").length'), 2);
+      await evaluate('const mode = document.querySelector("[aria-label=\\"Tag matching\\"]"); mode.value = "any"; mode.dispatchEvent(new Event("change"));');
+      assert.equal(await rowCount(), 3);
+      await assertNoSerializedElements();
+      await textButton('Clear filters');
+      assert.equal(await evaluate('document.querySelectorAll("[data-tag][aria-pressed=true]").length'), 0);
+      await evaluate('document.querySelector("[data-tag=one]").focus()');
+      await key('Escape');
+      await wait('document.querySelector("#library-filters").hidden && document.activeElement.id === "library-filters-toggle"');
 
       await evaluate('document.querySelector(".result-button").focus()');
       await key('Enter');
@@ -252,6 +309,7 @@ test('workbench at desktop and docked sizes, with keyboard, themes, Markdown and
       await until(() => fixture.reads > baseline, 'Activity did not refresh the snapshot');
       await delay(250);
       assert.equal(fixture.reads, baseline + 1);
+      await assertNoSerializedElements();
     } finally {
       page?.socket.close();
       if (chrome.exitCode === null && chrome.signalCode === null && chrome.pid) {

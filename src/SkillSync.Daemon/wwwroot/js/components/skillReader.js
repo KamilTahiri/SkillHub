@@ -1,8 +1,8 @@
-import { api } from '../api.js?v=20261112-v9';
-import { deployment, destinationLabel, PROVIDERS, skillKey, tagSlug } from '../state.js?v=20261112-v9';
-import { renderMarkdown } from '../markdown.js?v=20261112-v9';
-import { h, button, heading, panel, disclosure, copy, download, busy, notify, modal, confirmAction, field, errorText } from '../ui.js?v=20261112-v9';
-import { showProviderPreview } from './transpilerPreview.js?v=20261112-v9';
+import { api } from '../api.js?v=20261113-v10';
+import { deployment, installedProviders, destinationLabel, PROVIDERS, skillKey, tagSlug } from '../state.js?v=20261113-v10';
+import { renderMarkdown } from '../markdown.js?v=20261113-v10';
+import { h, button, heading, panel, disclosure, copy, download, busy, notify, modal, confirmAction, field, errorText } from '../ui.js?v=20261113-v10';
+import { showProviderPreview } from './transpilerPreview.js?v=20261113-v10';
 
 export function createReader(root, app) {
   let modelKey;
@@ -30,7 +30,7 @@ export function createReader(root, app) {
     lastRender = identity;
     const readOnly = skill.is_catalog_only || skill.source_category === 'system';
     const changes = response => app.updateDetail(response);
-    const sync = deployment(skill);
+    const sync = deployment(skill, installedProviders(snapshot.providers));
     const files = skill.supporting_files ?? {};
     const openFile = (path) => {
       if (!Object.hasOwn(files, path)) { notify('This file is outside the stored skill bundle.'); return; }
@@ -128,7 +128,7 @@ function destinations(skill, snapshot, change, readOnly) {
     const enabled = skill.targets?.[key]?.enabled !== false;
     const provider = snapshot.providers.find(item => item.provider === key);
     const actions = [];
-    if (!readOnly) {
+    if (!readOnly && provider?.is_installed) {
       const toggle = button(enabled ? 'Disable' : 'Enable', async () => {
         if (enabled && !(await confirmAction('Disable ' + label, 'Withdraw this skill’s owned files from ' + label + '?', 'Disable'))) return;
         busy(toggle, async () => change(await api.provider(skill.name, key, !enabled)));
@@ -141,11 +141,11 @@ function destinations(skill, snapshot, change, readOnly) {
       }
     }
     return h('div', { class: 'target-row' }, h('div', {}, h('strong', {}, label),
-      targets.length ? targets.map(target => h('div', {},
+      provider?.is_installed && targets.length ? targets.map(target => h('div', {},
         h('p', { class: ['missing', 'conflict', 'error'].includes(target.state) ? 'warning' : 'muted' },
           target.state === 'synced' && target.applied_revision !== skill.revision ? 'Pending current revision' : destinationLabel(target.state)),
         h('code', { class: 'path' }, target.path), target.error && h('p', { class: 'error' }, target.error)))
-        : h('p', { class: 'muted' }, enabled ? provider?.is_installed ? 'Awaiting deployment' : 'Client not detected' : 'Disabled')),
+        : h('p', { class: 'muted' }, provider?.is_installed ? enabled ? 'Awaiting deployment' : 'Disabled' : 'Client not detected')),
     h('div', { class: 'actions' }, actions));
   });
   return disclosure('Sync destinations', rows);

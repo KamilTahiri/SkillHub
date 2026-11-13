@@ -6,12 +6,19 @@ body { min-height: 100vh; }
 .brand-mark::before { top: 4px; background: var(--accent-text); }
 .brand-mark::after { top: 8px; border-top-color: transparent; border-left-color: transparent; }
 .app-bar nav { display: flex; gap: 4px; align-self: stretch; }
-.app-bar nav button { background: transparent; border: 0; border-bottom: 2px solid transparent; padding: 0 12px; color: var(--secondary); font-weight: 550; }
+.app-bar nav button { display: inline-flex; align-items: center; gap: 7px; white-space: nowrap; background: transparent; border: 0; border-bottom: 2px solid transparent; padding: 0 12px; color: var(--secondary); font-weight: 550; }
 .app-bar nav button[aria-current="page"] { color: var(--text); border-bottom-color: var(--accent); }
 .app-bar nav button:hover { background: var(--raised); }
-.connection { margin-left: auto; display: flex; align-items: center; gap: 7px; color: var(--muted); font-size: .85rem; white-space: nowrap; }
-.connection > span:first-child { width: 7px; height: 7px; border-radius: 50%; background: var(--warn); }
-.connection.online > span:first-child { background: var(--ok); }
+.app-tools { margin-left: auto; display: flex; align-items: center; gap: 8px; }
+.ui-icon { width: 17px; height: 17px; flex: none; }
+.icon-button, .provider-overview { display: inline-flex; align-items: center; justify-content: center; gap: 8px; min-height: 36px; padding: 5px 10px; border: 1px solid var(--line); border-radius: 9px; background: var(--surface); }
+.icon-button { width: 36px; padding: 5px; }
+.icon-button:hover, .provider-overview:hover { background: var(--raised); }
+.provider-overview { font-size: .81rem; font-weight: 650; white-space: nowrap; }
+.provider-overview-compact { display: none; }
+.provider-overview-icons { display: flex; align-items: center; gap: 4px; }
+.provider-overview.offline .provider-overview-icons { opacity: .65; }
+.sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
 .screen { width: min(100%, 1180px); margin: 0 auto; padding: 30px clamp(14px, 3.5vw, 42px) 56px; }
 .screen.reading { width: min(100%, 990px); }
 .page-heading { display: flex; align-items: flex-end; justify-content: space-between; gap: 14px; flex-wrap: wrap; margin-bottom: 22px; }
@@ -34,15 +41,23 @@ body { min-height: 100vh; }
 @media (max-width: 600px) {
   .app-bar { min-height: 50px; gap: 8px; }
   .app-bar nav button { padding: 0 7px; font-size: .88rem; }
-  .connection { gap: 4px; font-size: .74rem; }
+  .app-tools { gap: 5px; }
+  .provider-overview { padding-inline: 7px; }
+  .provider-overview-label { display: none; }
+  .provider-overview-compact { display: inline; }
+  .provider-overview .ui-icon { width: 15px; height: 15px; }
   .screen { padding-top: 18px; }
   .page-heading { margin-bottom: 14px; }
   .editor-actions { top: 50px; }
   .columns { grid-template-columns: 1fr; }
 }
-@media (max-width: 375px) {
-  .connection { white-space: normal; }
+@media (max-width: 600px) {
+  .app-bar nav button { padding: 0 7px; }
+  .app-bar nav button > span { position: absolute; clip-path: inset(50%); }
+}
+@media (max-width: 410px) {
+  .provider-overview-compact { display: none; }
   .brand { font-size: .9rem; }
-  .app-bar nav button { padding: 0 5px; }
+  .app-bar nav button { padding: 0 6px; }
 }
 @media (prefers-reduced-motion: reduce) { *, *::before, *::after { scroll-behavior: auto !important; animation: none !important; transition: none !important; } }

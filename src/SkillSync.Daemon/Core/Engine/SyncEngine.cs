@@ -123,13 +123,15 @@ public sealed partial class SyncEngine : IAsyncDisposable
             .Select(skill => skill.CatalogId!).ToHashSet(StringComparer.Ordinal);
         IEnumerable<CanonicalSkillModel> source = managed.Concat(_catalog.Summaries().Where(skill => !promoted.Contains(skill.CatalogId!)));
 
+        var scope = category?.Trim().ToLowerInvariant();
+        var installed = !includeDisabled || scope is "active" or "synced" ? InstalledProviderNames() : null;
         if (!includeDisabled)
         {
-            source = source.Where(skill => skill.IsCatalogOnly || IsActive(skill));
+            source = source.Where(skill => skill.IsCatalogOnly || IsActive(skill, installed!));
         }
-        if (category?.Trim().ToLowerInvariant() is { Length: > 0 } scope && scope != "all")
+        if (scope is { Length: > 0 } && scope != "all")
         {
-            source = scope is "active" or "synced" ? source.Where(IsActive)
+            source = scope is "active" or "synced" ? source.Where(skill => IsActive(skill, installed!))
                 : source.Where(skill => string.Equals(skill.SourceCategory, scope, StringComparison.OrdinalIgnoreCase));
         }
         if (!string.IsNullOrWhiteSpace(tag))
@@ -149,8 +151,14 @@ public sealed partial class SyncEngine : IAsyncDisposable
             .ThenBy(skill => skill.CatalogId, StringComparer.Ordinal);
     }
 
-    public static bool IsActive(CanonicalSkillModel skill) => !skill.IsCatalogOnly && skill.SourceCategory != "system" &&
-        skill.Destinations.Any(destination => destination.State == "synced" && destination.AppliedRevision == skill.Revision);
+    private HashSet<string> InstalledProviderNames() => _discovery.DiscoverProviders()
+        .Where(provider => provider.IsInstalled && provider.Provider != ProviderType.Canonical)
+        .Select(provider => ProviderName(provider.Provider)).ToHashSet(StringComparer.Ordinal);
+
+    private static bool IsActive(CanonicalSkillModel skill, HashSet<string> installed) =>
+        !skill.IsCatalogOnly && skill.SourceCategory != "system" &&
+        skill.Destinations.Any(destination => installed.Contains(destination.Provider) &&
+            destination.State == "synced" && destination.AppliedRevision == skill.Revision);
 
     public IReadOnlyList<CanonicalSkillModel> ListSkills(string? query = null, string? tag = null,
         bool includeDisabled = true, string? category = null) =>

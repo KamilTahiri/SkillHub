@@ -27,7 +27,19 @@
 .collections { display: flex; gap: 5px; overflow-x: auto; padding: 5px 3px 7px; margin: 0 -3px; }
 .collections .btn { white-space: nowrap; border-color: transparent; background: transparent; color: var(--secondary); }
 .collections .btn[aria-pressed="true"] { background: var(--accent-soft); color: var(--text); }
-.collection-picker { display: none; }
+.collection-count { border-radius: 6px; padding-inline: 5px; background: var(--panel); color: var(--muted); font-size: .78rem; font-variant-numeric: tabular-nums; }
+.collections .btn[aria-pressed="true"] .collection-count { color: var(--text); }
+.library-body { gap: 10px; }
+.library-filters { border: 1px solid var(--line); border-radius: 12px; padding: 12px; background: var(--panel); }
+.filter-tags { gap: 9px; }
+.filter-tag-tools { display: grid; grid-template-columns: minmax(0, 1fr) max-content max-content; align-items: center; gap: 8px; }
+.tag-options { max-height: 100px; overflow: auto; padding: 4px; margin: -4px; align-content: start; }
+.filter-tag { min-height: 29px; padding: 3px 8px; font-size: .8rem; overflow-wrap: anywhere; max-width: 100%; }
+.filter-tag[aria-pressed="true"], .filter-facets .btn[aria-pressed="true"] { background: var(--accent-soft); border-color: var(--accent); color: var(--text); }
+.filter-facets { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; }
+.filter-facets > .field > span { font-size: .82rem; }
+.filter-facets select { font-size: .88rem; }
+.active-filters .chip { border-color: var(--accent); }
 .chips { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; min-width: 0; }
 .chip { display: inline-flex; align-items: center; gap: 5px; max-width: 100%; padding: 2px 8px; border-radius: 7px; border: 1px solid var(--line); color: var(--secondary); font-size: .8rem; overflow-wrap: anywhere; }
 button.chip { background: var(--panel); min-height: 27px; text-align: left; }
@@ -43,6 +55,14 @@ button.chip:hover { background: var(--raised); }
 .result-description { color: var(--secondary); font-size: .9rem; overflow-wrap: anywhere; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
 .result-meta { color: var(--muted); font-size: .79rem; max-width: 36ch; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .result-status { font-size: .8rem; white-space: nowrap; }
+.result-providers { display: flex; flex-wrap: wrap; gap: 5px; align-items: center; min-width: 0; }
+.provider-badge { display: inline-flex; align-items: center; gap: 4px; border: 1px solid var(--line); border-radius: 7px; color: var(--text); padding: 2px 7px; background: var(--surface); font-size: .78rem; }
+.provider-badge .ui-icon { width: 13px; height: 13px; }
+.icon-gemini { color: var(--accent); }
+.provider-overview-list { display: grid; gap: 7px; margin: 0; padding: 0; list-style: none; }
+.provider-overview-row { border-bottom: 1px solid var(--line); padding: 5px 0 9px; overflow-wrap: anywhere; }
+.provider-overview-row:last-child { border: 0; }
+.provider-overview-name { display: flex; align-items: center; gap: 7px; }
 .empty { border: 1px dashed var(--line); border-radius: 12px; padding: 20px; display: grid; gap: 8px; }
 .panel { border: 1px solid var(--line); border-radius: 12px; padding: 15px; background: var(--panel); min-width: 0; }
 .banner { border-left: 3px solid var(--accent); background: var(--accent-soft); border-radius: 0 8px 8px 0; padding: 10px 12px; overflow-wrap: anywhere; }
@@ -89,8 +109,13 @@ dialog::backdrop { background: #10111bb5; }
 .activity { margin: 0; padding-left: 20px; }
 .activity li { margin: 5px 0; overflow-wrap: anywhere; }
 @media (max-width: 600px) {
-  .collections { display: none; }
-  .collection-picker { display: grid; gap: 5px; }
+  .collections { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 4px; overflow: visible; padding-bottom: 3px; }
+  .collections .btn { white-space: normal; min-height: 29px; padding: 3px 6px; font-size: .79rem; }
+  .filter-tag-tools { grid-template-columns: minmax(0, 1fr) max-content; }
+  .filter-tag-tools > button { grid-column: 1 / -1; justify-self: start; }
+  .filter-facets { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .tag-options { max-height: 66px; }
+  .library-filters { max-height: min(240px, 43vh); overflow: auto; }
   .result-button { padding: 10px 12px; }
   .result-meta { max-width: 32ch; }
   .panel { padding: 12px; }

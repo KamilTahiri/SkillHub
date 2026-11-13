@@ -1,16 +1,21 @@
-import { api } from './api.js?v=20261112-v9';
-import { Latest, skillKey, tagSlug } from './state.js?v=20261112-v9';
-import { confirmAction, notify } from './ui.js?v=20261112-v9';
-import { createLibrary } from './components/skillList.js?v=20261112-v9';
-import { createReader } from './components/skillReader.js?v=20261112-v9';
-import { createEditor } from './components/skillEditor.js?v=20261112-v9';
-import { createExplore } from './components/explore.js?v=20261112-v9';
-import { createSettings } from './components/statusBar.js?v=20261112-v9';
+import { api } from './api.js?v=20261113-v10';
+import { Latest, PROVIDERS, deployment, installedProviders, skillKey, tagSlug } from './state.js?v=20261113-v10';
+import { icon } from './icons.js?v=20261113-v10';
+import { button, confirmAction, h, modal, notify } from './ui.js?v=20261113-v10';
+import { createLibrary } from './components/skillList.js?v=20261113-v10';
+import { createReader } from './components/skillReader.js?v=20261113-v10';
+import { createEditor } from './components/skillEditor.js?v=20261113-v10';
+import { createExplore } from './components/explore.js?v=20261113-v10';
+import { createSettings } from './components/statusBar.js?v=20261113-v10';
 
 const views = Object.fromEntries(['library', 'reader', 'editor', 'explore', 'settings']
   .map(name => [name, document.getElementById(name + '-screen')]));
 const nav = document.getElementById('primary-nav');
-const status = document.getElementById('connection');
+const status = document.getElementById('connection-status');
+const providerButton = document.getElementById('provider-overview');
+const themeButton = document.getElementById('quick-theme');
+let online = false;
+for (const tab of nav.querySelectorAll('button')) tab.prepend(icon(tab.dataset.route));
 const snapshotJob = new Latest();
 const detailJob = new Latest();
 const systemTheme = matchMedia('(prefers-color-scheme: dark)');
@@ -28,6 +33,7 @@ const app = {
   get snapshot() { return snapshot; },
   refresh,
   navigate,
+  showConnections: () => navigate('settings', { section: 'Connections' }),
   read,
   edit: (data, { clone = false } = {}) => openEditor(data, clone),
   newSkill: () => openEditor(),
@@ -72,14 +78,14 @@ function activate(next, focus = true) {
   if (focus) (views[next].querySelector('h1') ?? document.getElementById('workspace')).focus({ preventScroll: true });
 }
 
-async function navigate(next, { focusSearch = false, catalog = false } = {}) {
+async function navigate(next, { focusSearch = false, catalog = false, section } = {}) {
   if (!await canLeave()) return false;
   if (next !== route) activate(next);
   if (next === 'library') {
     if (focusSearch) library.focusSearch();
     else library.restore();
   }
-  if (next === 'settings') settings.show();
+  if (next === 'settings') settings.show(section);
   if (next === 'explore') explore.show(catalog);
   return true;
 }
@@ -136,6 +142,7 @@ async function refresh() {
     if (!job.current()) return;
     snapshot = { skills, tags, providers };
     loaded = true;
+    renderProviderButton();
     library.update(snapshot);
     if (route === 'reader') await loadDetail();
   } catch (error) {
@@ -153,11 +160,47 @@ function scheduleRefresh() {
     refresh();
   }, 160);
 }
-function connection(online) {
-  status.classList.toggle('online', online);
-  status.lastElementChild.textContent = online ? 'Local' : 'Reconnecting';
-  status.title = online ? 'Connected to the local SkillHub daemon' : 'Reconnecting to SkillHub';
+function renderProviderButton() {
+  const providers = installedProviders(snapshot.providers);
+  const count = providers.length;
+  const label = loaded ? count + (count === 1 ? ' AI Provider Connected' : ' AI Providers Connected') : 'Checking providers';
+  providerButton.disabled = !loaded;
+  providerButton.classList.toggle('offline', !online);
+  providerButton.setAttribute('aria-label', label + (online ? '' : ' · Reconnecting to SkillHub'));
+  providerButton.querySelector('.provider-overview-icons').replaceChildren(...providers.map(icon));
+  providerButton.querySelector('.provider-overview-label').textContent = label;
+  providerButton.querySelector('.provider-overview-compact').textContent = loaded ? count + (count === 1 ? ' provider' : ' providers') : 'Checking';
+  providerButton.title = label + (online ? '' : ' · Reconnecting to SkillHub');
 }
+function connection(connected) {
+  online = connected;
+  status.textContent = connected ? 'Connected to local SkillHub' : 'Reconnecting to SkillHub';
+  renderProviderButton();
+}
+
+providerButton.addEventListener('click', () => {
+  const installed = installedProviders(snapshot.providers);
+  const skills = snapshot.skills.filter(skill => skill.source_category !== 'system')
+    .map(skill => deployment(skill, installed));
+  const rows = Object.entries(PROVIDERS).map(([id, label]) => {
+    const provider = snapshot.providers.find(item => item.provider === id);
+    const detected = installed.includes(id);
+    const synced = skills.filter(skill => skill.synced.includes(id)).length;
+    const issues = skills.filter(skill => skill.issues.includes(id)).length;
+    return h('li', { class: 'provider-overview-row' }, h('div', { class: 'provider-overview-name' }, icon(id), h('strong', {}, label)),
+      h('p', { class: detected ? 'ok' : 'muted' }, detected ? 'Detected · ' + synced + (synced === 1 ? ' skill synced' : ' skills synced') : 'Not detected',
+        issues > 0 && h('span', { class: 'warning' }, ' · ' + issues + ' need attention')),
+      detected && provider.skills_root && h('code', { class: 'path' }, provider.skills_root));
+  });
+  const dialog = modal('AI providers', [
+    !online && h('p', { class: 'warning' }, 'Reconnecting to SkillHub. Showing last detected providers.'),
+    h('ul', { class: 'provider-overview-list' }, rows)
+  ], button('Connection settings', () => {
+    dialog.addEventListener('close', app.showConnections, { once: true });
+    dialog.close();
+  }, 'primary'));
+});
+
 function startEvents() {
   const events = new EventSource('/api/v1/events');
   events.addEventListener('connected', () => { connection(true); scheduleRefresh(); });
@@ -176,6 +219,10 @@ function applyTheme(value) {
   theme = ['system', 'dark', 'light'].includes(value) ? value : 'system';
   const effective = theme === 'system' ? systemTheme.matches ? 'dark' : 'light' : theme;
   document.documentElement.dataset.theme = effective;
+  const switchLabel = effective === 'dark' ? 'Switch to light theme' : 'Switch to dark theme';
+  themeButton.replaceChildren(icon(effective === 'dark' ? 'sun' : 'moon'));
+  themeButton.setAttribute('aria-label', switchLabel);
+  themeButton.title = switchLabel;
   window.chrome?.webview?.postMessage(JSON.stringify({ type: 'theme', theme: effective }));
 }
 systemTheme.addEventListener('change', () => { if (theme === 'system') applyTheme(theme); });
@@ -214,8 +261,17 @@ async function migrateTags() {
     localStorage.removeItem('skillhub_custom_tags');
   } catch { /* Leave the old copy available for retry on next startup. */ }
 }
+themeButton.addEventListener('click', async () => {
+  const previous = theme;
+  const next = document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark';
+  themeButton.disabled = true;
+  applyTheme(next);
+  try { await api.theme(next); }
+  catch (error) { applyTheme(previous); notify(error.message); }
+  finally { themeButton.disabled = false; }
+});
 applyTheme('system');
-api.preferences().then(data => applyTheme(data.theme)).catch(() => {});
+api.preferences().then(data => applyTheme(data.theme)).catch(() => {}).finally(() => { themeButton.disabled = false; });
 migrateTags().finally(() => {
   refresh();
   startEvents();

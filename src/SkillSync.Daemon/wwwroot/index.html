@@ -5,20 +5,26 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="color-scheme" content="dark light">
   <title>SkillHub</title>
-  <link rel="stylesheet" href="/css/base.css?v=20261112-v9">
-  <link rel="stylesheet" href="/css/layout.css?v=20261112-v9">
-  <link rel="stylesheet" href="/css/components.css?v=20261112-v9">
+  <link rel="stylesheet" href="/css/base.css?v=20261113-v10">
+  <link rel="stylesheet" href="/css/layout.css?v=20261113-v10">
+  <link rel="stylesheet" href="/css/components.css?v=20261113-v10">
 </head>
 <body>
   <a class="skip-link" href="#workspace">Skip to workspace</a>
   <header class="app-bar">
     <button class="brand" type="button" id="brand-home"><span class="brand-mark" aria-hidden="true"></span>SkillHub</button>
     <nav id="primary-nav" aria-label="Main navigation">
-      <button type="button" data-route="library" aria-current="page">Library</button>
-      <button type="button" data-route="explore">Explore</button>
-      <button type="button" data-route="settings">Settings</button>
+      <button type="button" data-route="library" aria-current="page"><span>Library</span></button>
+      <button type="button" data-route="explore"><span>Explore</span></button>
+      <button type="button" data-route="settings"><span>Settings</span></button>
     </nav>
-    <span id="connection" class="connection" role="status"><span aria-hidden="true"></span><span>Connecting</span></span>
+    <div class="app-tools">
+      <button id="provider-overview" class="provider-overview" type="button" aria-haspopup="dialog" disabled>
+        <span class="provider-overview-icons" aria-hidden="true"></span><span class="provider-overview-label">Checking providers</span><span class="provider-overview-compact" aria-hidden="true"></span>
+      </button>
+      <button id="quick-theme" class="icon-button" type="button" aria-label="Switch theme" disabled></button>
+      <span id="connection-status" class="sr-only" role="status"></span>
+    </div>
   </header>
   <main id="workspace" tabindex="-1">
     <section id="library-screen" class="screen" aria-label="Library"></section>
@@ -28,6 +34,6 @@
     <section id="settings-screen" class="screen" aria-label="Settings" hidden></section>
   </main>
   <div id="notifications" role="status" aria-live="polite" aria-atomic="true"></div>
-  <script type="module" src="/js/main.js?v=20261112-v9"></script>
+  <script type="module" src="/js/main.js?v=20261113-v10"></script>
 </body>
 </html>

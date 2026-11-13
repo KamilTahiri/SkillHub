@@ -274,6 +274,26 @@ public sealed class LocalContractTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task QuickThemeChangesOnlyTheTheme()
+    {
+        var prefs = new DesktopPreferencesStore(_discovery);
+        prefs.SetOptions("light", false);
+        var bounds = new DesktopBounds(40, 40, 900, 720, false);
+        prefs.SetBounds(bounds);
+        using var request = new HttpRequestMessage(HttpMethod.Patch, "/api/v1/preferences/theme")
+        {
+            Content = JsonContent.Create(new { theme = "dark" })
+        };
+        request.Headers.Add(LocalHttpAccess.DesktopHeader, _access.DesktopToken);
+        using var response = await _client.SendAsync(request);
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        var saved = new DesktopPreferencesStore(_discovery).Read();
+        Assert.Equal("dark", saved.Theme);
+        Assert.False(saved.CloseToTray);
+        Assert.Equal(bounds, saved.Bounds);
+    }
+
+    [Fact]
     public void Preferences_KeepThemeAndBoundsInTheProfile()
     {
         var store = new DesktopPreferencesStore(_discovery);

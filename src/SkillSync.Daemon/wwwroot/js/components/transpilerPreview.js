@@ -1,6 +1,6 @@
-import { api } from '../api.js?v=20261112-v9';
-import { Latest, PROVIDERS } from '../state.js?v=20261112-v9';
-import { button, copy, errorText, field, h, modal, select } from '../ui.js?v=20261112-v9';
+import { api } from '../api.js?v=20261113-v10';
+import { Latest, PROVIDERS } from '../state.js?v=20261113-v10';
+import { button, copy, errorText, field, h, modal, select } from '../ui.js?v=20261113-v10';
 
 export function showProviderPreview(draft, { saved, providers = [] } = {}) {
   const latest = new Latest();

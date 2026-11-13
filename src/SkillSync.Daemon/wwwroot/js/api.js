@@ -43,6 +43,7 @@ export const api = {
     method: 'POST', data: { revision: plan.revision, name, providers }
   }),
   client: (id, action) => request('/mcp-clients/' + encode(id), { method: 'POST', data: { action } }),
+  theme: value => request('/preferences/theme', { method: 'PATCH', data: { theme: value } }),
   preferences: (data, signal) => request('/preferences', data ? { method: 'PUT', data } : { signal }),
   diagnostics: signal => request('/diagnostics', { signal }),
   resync: () => request('/resync', { method: 'POST' }),

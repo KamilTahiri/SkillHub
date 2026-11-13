@@ -324,7 +324,7 @@ public static class Program
         {
             OnPrepareResponse = ctx =>
             {
-                ctx.Context.Response.Headers.CacheControl = ctx.Context.Request.Query["v"] == "20261112-v9" &&
+                ctx.Context.Response.Headers.CacheControl = ctx.Context.Request.Query["v"] == "20261113-v10" &&
                     Path.GetExtension(ctx.File.Name) is ".js" or ".css" ? "private, max-age=31536000, immutable" : "no-store";
             }
         });

@@ -33,11 +33,22 @@ public sealed class DesktopPreferencesStore(ProviderDiscoveryService discovery)
 
     public DesktopPreferences SetOptions(string theme, bool closeToTray)
     {
+        ValidateTheme(theme);
+        return Update(current => current with { Theme = theme, CloseToTray = closeToTray });
+    }
+
+    public DesktopPreferences SetTheme(string theme)
+    {
+        ValidateTheme(theme);
+        return Update(current => current with { Theme = theme });
+    }
+
+    private static void ValidateTheme(string theme)
+    {
         if (theme is not ("system" or "light" or "dark"))
         {
             throw new ArgumentException("Choose System, Light, or Dark.");
         }
-        return Update(current => current with { Theme = theme, CloseToTray = closeToTray });
     }
 
     public void SetBounds(DesktopBounds bounds) => Update(current => current with { Bounds = bounds });

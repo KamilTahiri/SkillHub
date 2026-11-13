@@ -39,28 +39,41 @@ export const destinationLabel = state => ({
   conflict: 'Conflict · needs review', error: 'Deployment failed', external: 'Provider-owned', pending: 'Pending'
 })[state] ?? 'Pending';
 
-export function deployment(skill) {
-  if (skill.is_catalog_only) return { key: 'catalog', label: 'Catalog · not synced' };
-  const targets = skill.destinations ?? [];
-  const issue = targets.find(target => ['error', 'conflict', 'missing'].includes(target.state));
-  const synced = targets.filter(target => target.state === 'synced' && target.applied_revision === skill.revision).length;
-  if (issue) return { key: 'issue', label: synced ? 'Synced to ' + synced + ' · needs attention' : destinationLabel(issue.state), tone: 'warning', synced };
-  if (synced) return { key: 'synced', label: 'Synced to ' + synced, tone: 'ok', synced };
-  if (Object.values(skill.targets ?? {}).every(target => target.enabled === false)) return { key: 'disabled', label: 'Disabled' };
-  if (targets.some(target => target.state === 'external')) return { key: 'pending', label: 'Provider-owned' };
-  return { key: 'pending', label: targets.length ? 'Pending sync' : 'Not deployed' };
+export function installedProviders(providers) {
+  return Object.keys(PROVIDERS).filter(id => providers.some(provider => provider.provider === id && provider.is_installed));
 }
 
-export function inCollection(skill, collection) {
+export function deployment(skill, installed) {
+  const synced = [];
+  const issues = [];
+  if (skill.is_catalog_only) return { key: 'catalog', label: 'Catalog · not synced', synced, issues };
+  const enabled = installed.filter(id => skill.targets?.[id]?.enabled !== false);
+  const targets = (skill.destinations ?? []).filter(target => enabled.includes(target.provider));
+  for (const id of enabled) {
+    const destinations = targets.filter(target => target.provider === id);
+    if (destinations.some(target => target.state === 'synced' && target.applied_revision === skill.revision)) synced.push(id);
+    if (destinations.some(target => ['error', 'conflict', 'missing'].includes(target.state))) issues.push(id);
+  }
+  if (issues.length) return { key: 'issue', label: 'Needs attention', tone: 'warning', synced, issues };
+  if (synced.length) return { key: 'synced', label: 'Synced', tone: 'ok', synced, issues };
+  if (Object.values(skill.targets ?? {}).every(target => target.enabled === false) || installed.length && !enabled.length)
+    return { key: 'disabled', label: 'Disabled', synced, issues };
+  if (targets.some(target => target.state === 'external')) return { key: 'pending', label: 'Provider-owned', synced, issues };
+  return { key: 'pending', label: installed.length ? targets.length ? 'Pending sync' : 'Not deployed' : 'No providers detected', synced, issues };
+}
+
+export function inCollection(skill, collection, sync) {
   if (collection === 'all') return skill.source_category !== 'system';
-  if (collection === 'synced') return skill.source_category !== 'system' && Boolean(deployment(skill).synced);
+  if (collection === 'synced') return skill.source_category !== 'system' && sync.synced.length > 0;
   return skill.source_category === collection;
 }
 
-export function filterSkills(skills, filters) {
-  return skills.filter(skill =>
-    (!filters.tag || skill.tags?.some(tag => slugify(tag) === filters.tag)) &&
+export function matchesFilters(skill, filters, sync) {
+  const tags = new Set(skill.tags?.map(slugify));
+  const tagMatch = !filters.tags.length || (filters.tagMode === 'any'
+    ? filters.tags.some(tag => tags.has(tag)) : filters.tags.every(tag => tags.has(tag)));
+  return tagMatch &&
     (!filters.origin || skill.origin_provider === filters.origin) &&
-    (!filters.provider || skill.destinations?.some(target => target.provider === filters.provider)) &&
-    (!filters.status || deployment(skill).key === filters.status));
+    (!filters.provider || sync.synced.includes(filters.provider) || sync.issues.includes(filters.provider)) &&
+    (!filters.status || sync.key === filters.status);
 }
