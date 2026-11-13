@@ -5,9 +5,9 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="color-scheme" content="dark light">
   <title>SkillHub</title>
-  <link rel="stylesheet" href="/css/base.css?v=20261113-v11">
-  <link rel="stylesheet" href="/css/layout.css?v=20261113-v11">
-  <link rel="stylesheet" href="/css/components.css?v=20261113-v11">
+  <link rel="stylesheet" href="/css/base.css?v=20261113-v12">
+  <link rel="stylesheet" href="/css/layout.css?v=20261113-v12">
+  <link rel="stylesheet" href="/css/components.css?v=20261113-v12">
 </head>
 <body>
   <a class="skip-link" href="#workspace">Skip to workspace</a>
@@ -19,8 +19,8 @@
       <button type="button" data-route="settings"><span>Settings</span></button>
     </nav>
     <div class="app-tools">
-      <button id="provider-overview" class="provider-overview" type="button" aria-haspopup="dialog" disabled>
-        <span class="provider-overview-icons" aria-hidden="true"></span><span class="provider-overview-label">Checking providers</span><span class="provider-overview-compact" aria-hidden="true"></span>
+      <button id="provider-overview" class="provider-overview" type="button" aria-haspopup="dialog" aria-label="Checking providers" disabled>
+        <span class="provider-overview-dot" aria-hidden="true"></span><span class="provider-overview-icons" aria-hidden="true"></span><span class="provider-overview-count" aria-hidden="true">–</span>
       </button>
       <button id="quick-theme" class="icon-button" type="button" aria-label="Switch theme" disabled></button>
       <span id="connection-status" class="sr-only" role="status"></span>
@@ -34,6 +34,6 @@
     <section id="settings-screen" class="screen" aria-label="Settings" hidden></section>
   </main>
   <div id="notifications" role="status" aria-live="polite" aria-atomic="true"></div>
-  <script type="module" src="/js/main.js?v=20261113-v11"></script>
+  <script type="module" src="/js/main.js?v=20261113-v12"></script>
 </body>
 </html>

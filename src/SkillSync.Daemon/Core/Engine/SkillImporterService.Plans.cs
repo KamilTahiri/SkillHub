@@ -47,7 +47,7 @@ public sealed partial class SkillImporterService
         string source;
         string? repository = null;
         string path;
-        var license = "No license identified";
+        var license = UnknownLicense;
         var skipped = new List<string>();
 
         if (selection.RawMarkdown is not null)
@@ -60,18 +60,11 @@ public sealed partial class SkillImporterService
         }
         else if (selection.Repo == "local/catalog" || selection.Source?.StartsWith("local/catalog/", StringComparison.OrdinalIgnoreCase) == true)
         {
-            var id = selection.Source?.Split('/').LastOrDefault() ??
-                selection.Path?.Split('/').AsEnumerable().Reverse().Skip(1).FirstOrDefault();
-            var catalog = _engine.GetCatalogSkill(id ?? string.Empty) ?? throw new KeyNotFoundException("This catalog entry is no longer available.");
-            if (catalog.SourceCategory == "system")
-            {
-                throw new ArgumentException("System skills cannot be imported.");
-            }
-            model = catalog.Clone();
+            model = GetImportableCatalogSkill(selection.Source, selection.Path).Clone();
             model.IsCatalogOnly = false;
             model.SourceCategory = "user";
-            path = selection.Path ?? $"plugins/{catalog.CatalogId}/SKILL.md";
-            source = $"Local catalog · {catalog.OriginProvider}";
+            path = selection.Path ?? $"plugins/{model.CatalogId}/SKILL.md";
+            source = $"Local catalog · {model.OriginProvider}";
             revision = ContentHasher.ComputeSemanticHash(model);
             license = model.Passthrough.GetValueOrDefault("license")?.ToString() ?? license;
         }
@@ -82,22 +75,11 @@ public sealed partial class SkillImporterService
             revision = await ResolveCommitAsync(owner, repo, requestedRef, ct).ConfigureAwait(false);
             var entries = await GetRepositoryBlobPathsAsync(owner, repo, revision, ct).ConfigureAwait(false);
             path = SelectSkillPath(entries, selection.Path ?? hint);
-            var prefix = path.Contains('/') ? path[..(path.LastIndexOf('/') + 1)] : string.Empty;
-            var raw = await ReadRemoteTextAsync(RawUri(owner, repo, revision, path), SkillStorage.MaxMarkdownBytes, ct).ConfigureAwait(false);
-            model = ParseMarkdownToSkillModel(raw, prefix.Length == 0 ? repo : prefix.TrimEnd('/').Split('/').Last(), $"GitHub ({repository})");
-            license = ReadDeclaredLicense(raw) ?? license;
-            var licensePath = entries.FirstOrDefault(entry => entry.Equals(prefix + "LICENSE", StringComparison.OrdinalIgnoreCase) ||
-                entry.Equals(prefix + "LICENSE.md", StringComparison.OrdinalIgnoreCase))
-                ?? entries.FirstOrDefault(entry => entry.Equals("LICENSE", StringComparison.OrdinalIgnoreCase) || entry.Equals("LICENSE.md", StringComparison.OrdinalIgnoreCase));
-            if (licensePath is not null && license == "No license identified")
-            {
-                license = $"License file present · {licensePath}";
-            }
-
-            var files = entries.Where(entry => entry.StartsWith(prefix, StringComparison.Ordinal) && entry != path)
-                .Select(entry => entry[prefix.Length..])
-                .Where(relative => relative.Contains('/') && SkillPaths.IsSupportingFolder(relative.Split('/')[0]))
-                .Order(StringComparer.Ordinal).ToArray();
+            var document = await GetRemoteSkillAsync(owner, repo, revision, path, entries, ct).ConfigureAwait(false);
+            model = document.Model.Clone();
+            license = document.License;
+            var files = SupportingPaths(entries, path);
+            var prefix = SkillDirectoryPrefix(path);
             if (files.Length > 128)
             {
                 throw new InvalidDataException("The skill includes more than 128 supporting files. Review and import a smaller bundle.");
@@ -124,7 +106,7 @@ public sealed partial class SkillImporterService
         var plan = new SkillImportPlan(Guid.NewGuid(), revision, source, repository, path, license, model.Name,
             model.GetEffectiveTitle(), model.Description, model.InstructionsMarkdown,
             new Dictionary<string, string>(model.SupportingFiles), skipped.ToArray(),
-            _engine.ListSkills().Any(skill => !skill.IsCatalogOnly && skill.Name == model.Name),
+            ImportNameExists(model.Name),
             DateTimeOffset.UtcNow.AddMinutes(15), existingName);
         lock (_plansLock)
         {
@@ -215,35 +197,43 @@ public sealed partial class SkillImporterService
         return (owner, repo, requested, subpath ?? filter);
     }
 
-    private async Task<string> ResolveCommitAsync(string owner, string repo, string gitRef, CancellationToken ct)
+    private Task<string> ResolveCommitAsync(string owner, string repo, string gitRef, CancellationToken ct)
     {
         if (Regex.IsMatch(gitRef, @"\A[0-9a-fA-F]{40}\z"))
+            return Task.FromResult(gitRef.ToLowerInvariant());
+
+        return _revisionCache.GetAsync((owner.ToLowerInvariant(), repo.ToLowerInvariant(), gitRef), async token =>
         {
-            return gitRef.ToLowerInvariant();
-        }
-        var url = $"https://api.github.com/repos/{owner}/{repo}/commits/{Uri.EscapeDataString(gitRef)}";
-        using var doc = JsonDocument.Parse(await ReadRemoteTextAsync(url, 2 * 1024 * 1024, ct).ConfigureAwait(false));
-        var sha = doc.RootElement.GetProperty("sha").GetString();
-        if (sha is null || !Regex.IsMatch(sha, @"\A[0-9a-fA-F]{40}\z"))
-        {
-            throw new InvalidDataException("GitHub did not return an immutable revision.");
-        }
-        return sha.ToLowerInvariant();
+            var url = $"https://api.github.com/repos/{owner}/{repo}/commits/{Uri.EscapeDataString(gitRef)}";
+            using var doc = JsonDocument.Parse(await ReadRemoteTextAsync(url, 2 * 1024 * 1024, token).ConfigureAwait(false));
+            var sha = doc.RootElement.GetProperty("sha").GetString();
+            if (sha is null || !Regex.IsMatch(sha, @"\A[0-9a-fA-F]{40}\z"))
+                throw new InvalidDataException("GitHub did not return an immutable revision.");
+            return sha.ToLowerInvariant();
+        }, ct);
     }
+
+    private static bool IsSkillDocument(string path) =>
+        Path.GetFileName(path).Equals("SKILL.md", StringComparison.OrdinalIgnoreCase) ||
+        path.EndsWith(".mdc", StringComparison.OrdinalIgnoreCase);
+
+    private static string SkillFallbackName(string repo, string path) =>
+        Path.GetFileName(path).Equals("SKILL.md", StringComparison.OrdinalIgnoreCase)
+            ? Path.GetDirectoryName(path) is { Length: > 0 } directory ? Path.GetFileName(directory) : repo
+            : Path.GetFileNameWithoutExtension(path);
 
     private static string SelectSkillPath(List<string> entries, string? hint)
     {
-        var skills = entries.Where(path => path.Equals("SKILL.md", StringComparison.OrdinalIgnoreCase) ||
-            path.EndsWith("/SKILL.md", StringComparison.OrdinalIgnoreCase)).ToArray();
+        var skills = entries.Where(IsSkillDocument).ToArray();
         if (!string.IsNullOrWhiteSpace(hint))
         {
             var path = SkillPaths.NormalizeRelative(hint.TrimEnd('/'));
-            var exact = entries.FirstOrDefault(item => item == path || item == path + "/SKILL.md");
+            var exact = entries.FirstOrDefault(item => item == path ||
+                item.Equals(path + "/SKILL.md", StringComparison.OrdinalIgnoreCase));
             if (exact is not null && (exact.EndsWith(".md", StringComparison.OrdinalIgnoreCase) || exact.EndsWith(".mdc", StringComparison.OrdinalIgnoreCase)))
-            {
                 return exact;
-            }
-            skills = skills.Where(item => item.Split('/').AsEnumerable().Reverse().Skip(1).FirstOrDefault() == path).ToArray();
+            skills = skills.Where(item => SkillFallbackName(string.Empty, item).Equals(path, StringComparison.OrdinalIgnoreCase) ||
+                Path.GetFileNameWithoutExtension(item).Equals(path, StringComparison.OrdinalIgnoreCase)).ToArray();
         }
         return skills.Length switch
         {

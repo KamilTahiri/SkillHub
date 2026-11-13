@@ -41,6 +41,10 @@ export const api = {
   undoTag: id => request('/tags/undo/' + encode(id), { method: 'POST' }),
   repositories: signal => request('/community/repos', { signal }),
   community: (repo, q, signal) => request('/community/skills?' + new URLSearchParams({ repo, q }), { signal }),
+  communityPreview: ({ repo, path, git_ref }, signal) =>
+    request('/community/preview?' + new URLSearchParams({ repo, path, git_ref }), { signal }),
+  previewFile: ({ repo, path, revision }, file, signal) =>
+    request('/community/preview-file?' + new URLSearchParams({ repo, path, revision, file }), { signal }),
   prepare: (selection, signal) => request('/imports/prepare', { method: 'POST', data: selection, signal }),
   import: (plan, name, providers) => request('/imports/' + encode(plan.plan_id) + '/apply', {
     method: 'POST', data: { revision: plan.revision, name, providers }

@@ -1,6 +1,6 @@
-import { api } from '../api.js?v=20261113-v11';
-import { Latest } from '../state.js?v=20261113-v11';
-import { h, button, heading, panel, field, select, disclosure, confirmAction, errorText, busy, notify } from '../ui.js?v=20261113-v11';
+import { api } from '../api.js?v=20261113-v12';
+import { Latest } from '../state.js?v=20261113-v12';
+import { h, button, heading, panel, field, select, disclosure, confirmAction, errorText, busy, notify } from '../ui.js?v=20261113-v12';
 
 export function createSettings(root, app) {
   let tab = 'Connections';

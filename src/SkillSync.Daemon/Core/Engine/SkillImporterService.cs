@@ -1,4 +1,3 @@
-using System.Collections.Concurrent;
 using System.Net.Http.Headers;
 using System.Text.Json;
 using System.Text.Json.Serialization;
@@ -50,14 +49,18 @@ public sealed record CommunitySkillPreview(
     [property: JsonPropertyName("description")] string Description,
     [property: JsonPropertyName("when_to_use")] string WhenToUse,
     [property: JsonPropertyName("instructions_markdown")] string InstructionsMarkdown,
-    [property: JsonPropertyName("is_installed")] bool IsInstalled
+    [property: JsonPropertyName("is_installed")] bool IsInstalled,
+    [property: JsonPropertyName("revision")] string Revision,
+    [property: JsonPropertyName("license")] string License,
+    [property: JsonPropertyName("supporting_paths")] IReadOnlyList<string> SupportingPaths,
+    [property: JsonPropertyName("name_exists")] bool NameExists,
+    [property: JsonPropertyName("existing_name")] string? ExistingName
 );
 
 public sealed partial class SkillImporterService
 {
     private static readonly HttpClient SharedHttp = CreateHttpClient();
     private readonly HttpClient _http;
-    private readonly ConcurrentDictionary<string, (DateTimeOffset CachedAt, List<string> BlobPaths)> RepoTreeCache = new(StringComparer.Ordinal);
 
     private readonly SyncEngine _engine;
     private readonly CodexTranspiler _codexTranspiler = new();
@@ -217,55 +220,49 @@ public sealed partial class SkillImporterService
         var (owner, repo, gitRef, _) = ParseSelection(new SkillImportSelection(Source: cleaned));
         var fullRepo = $"{owner}/{repo}";
 
-        var results = new List<CommunitySkillSummary>();
-        var allBlobs = await GetRepositoryBlobPathsAsync(owner, repo, gitRef, ct).ConfigureAwait(false);
-        var skillMdPaths = allBlobs
-            .Where(p => p.EndsWith("/SKILL.md", StringComparison.OrdinalIgnoreCase) ||
-                        string.Equals(p, "SKILL.md", StringComparison.OrdinalIgnoreCase))
-            .OrderBy(p => p, StringComparer.OrdinalIgnoreCase)
-            .ToList();
-
-        foreach (var relPath in skillMdPaths)
+        var revision = await ResolveCommitAsync(owner, repo, gitRef, ct).ConfigureAwait(false);
+        var entries = await GetRepositoryBlobPathsAsync(owner, repo, revision, ct).ConfigureAwait(false);
+        var results = entries.Where(IsSkillDocument).Order(StringComparer.OrdinalIgnoreCase).Select(path =>
         {
-            var dirPrefix = relPath.Contains('/', StringComparison.Ordinal)
-                ? relPath[..relPath.LastIndexOf('/')]
-                : string.Empty;
-            var rawFolderSlug = !string.IsNullOrEmpty(dirPrefix)
-                ? Path.GetFileName(dirPrefix)
-                : repo;
-            var slug = ProviderDiscoveryService.NormalizeSlug(rawFolderSlug);
-            var title = CanonicalSkillModel.HumanizeSlug(slug);
-            var sourceSpec = !string.IsNullOrEmpty(dirPrefix)
-                ? $"{fullRepo}/{dirPrefix}"
-                : fullRepo;
+            var slug = ProviderDiscoveryService.NormalizeSlug(SkillFallbackName(repo, path));
+            var existingName = _engine.FindImportedSkill(fullRepo, path);
+            var item = new CommunitySkillSummary(slug, CanonicalSkillModel.HumanizeSlug(slug), fullRepo, revision,
+                path, fullRepo, string.Empty, existingName is not null, InferTopic(slug, null), existingName);
+            return _previewCache.TryGet(PreviewKey(owner, repo, path, revision), out var document)
+                ? WithSkillMetadata(item, document.Model) : item;
+        }).ToList();
 
-            var existingName = _engine.FindImportedSkill(fullRepo, relPath);
-            var desc = GetCuratedSkillHint(fullRepo, slug) ?? $"Community skill from {fullRepo} ({relPath})";
-
-            results.Add(new CommunitySkillSummary(
-                Slug: slug,
-                Title: title,
-                Repo: fullRepo,
-                GitRef: gitRef,
-                Path: relPath,
-                Source: sourceSpec,
-                Description: desc,
-                IsInstalled: existingName is not null,
-                ExistingName: existingName,
-                Topic: InferTopic(slug, desc)));
-        }
-
-        if (!string.IsNullOrWhiteSpace(filterQuery))
+        var query = filterQuery?.Trim();
+        if (!string.IsNullOrEmpty(query))
         {
-            var q = filterQuery.Trim();
-            results = results
-                .Where(s =>
-                    s.Title.Contains(q, StringComparison.OrdinalIgnoreCase) ||
-                    s.Slug.Contains(q, StringComparison.OrdinalIgnoreCase) ||
-                    s.Description.Contains(q, StringComparison.OrdinalIgnoreCase) ||
-                    s.Topic.Equals(q, StringComparison.OrdinalIgnoreCase) ||
-                    s.Repo.Contains(q, StringComparison.OrdinalIgnoreCase))
-                .ToList();
+            // Read path matches first, then look for terms that only appear in the document.
+            const int searchReadLimit = 24;
+            var candidates = results.OrderByDescending(MatchesPath).ToArray();
+            var matches = new CommunitySkillSummary?[Math.Min(searchReadLimit, candidates.Length)];
+            await Parallel.ForEachAsync(Enumerable.Range(0, matches.Length),
+                new ParallelOptions { MaxDegreeOfParallelism = 4, CancellationToken = ct }, async (index, token) =>
+                {
+                    var item = candidates[index];
+                    try
+                    {
+                        var document = await GetRemoteSkillAsync(owner, repo, revision, item.Path, entries, token).ConfigureAwait(false);
+                        var model = document.Model;
+                        var topic = InferTopic(model.Name, model.Description);
+                        if (MatchesPath(item) || Contains(model.Name) || Contains(model.GetEffectiveTitle()) || Contains(model.Description) ||
+                            Contains(model.WhenToUse) || Contains(model.InstructionsMarkdown) || Contains(topic))
+                            matches[index] = WithSkillMetadata(item, model);
+                    }
+                    catch (Exception error) when (error is ArgumentException or InvalidDataException or YamlDotNet.Core.YamlException ||
+                        error is CommunitySourceException { StatusCode: 404 })
+                    {
+                        // One invalid or unavailable document should not hide the rest of the repository.
+                    }
+                }).ConfigureAwait(false);
+            return matches.OfType<CommunitySkillSummary>().Concat(candidates.Skip(matches.Length).Where(MatchesPath)).ToArray();
+
+            bool Contains(string value) => value.Contains(query, StringComparison.OrdinalIgnoreCase);
+            bool MatchesPath(CommunitySkillSummary item) => Contains(item.Path) || Contains(item.Slug) ||
+                Contains(item.Title) || Contains(item.Repo);
         }
 
         return results;
@@ -294,7 +291,7 @@ public sealed partial class SkillImporterService
             catch (CommunitySourceException exception) { return ([], exception); }
         }
 
-        var results = await Task.WhenAll(new[] { "local/catalog", "vercel-labs/agent-skills", "anthropics/skills" }.Select(SearchAsync))
+        var results = await Task.WhenAll(new[] { "local/catalog", "vercel-labs/agent-skills", "anthropics/skills", "github/awesome-copilot" }.Select(SearchAsync))
             .ConfigureAwait(false);
         var combined = results.SelectMany(result => result.Skills)
             .DistinctBy(skill => (skill.Repo.ToLowerInvariant(), skill.Path)).ToArray();
@@ -306,35 +303,57 @@ public sealed partial class SkillImporterService
     public async Task<CommunitySkillPreview> PreviewCommunitySkillAsync(string repoInput, string path, string gitRef = "HEAD",
         CancellationToken ct = default)
     {
-        var plan = await PrepareImportAsync(new SkillImportSelection(Repo: repoInput, Path: path, GitRef: gitRef), ct).ConfigureAwait(false);
-        return new CommunitySkillPreview(plan.Name, plan.Title, plan.Repository ?? repoInput, plan.Path, plan.Source,
-            plan.Description, string.Empty, plan.InstructionsMarkdown, plan.NameExists);
+        CanonicalSkillModel model;
+        string source;
+        string revision;
+        string license;
+        IReadOnlyList<string> supportingPaths;
+        string? existingName;
+        if (repoInput == "local/catalog")
+        {
+            model = GetImportableCatalogSkill(null, path).Clone();
+            model.IsCatalogOnly = false;
+            model.SourceCategory = "user";
+            source = $"Local catalog · {model.OriginProvider}";
+            revision = ContentHasher.ComputeSemanticHash(model);
+            license = model.Passthrough.GetValueOrDefault("license")?.ToString() ?? UnknownLicense;
+            supportingPaths = model.SupportingFiles.Keys.Order(StringComparer.Ordinal).ToArray();
+            existingName = _engine.FindManagedCatalogCopy(model.CatalogId!);
+        }
+        else
+        {
+            var (owner, repo, requested, _) = ParseSelection(new SkillImportSelection(Repo: repoInput, GitRef: gitRef));
+            repoInput = $"{owner}/{repo}";
+            source = repoInput;
+            revision = await ResolveCommitAsync(owner, repo, requested, ct).ConfigureAwait(false);
+            var entries = await GetRepositoryBlobPathsAsync(owner, repo, revision, ct).ConfigureAwait(false);
+            path = SelectSkillPath(entries, path);
+            var document = await GetRemoteSkillAsync(owner, repo, revision, path, entries, ct).ConfigureAwait(false);
+            model = document.Model;
+            license = document.License;
+            supportingPaths = SupportingPaths(entries, path);
+            existingName = _engine.FindImportedSkill(repoInput, path);
+        }
+
+        var nameExists = ImportNameExists(model.Name);
+        return new CommunitySkillPreview(model.Name, model.GetEffectiveTitle(), repoInput, path, source,
+            model.Description, model.WhenToUse, model.InstructionsMarkdown, nameExists || existingName is not null,
+            revision, license, supportingPaths, nameExists, existingName);
     }
 
-    private async Task<List<string>> GetRepositoryBlobPathsAsync(string owner, string repo, string gitRef, CancellationToken ct)
-    {
-        var key = $"{owner}/{repo}@{gitRef}";
-        if (RepoTreeCache.TryGetValue(key, out var cached) && DateTimeOffset.UtcNow - cached.CachedAt < TimeSpan.FromMinutes(3))
+    private Task<List<string>> GetRepositoryBlobPathsAsync(string owner, string repo, string gitRef, CancellationToken ct) =>
+        _treeCache.GetAsync((owner.ToLowerInvariant(), repo.ToLowerInvariant(), gitRef), async token =>
         {
-            return cached.BlobPaths;
-        }
-        var url = $"https://api.github.com/repos/{Uri.EscapeDataString(owner)}/{Uri.EscapeDataString(repo)}/git/trees/{Uri.EscapeDataString(gitRef)}?recursive=1";
-        using var doc = JsonDocument.Parse(await ReadRemoteTextAsync(url, MaxTreeBytes, ct).ConfigureAwait(false));
-        if (doc.RootElement.TryGetProperty("truncated", out var truncated) && truncated.ValueKind == JsonValueKind.True)
-        {
-            throw new InvalidDataException("GitHub truncated the file tree. An incomplete bundle cannot be reviewed.");
-        }
-        var files = doc.RootElement.GetProperty("tree").EnumerateArray()
-            .Where(entry => entry.GetProperty("type").GetString() == "blob" &&
-                (!entry.TryGetProperty("mode", out var mode) || mode.GetString() != "120000"))
-            .Select(entry => entry.GetProperty("path").GetString()!).ToList();
-        foreach (var stale in RepoTreeCache.OrderBy(pair => pair.Value.CachedAt).Take(Math.Max(0, RepoTreeCache.Count - 23)))
-        {
-            RepoTreeCache.TryRemove(stale.Key, out _);
-        }
-        RepoTreeCache[key] = (DateTimeOffset.UtcNow, files);
-        return files;
-    }
+            var url = $"https://api.github.com/repos/{Uri.EscapeDataString(owner)}/{Uri.EscapeDataString(repo)}/git/trees/{Uri.EscapeDataString(gitRef)}?recursive=1";
+            using var doc = JsonDocument.Parse(await ReadRemoteTextAsync(url, MaxTreeBytes, token).ConfigureAwait(false));
+            if (doc.RootElement.TryGetProperty("truncated", out var truncated) && truncated.ValueKind == JsonValueKind.True)
+                throw new InvalidDataException("GitHub truncated the file tree. An incomplete bundle cannot be reviewed.");
+
+            return doc.RootElement.GetProperty("tree").EnumerateArray()
+                .Where(entry => entry.GetProperty("type").GetString() == "blob" &&
+                    (!entry.TryGetProperty("mode", out var mode) || mode.GetString() != "120000"))
+                .Select(entry => entry.GetProperty("path").GetString()!).ToList();
+        }, ct);
 
     private IEnumerable<CommunitySkillSummary> GetFallbackCuratedSkills(string fullRepo)
     {
@@ -370,22 +389,6 @@ public sealed partial class SkillImporterService
                     Topic: InferTopic(x.Slug, x.Desc));
             });
     }
-
-    private static string? GetCuratedSkillHint(string repo, string slug) => (repo.ToLowerInvariant(), slug.ToLowerInvariant()) switch
-    {
-        ("vercel-labs/agent-skills", "react-best-practices") => "40+ rules for React and Next.js performance optimization from Vercel Engineering.",
-        ("vercel-labs/agent-skills", "web-design-guidelines") => "UI/UX audit rules covering layout, typography, accessibility, and interactive states.",
-        ("vercel-labs/agent-skills", "composition-patterns") => "React component composition patterns to avoid boolean prop proliferation.",
-        ("anthropics/skills", "frontend-design") => "Create distinctive, production-grade frontend interfaces with high design quality.",
-        ("anthropics/skills", "mcp-builder") => "End-to-end guide for building Model Context Protocol (MCP) servers.",
-        ("anthropics/skills", "webapp-testing") => "Automated browser verification and UI testing workflows with Playwright.",
-        ("anthropics/skills", "skill-creator") => "Best practices for authoring modular SKILL.md agent instructions.",
-        ("anthropics/skills", "pdf") => "Extract text/tables, merge/split, and generate formatted PDF documents.",
-        ("anthropics/skills", "docx") => "Read, create, and edit Word (.docx) documents with rich formatting.",
-        ("anthropics/skills", "xlsx") => "Create and analyze spreadsheets with formulas and financial modeling conventions.",
-        ("anthropics/skills", "pptx") => "Build and edit presentation slide decks with clean visual layouts.",
-        _ => null
-    };
 
     public async Task<SkillImportResult> ImportAsync(SkillImportRequest request, CancellationToken ct = default)
     {
@@ -453,7 +456,12 @@ public sealed partial class SkillImporterService
         CanonicalSkillModel model;
         if (FrontmatterParser.TrySplitFrontmatter(rawMarkdown, out var yaml, out _))
         {
-            var dict = FrontmatterParser.ParseYamlToDictionary(yaml);
+            Dictionary<string, object?> dict;
+            try { dict = FrontmatterParser.ParseYamlToDictionary(yaml); }
+            catch (YamlDotNet.Core.YamlException error)
+            {
+                throw new ArgumentException("The skill document contains invalid YAML frontmatter.", error);
+            }
             var slugFromYaml = dict.TryGetValue("name", out var n) && n is not null
                 ? ProviderDiscoveryService.NormalizeSlug(n.ToString()!)
                 : fallbackSlug;
@@ -479,6 +487,8 @@ public sealed partial class SkillImporterService
             {
                 model = _codexTranspiler.MergeInbound(slugFromYaml, rawMarkdown, null);
             }
+            if (dict.GetValueOrDefault("title") is string title && !string.IsNullOrWhiteSpace(title))
+                model.Title = title.Trim();
         }
         else
         {

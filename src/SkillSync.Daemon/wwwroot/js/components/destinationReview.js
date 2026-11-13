@@ -1,5 +1,5 @@
-import { api } from '../api.js?v=20261113-v11';
-import { h, button, modal, busy, errorText, confirmAction, notify } from '../ui.js?v=20261113-v11';
+import { api } from '../api.js?v=20261113-v12';
+import { h, button, modal, busy, errorText, confirmAction, notify } from '../ui.js?v=20261113-v12';
 
 const choices = {
   recognize: ['Recognize existing mirror', 'Register this identical copy without writing its contents.'],

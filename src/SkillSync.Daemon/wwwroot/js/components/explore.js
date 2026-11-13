@@ -1,7 +1,7 @@
-import { api } from '../api.js?v=20261113-v11';
-import { Latest, PROVIDERS, slugify } from '../state.js?v=20261113-v11';
-import { renderMarkdown } from '../markdown.js?v=20261113-v11';
-import { h, button, heading, field, select, panel, modal, errorText, busy, notify, disclosure } from '../ui.js?v=20261113-v11';
+import { api } from '../api.js?v=20261113-v12';
+import { Latest, PROVIDERS, slugify } from '../state.js?v=20261113-v12';
+import { renderMarkdown } from '../markdown.js?v=20261113-v12';
+import { h, button, field, select, panel, modal, errorText, busy, notify, disclosure, confirmAction } from '../ui.js?v=20261113-v12';
 
 const TOPICS = [['', 'All topics'], ['coding', 'Coding'], ['web', 'Web and design'], ['data', 'Data'],
   ['devops', 'Infrastructure'], ['productivity', 'Productivity'], ['testing', 'Testing and security']];
@@ -9,13 +9,21 @@ const TOPICS = [['', 'All topics'], ['coding', 'Coding'], ['web', 'Web and desig
 export function createExplore(root, app) {
   const listJob = new Latest();
   const previewJob = new Latest();
+  const previewCache = new Map();
+  const previewRequests = new Map();
+  const narrow = matchMedia('(width < 768px)');
+  const cacheKey = ({ repo, path, git_ref }) => JSON.stringify([repo.toLowerCase(), path, git_ref]);
+  let prefetchQueue = [];
+  let prefetchWorkers = 0;
+  let cacheSize = 0;
   let source = 'featured/all';
   let topic = '';
   let timer;
   let items = [];
-  let plan;
+  const resultRows = new WeakMap();
   let selected;
   let lastTrigger;
+  let listScroll = 0;
   let isApplying = false;
   let initialized = false;
   let visibleCount = 50;
@@ -32,19 +40,80 @@ export function createExplore(root, app) {
       clearTimeout(timer);
       listJob.cancel();
       items = [];
+      prefetchQueue = [];
       resetPreview();
       results.replaceChildren(h('p', { role: 'status' }, 'Searching…'));
       timer = setTimeout(load, 180);
     } });
-  const results = h('div', { class: 'stack' });
-  const preview = h('div', { class: 'stack', id: 'explore-preview' });
-  const layout = h('div', { class: 'explore-layout', 'data-detail': 'false' },
-    h('div', { class: 'explore-results stack' },
-      h('div', { class: 'search-field' }, search),
-      h('div', { class: 'columns' }, field('Source', sourceChooser), field('Topic', topicChooser)), results),
-    h('div', { class: 'explore-detail stack' },
-      button('← Back to results', () => resetPreview(true), 'quiet explore-back'), preview));
-  root.append(heading('Explore', button('Import from link or file', directImport, 'primary')), layout);
+  const results = h('div', { class: 'explore-results', tabindex: '0', role: 'region', 'aria-label': 'Explore results' });
+  const preview = h('div', { id: 'explore-preview' });
+  const layout = h('div', { class: 'explore-layout' }, results,
+    h('div', { class: 'explore-detail' },
+      button('← Back to results', () => resetPreview(true), 'quiet small explore-back'), preview));
+  const toolbar = h('div', { class: 'explore-toolbar', role: 'search', 'aria-label': 'Explore skills' },
+    h('div', { class: 'search-field' }, search), field('Source', sourceChooser), field('Topic', topicChooser),
+    button('Import from link or file', directImport));
+  root.dataset.detail = 'false';
+  root.append(toolbar, layout);
+
+  function cachedPreview(selection) {
+    const key = cacheKey(selection);
+    const cached = previewCache.get(key);
+    if (!cached) return undefined;
+    previewCache.delete(key);
+    if (cached.expiresAt <= Date.now()) {
+      cacheSize -= cached.size;
+      return undefined;
+    }
+    previewCache.set(key, cached);
+    return cached.value;
+  }
+
+  function fetchPreview(selection) {
+    const cached = cachedPreview(selection);
+    if (cached) return Promise.resolve(cached);
+    const key = cacheKey(selection);
+    if (previewRequests.has(key)) return previewRequests.get(key);
+    const pending = api.communityPreview(selection).then(value => {
+      if (items.includes(selection)) {
+        const row = resultRows.get(selection);
+        row?.querySelector('.result-title').replaceChildren(value.title);
+        row?.querySelector('.result-description').replaceChildren(value.description);
+      }
+      const size = (value.instructions_markdown?.length ?? 0) * 2;
+      const budget = 8 * 1024 * 1024;
+      while (previewCache.size && (previewCache.size >= 48 || cacheSize + size > budget)) {
+        const oldest = previewCache.keys().next().value;
+        cacheSize -= previewCache.get(oldest).size;
+        previewCache.delete(oldest);
+      }
+      if (size <= budget) {
+        previewCache.set(key, { value, size, expiresAt: Date.now() + 3 * 60_000 });
+        cacheSize += size;
+      }
+      return value;
+    }).finally(() => previewRequests.delete(key));
+    previewRequests.set(key, pending);
+    return pending;
+  }
+
+  function prefetch(skills) {
+    prefetchQueue = skills.slice(0, 12);
+    while (prefetchWorkers < 3 && prefetchQueue.length) {
+      prefetchWorkers++;
+      warmPreviews();
+    }
+  }
+
+  async function warmPreviews() {
+    try {
+      while (prefetchQueue.length) {
+        const skill = prefetchQueue.shift();
+        try { await fetchPreview(skill); }
+        catch { /* The foreground preview can retry. */ }
+      }
+    } finally { prefetchWorkers--; }
+  }
 
   async function initialize() {
     if (initialized) return;
@@ -63,9 +132,11 @@ export function createExplore(root, app) {
     clearTimeout(timer);
     const job = listJob.begin();
     items = [];
+    prefetchQueue = [];
     visibleCount = 50;
     resetPreview();
     results.replaceChildren(h('p', { role: 'status' }, 'Loading skills…'));
+    results.scrollTop = 0;
     try {
       const response = await api.community(source, search.value.trim(), job.signal);
       if (!job.current()) return;
@@ -77,21 +148,29 @@ export function createExplore(root, app) {
   }
   function showList() {
     const filtered = items.filter(skill => !topic || skill.topic === topic);
+    prefetch(filtered);
     if (!filtered.length) {
       results.replaceChildren(h('div', { class: 'empty' }, h('h2', {}, 'No matching skills'),
         h('p', { class: 'muted' }, 'Change the source, topic, or search term.')));
       return;
     }
-    results.replaceChildren(h('p', { class: 'muted', role: 'status' }, filtered.length + ' results'),
+    results.replaceChildren(h('p', { class: 'muted explore-count', role: 'status' }, filtered.length + ' results'),
       h('ul', { class: 'results' }, filtered.slice(0, visibleCount).map(skill => {
         const row = h('button', { type: 'button', class: 'result-button', 'aria-current': String(selected === skill),
           onclick: () => {
             lastTrigger = row;
-            prepare({ repo: skill.repo, path: skill.path, git_ref: skill.git_ref }, skill);
+            listScroll = window.scrollY;
+            openPreview(skill, skill);
           } }, h('span', { class: 'result-title' }, skill.title || skill.slug),
           h('span', { class: 'result-description' }, skill.description),
           h('span', { class: 'result-meta' }, skill.is_installed ? 'Already in library · ' + skill.repo : skill.repo));
         row.skill = skill;
+        resultRows.set(skill, row);
+        const cached = cachedPreview(skill);
+        if (cached) {
+          row.querySelector('.result-title').replaceChildren(cached.title);
+          row.querySelector('.result-description').replaceChildren(cached.description);
+        }
         return h('li', { class: 'result-row' }, row, skill.existing_name &&
           button('Open existing skill', () => app.read(skill.existing_name), 'quiet small'));
       })));
@@ -105,104 +184,168 @@ export function createExplore(root, app) {
   function resetPreview(restoreFocus = false) {
     if (isApplying) return;
     previewJob.cancel();
-    plan = undefined;
     selected = undefined;
-    layout.dataset.detail = 'false';
+    root.dataset.detail = 'false';
+    preview.inert = false;
+    preview.removeAttribute('aria-busy');
     preview.replaceChildren(panel(h('h2', {}, 'Preview a skill'), h('p', { class: 'muted' }, 'Select a result to review its instructions and files.')));
     for (const row of results.querySelectorAll('.result-button')) row.setAttribute('aria-current', 'false');
     if (restoreFocus) {
-      if (lastTrigger?.isConnected) lastTrigger.focus();
-      else search.focus();
+      if (lastTrigger?.isConnected) {
+        if (narrow.matches) window.scrollTo(0, listScroll);
+        lastTrigger.focus({ preventScroll: true });
+      } else search.focus();
     }
   }
-  async function prepare(selection, skill) {
+
+  async function openPreview(selection, skill, force = false) {
     if (isApplying) return;
     const job = previewJob.begin();
-    plan = undefined;
     selected = skill;
     for (const row of results.querySelectorAll('.result-button')) row.setAttribute('aria-current', String(row.skill === skill));
-    layout.dataset.detail = 'true';
-    preview.replaceChildren(panel(h('h2', { tabindex: '-1' }, skill?.title ?? 'Import review'),
-      h('p', { role: 'status' }, 'Loading the exact revision and files…'),
-      button('Import skill', () => {}, 'primary', { disabled: true })));
-    if (matchMedia('(max-width: 780px), (max-height: 620px)').matches) {
-      preview.querySelector('h2').focus();
-      window.scrollTo(0, 0);
+    const reveal = () => { root.dataset.detail = 'true'; };
+    const finish = () => {
+      reveal();
+      preview.inert = false;
+      preview.removeAttribute('aria-busy');
+      if (narrow.matches) {
+        window.scrollTo(0, 0);
+        preview.querySelector('h2')?.focus({ preventScroll: true });
+      }
+    };
+    if (force && skill) {
+      const key = cacheKey(selection);
+      cacheSize -= previewCache.get(key)?.size ?? 0;
+      previewCache.delete(key);
     }
-    try {
-      const next = await api.prepare(selection, job.signal);
+    const cached = skill && cachedPreview(selection);
+    if (cached) {
+      renderPreview(cached);
+      finish();
+      return;
+    }
+
+    preview.inert = true;
+    preview.setAttribute('aria-busy', 'true');
+    const slow = setTimeout(() => {
       if (!job.current()) return;
-      plan = next;
-      const restoreFocus = preview.contains(document.activeElement);
-      renderPlan(next);
-      if (restoreFocus) preview.querySelector('h2').focus({ preventScroll: true });
+      reveal();
+      preview.inert = false;
+      preview.replaceChildren(h('div', { class: 'preview-loading', role: 'status' }, 'Opening preview…'));
+      if (narrow.matches) {
+        window.scrollTo(0, 0);
+        layout.querySelector('.explore-back').focus({ preventScroll: true });
+      }
+    }, 150);
+    try {
+      const value = skill ? await fetchPreview(selection) : await api.prepare(selection, job.signal);
+      if (!job.current()) return;
+      renderPreview(value);
+      finish();
     } catch (error) {
       if (!job.current()) return;
-      const restoreFocus = preview.contains(document.activeElement);
       preview.replaceChildren(panel(h('h2', { tabindex: '-1' }, 'Preview unavailable'), errorText(error.message),
-        button('Retry preview', () => prepare(selection, skill)), button('Import skill', () => {}, 'primary', { disabled: true })));
-      if (restoreFocus) preview.querySelector('h2').focus({ preventScroll: true });
+        button('Retry preview', () => openPreview(selection, skill, true))));
+      finish();
+    } finally {
+      clearTimeout(slow);
     }
   }
-  function renderPlan(review) {
-    const proposedName = review.name_exists ? slugify(review.name + '-copy') : review.name;
+
+  function renderPreview(review) {
+    const proposedName = review.name_exists ? slugify(review.slug ?? review.name).slice(0, 59).replace(/-$/, '') + '-copy' : review.slug ?? review.name;
     const name = h('input', { class: 'input', value: proposedName, maxlength: '64' });
     const targets = Object.entries(PROVIDERS).filter(([id]) => app.snapshot.providers.some(provider => provider.provider === id && provider.is_installed))
       .map(([id, label]) => ({ id, label, control: h('input', { type: 'checkbox' }) }));
     const feedback = h('div', { role: 'status' });
-    const apply = button('Import skill', () => {
-      if (plan !== review || isApplying) return;
+    const options = button('Deploy to…', () => {
+      modal('Import options', [field('Save as', name), targets.length > 0
+        ? h('div', { class: 'checks' }, targets.map(target => h('label', {}, target.control, target.label)))
+        : h('p', { class: 'muted' }, 'No provider folders are detected. The skill will be saved locally.')]);
+    }, 'quiet small', { 'aria-haspopup': 'dialog' });
+
+    const apply = button('+ Add to My Skills', () => {
+      if (isApplying) return;
       const dest = slugify(name.value);
       if (!dest || dest.length > 64) {
-        feedback.replaceChildren(errorText('Enter a valid destination name.'));
-        name.focus();
+        feedback.replaceChildren(errorText('Enter a valid name in import options.'));
+        options.focus();
         return;
       }
       busy(apply, async () => {
         isApplying = true;
-        layout.setAttribute('aria-busy', 'true');
+        feedback.textContent = 'Preparing the reviewed bundle…';
         const blocked = [...root.querySelectorAll('button, input, select')].filter(control => control !== apply && !control.disabled);
         for (const control of blocked) control.disabled = true;
         try {
-          const response = await api.import(review, dest, targets.filter(target => target.control.checked).map(target => target.id));
+          const importPlan = review.plan_id ? review : await api.prepare({
+            repo: review.repo, path: review.path, git_ref: review.revision
+          });
+          if (importPlan.revision !== review.revision) {
+            const source = selected;
+            feedback.replaceChildren(errorText('The catalog changed. Open a fresh preview before importing.'));
+            if (source) {
+              feedback.append(button('Refresh preview', () => openPreview(source, source, true), 'quiet small'));
+            }
+            return;
+          }
+          if (importPlan.skipped_files?.length && !await confirmAction('Import available files?',
+            importPlan.skipped_files.length + ' supporting files were excluded. ' + importPlan.skipped_files.join(' · '),
+            'Import available files', false)) {
+            feedback.textContent = '';
+            return;
+          }
+          const response = await api.import(importPlan, dest, targets.filter(target => target.control.checked).map(target => target.id));
+          if (selected) {
+            const key = cacheKey(selected);
+            cacheSize -= previewCache.get(key)?.size ?? 0;
+            previewCache.delete(key);
+          }
           isApplying = false;
           resetPreview();
           await app.read(response.skill.name, response);
           notify('Imported ' + response.skill.title + '.');
         } finally {
           isApplying = false;
-          layout.removeAttribute('aria-busy');
           for (const control of blocked) control.disabled = false;
         }
       }, error => feedback.replaceChildren(errorText(error.message)));
-    }, 'primary');
-    apply.textContent = 'Add to My Skills';
-    const files = Object.entries(review.supporting_files ?? {});
-    const existing = app.snapshot.skills.find(skill => !skill.is_catalog_only && skill.name === (review.existing_name ?? review.name));
-    const sources = h('div', { class: 'summary stack import-source' },
-      h('h2', { tabindex: '-1' }, review.title),
-      review.description && h('p', {}, review.description),
-      h('p', {}, review.source, ' · ', review.license),
-      h('p', { class: 'muted' }, files.length + ' supporting files', review.skipped_files?.length ? ' · ' + review.skipped_files.length + ' excluded' : ''),
-      h('details', {}, h('summary', {}, 'Source and revision'), h('code', { class: 'path' }, review.path),
-        h('code', { class: 'path' }, 'Revision ' + review.revision)),
-      review.name_exists && h('p', { class: 'warning' }, 'This name is already in the library. Choose a unique name to keep both.'),
-      existing && button('Open existing skill', () => app.read(existing.name), 'quiet small'));
-    const documentBody = h('div', { class: 'stack import-document' },
-      h('article', { class: 'markdown' }, renderMarkdown(review.instructions_markdown, { title: review.title,
-        openFile: path => {
-          const file = files.find(([filePath]) => filePath === path);
-          if (file) modal(path, h('pre', { class: 'file-code', tabindex: '0' }, file[1]));
-          else notify('This file is outside the reviewed bundle.');
-        } })),
-      disclosure('Supporting files (' + files.length + ')', h('div', { class: 'stack' },
-        files.map(([path, text]) => button(path, () => modal(path, h('pre', { class: 'file-code', tabindex: '0' }, text)), 'quiet')),
+    }, 'primary small');
+
+    const files = review.supporting_paths ?? Object.keys(review.supporting_files ?? {});
+    const existing = review.existing_name ?? (review.name_exists ? review.slug ?? review.name : null);
+    const metadata = h('div', { class: 'preview-metadata' },
+      h('h2', { tabindex: '-1', title: review.title }, review.title),
+      h('p', { class: 'muted', title: [review.source, review.license].filter(Boolean).join(' · ') },
+        review.source, review.license && ' · ' + review.license),
+      h('p', { class: 'muted' }, files.length + (files.length === 1 ? ' supporting file' : ' supporting files'),
+        review.name_exists && ' · Name in use'));
+    const header = h('header', { class: 'preview-header' }, metadata,
+      h('div', { class: 'preview-actions' }, apply, options));
+    const provenance = h('div', { class: 'preview-provenance' },
+      h('p', {}, review.description),
+      disclosure('Source and revision', h('p', { class: 'path' }, review.path), h('p', { class: 'path' }, 'Revision ' + review.revision)),
+      existing && button('Open existing skill', () => app.read(existing), 'quiet small'));
+    const openFile = async path => {
+      if (!files.includes(path)) { notify('This file is outside the reviewed bundle.'); return; }
+      const body = h('div', {}, h('p', { role: 'status' }, 'Opening file…'));
+      const dialog = modal(path, body);
+      const request = new AbortController();
+      dialog.addEventListener('close', () => request.abort(), { once: true });
+      try {
+        const text = review.supporting_files?.[path] ?? (await api.previewFile(review, path, request.signal)).text;
+        if (dialog.open) body.replaceChildren(h('pre', { class: 'file-code', tabindex: '0' }, text));
+      } catch (error) {
+        if (dialog.open) body.replaceChildren(errorText(error.message));
+      }
+    };
+    const documentBody = h('div', { class: 'import-document', tabindex: '0', role: 'region', 'aria-label': 'Skill preview' },
+      provenance, h('article', { class: 'markdown' }, renderMarkdown(review.instructions_markdown, { title: review.title, openFile })),
+      (files.length || review.skipped_files?.length) && disclosure('Supporting files (' + files.length + ')', h('div', { class: 'stack' },
+        files.map(path => button(path, () => openFile(path), 'quiet')),
         (review.skipped_files ?? []).map(path => h('p', { class: 'warning' }, 'Excluded: ' + path)))));
-    const actionBar = h('div', { class: 'import-action-bar stack' }, feedback,
-      h('details', {}, h('summary', {}, 'Name and optional deployment'),
-        field('Save as', name), targets.length && h('div', { class: 'checks' }, targets.map(target => h('label', {}, target.control, target.label)))),
-      h('div', { class: 'spread' }, h('p', { class: 'muted' }, 'Saved locally unless you select providers.'), apply));
-    preview.replaceChildren(h('div', { class: 'import-review' }, sources, documentBody, actionBar));
+    preview.replaceChildren(h('div', { class: 'import-review' }, header,
+      h('div', { class: 'preview-feedback' }, feedback), documentBody));
   }
 
   function directImport() {
@@ -221,7 +364,7 @@ export function createExplore(root, app) {
       else throw new Error('Paste a link or choose a file.');
       if (!dialog.open) return;
       dialog.close();
-      prepare(selection);
+      openPreview(selection);
     }, error => feedback.replaceChildren(errorText(error.message))), 'primary');
     const dialog = modal('Import from link or file', [field('Link', input), field('Markdown file', file), feedback], review);
   }
@@ -233,7 +376,7 @@ export function createExplore(root, app) {
       initialize();
       load();
     },
-    leave() { clearTimeout(timer); listJob.cancel(); resetPreview(); },
+    leave() { clearTimeout(timer); listJob.cancel(); prefetchQueue = []; resetPreview(); },
     get isApplying() { return isApplying; }
   };
 }

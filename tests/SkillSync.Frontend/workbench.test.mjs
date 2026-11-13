@@ -15,7 +15,7 @@ const browser = process.env.SKILLHUB_BROWSER ??
     'C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe'].find(existsSync);
 const sample = {
   name: 'fixture', title: 'Fixture', revision: 1, source_category: 'user', origin_provider: 'Personal',
-  description: 'A test skill', tags: ['one', 'two', 'three', 'four', 'five'],
+  description: 'A test skill', tags: ['one', 'two', 'three', 'four', 'five', 'system'],
   targets: { codex: { enabled: false }, claude: { enabled: false }, gemini: { enabled: false }, cursor: { enabled: false } },
   destinations: [], supporting_files: { 'references/notes.md': 'Supporting notes' }, x_passthrough: { external: 'retained' },
   instructions_markdown: '# Fixture\n\n#### Fourth\n##### Fifth\n###### Sixth\n\n| A | B |\n| --- | --- |\n| 1 | 2 |\n\n- Parent\n  - Child\n\n[Search here](https://example.com/?q=fixture&mode=2)'
@@ -34,11 +34,14 @@ const healthy = { ...sample, name: 'mirrored', title: 'Mirrored', tags: ['two', 
     destination('gemini', 'synced'), destination('claude', 'missing'), destination('cursor', 'conflict')] };
 const needsAttention = { ...healthy, name: 'conflicted', title: 'Conflicted', tags: ['three'],
   destinations: [destination('codex', 'synced'), destination('gemini', 'conflict')] };
+const template = { ...sample, name: 'template', catalog_id: 'fixture-template', source_category: 'template',
+  is_catalog_only: true, tags: ['workflow'] };
+const system = { ...sample, name: 'bootstrap', source_category: 'system', tags: ['system', 'skillhub', 'meta-skill'] };
 const item = name => ({ slug: name.toLowerCase(), title: name, description: name, repo: 'fixture/repo',
   path: name + '/SKILL.md', git_ref: 'main' });
 
 async function fixtureServer() {
-  const fixture = { theme: 'dark', tray: true, startup: true, reviewed: null, applied: null, preparing: new Set(), events: null, reads: 0 };
+  const fixture = { theme: 'dark', tray: true, startup: true, reviewed: null, applied: null, preparing: new Map(), prefetched: new Map(), events: null, reads: 0 };
   const server = createServer(async (req, res) => {
     const url = new URL(req.url, 'http://localhost');
     const send = (value, status = 200) => {
@@ -58,7 +61,7 @@ async function fixtureServer() {
       const data = body ? JSON.parse(body) : {};
       if (route === '/skills') {
         fixture.reads++;
-        return send([sample, healthy, needsAttention]);
+        return send([sample, healthy, needsAttention, template, system]);
       }
       if (route === '/skills/fixture') return send({ skill: sample });
       if (route === '/skills/conflicted') return send({ skill: needsAttention });
@@ -71,7 +74,7 @@ async function fixtureServer() {
           files: [{ path: 'SKILL.md', change: 'Different', skill_hub: '---\nname: skill\n---\nOld body',
             provider: '---\nname: skill\n---\nNew body' }], actions: ['keep', 'accept', 'copy', 'leave'] });
       }
-      if (route === '/tags') return send([{ tag: 'one', skill_count: 1 }]);
+      if (route === '/tags') return send(['one', 'system', 'skillhub', 'meta-skill'].map(tag => ({ tag, skill_count: 1 })));
       if (route === '/providers') return send(installed);
       if (route === '/preferences/theme' && req.method === 'PATCH') {
         fixture.theme = data.theme;
@@ -92,15 +95,24 @@ async function fixtureServer() {
         return send({ theme: fixture.theme, close_to_tray: fixture.tray, auto_start: fixture.startup });
       }
       if (route === '/community/repos') return send({ repositories: [{ repo: 'featured/all', title: 'Featured' }] });
-      if (route === '/community/skills') return send({ skills: ['Slow', 'Fast', 'Broken'].map(item) });
+      if (route === '/community/skills') return send({ skills: ['Slow', 'Fast', 'Broken',
+        ...Array.from({ length: 30 }, (_, index) => 'Skill ' + index)].map(item) });
+      if (route === '/community/preview') {
+        const path = url.searchParams.get('path');
+        fixture.prefetched.set(path, (fixture.prefetched.get(path) ?? 0) + 1);
+        if (path.startsWith('Slow')) await delay(1250);
+        if (path.startsWith('Broken')) { await delay(200); return send({ error: 'Upstream unavailable' }, 503); }
+        const title = path.split('/')[0];
+        return send({ title: title + ' review', revision: title + '-commit', repo: 'fixture/repo', source: 'fixture/repo',
+          path, license: 'MIT', slug: 'fixture', description: 'Skill frontmatter',
+          instructions_markdown: 'Reviewed body\n\n' + 'A long document.\n\n'.repeat(80) + '~~~\n' + 'line\n'.repeat(70) + '~~~',
+          supporting_paths: ['references/notes.md'] });
+      }
+      if (route === '/community/preview-file') return send({ text: 'The pinned supporting file.' });
       if (route === '/imports/prepare') {
-        fixture.preparing.add(data.path);
-        if (data.path.startsWith('Slow')) await delay(750);
-        if (data.path.startsWith('Broken')) return send({ error: 'Upstream unavailable' }, 503);
+        fixture.preparing.set(data.path, data.git_ref);
         const title = data.path.split('/')[0];
-        return send({ title: title + ' review', plan_id: title + '-plan', revision: title + '-commit', source: data.repo,
-          path: data.path, license: 'MIT', name: 'fixture', description: '', instructions_markdown: 'Reviewed body',
-          supporting_files: {}, skipped_files: [] });
+        return send({ plan_id: title + '-plan', revision: title + '-commit', skipped_files: [] });
       }
       if (route.endsWith('/apply')) {
         fixture.applied = { route, data };
@@ -135,6 +147,7 @@ async function until(check, message) {
 async function devTools(endpoint) {
   const socket = new WebSocket(endpoint);
   const responses = new Map();
+  const pageErrors = [];
   let sequence = 0;
   await new Promise((resolve, reject) => {
     socket.addEventListener('open', resolve, { once: true });
@@ -142,6 +155,7 @@ async function devTools(endpoint) {
   });
   socket.addEventListener('message', event => {
     const reply = JSON.parse(event.data);
+    if (reply.method === "Runtime.exceptionThrown") pageErrors.push(reply.params.exceptionDetails.exception?.description);
     const callback = responses.get(reply.id);
     if (callback) {
       responses.delete(reply.id);
@@ -158,7 +172,8 @@ async function devTools(endpoint) {
     if (result.exceptionDetails) throw new Error(result.exceptionDetails.exception?.description ?? result.exceptionDetails.text);
     return result.result.value;
   };
-  return { socket, send, evaluate };
+  await send("Runtime.enable");
+  return { socket, send, evaluate, pageErrors };
 }
 
 async function verifyContrast(evaluate) {
@@ -213,7 +228,8 @@ test('workbench at desktop and docked sizes, with keyboard, themes, Markdown and
         send('Emulation.setDeviceMetricsOverride', { width, height, deviceScaleFactor, mobile: false });
 
       await size(480, 600, 1.5);
-      await wait('document.querySelector("#library-results .result-button") && document.documentElement.dataset.theme === "dark"');
+      await wait('document.querySelector("#library-results .result-button") && document.documentElement.dataset.theme === "dark"')
+        .catch(error => { throw new Error(error.message + '\\n' + page.pageErrors.join('\\n')); });
       assert.ok(await evaluate('document.documentElement.scrollWidth <= innerWidth'));
       assert.ok(await evaluate('document.querySelector(".result-button").getBoundingClientRect().top < innerHeight'));
       await verifyContrast(evaluate);
@@ -226,7 +242,9 @@ test('workbench at desktop and docked sizes, with keyboard, themes, Markdown and
       assert.equal(await evaluate('document.querySelectorAll(".collections button").length'), 4);
       assert.ok(await evaluate('[...document.querySelectorAll(".collections button")].every(tab => tab.getBoundingClientRect().width > 0)'));
       assert.equal(await evaluate('document.querySelectorAll("[data-route] svg").length'), 3);
-      assert.equal(await evaluate('document.querySelector("#provider-overview .provider-overview-label").textContent'), '2 AI Providers Connected');
+      assert.equal(await evaluate('document.querySelector("#provider-overview .provider-overview-count").textContent'), '2');
+      assert.match(await evaluate('document.querySelector("#provider-overview").title'), /2 AI Providers Connected: ChatGPT \/ Codex, Gemini & Antigravity/);
+      assert.deepEqual(await evaluate('[...document.querySelectorAll(".collection-count")].map(tab => tab.textContent)'), ['3', '2', '1', '1']);
       assert.equal(await evaluate('document.querySelectorAll("#provider-overview svg").length'), 2);
       await click('#provider-overview');
       await wait('document.querySelector("dialog[open]")?.getAttribute("aria-modal") === "true"');
@@ -250,11 +268,17 @@ test('workbench at desktop and docked sizes, with keyboard, themes, Markdown and
       await wait('!document.querySelector("dialog[open]")');
       await click('[data-control="category-synced"]');
       assert.equal(await rowCount(), 2);
+      assert.equal(await evaluate('document.querySelector(".sync-summary").hidden'), false);
+      assert.match(await evaluate('document.querySelector(".sync-summary").textContent'), /2 Personal · 0 Templates/);
+      assert.ok(await evaluate('document.querySelectorAll(".sync-pill").length >= 3'));
       await click('[data-control="category-user"]');
+      assert.equal(await evaluate('document.querySelector(".sync-summary").hidden'), true);
       assert.equal(await rowCount(), 3);
 
       await textButton('Tags & filters');
       assert.equal(await evaluate('document.querySelector("dialog[open]")'), null);
+      assert.equal(await evaluate('document.querySelector("#library-filters .filter-menu input").getClientRects().length'), 0);
+      assert.equal(await evaluate('document.querySelector("[data-tag=system], [data-tag=skillhub], [data-tag=meta-skill]")'), null);
       await click('[data-tag="one"]');
       assert.equal(await rowCount(), 1);
       await click('[data-tag="three"]');
@@ -304,23 +328,58 @@ test('workbench at desktop and docked sizes, with keyboard, themes, Markdown and
       await size(1280, 820, 1.25);
       await click('[data-route="explore"]');
       await wait('document.querySelector("#explore-screen .result-button")');
+      await until(() => fixture.prefetched.has('Slow/SKILL.md'), 'Prefetch did not start');
+      await wait('document.querySelector("#explore-screen .result-row:nth-child(2) .result-title")?.textContent === "Fast review"');
+      assert.equal(fixture.preparing.size, 0);
       await click('#explore-screen .result-row:nth-child(1) button');
-      await until(() => fixture.preparing.has('Slow/SKILL.md'), 'Slow preview did not start');
-      await click('#explore-screen .result-row:nth-child(2) button');
-      await wait('document.querySelector("#explore-preview h2")?.textContent === "Fast review"');
-      await delay(800);
+      await wait('document.querySelector(".preview-loading")');
+      assert.equal(await evaluate(`(() => {
+        document.querySelector("#explore-screen .result-row:nth-child(2) button").click();
+        return document.querySelector("#explore-preview h2")?.textContent === "Fast review" && !document.querySelector(".preview-loading");
+      })()`), true);
+      for (const [width, height] of [[1280, 820], [1024, 660]]) {
+        await size(width, height, 1);
+        await wait('innerWidth === ' + width + ' && innerHeight === ' + height);
+        assert.deepEqual(await evaluate(`(() => {
+          const action = document.querySelector(".preview-actions .primary").getBoundingClientRect();
+          const documentBody = document.querySelector(".import-document");
+          const results = document.querySelector(".explore-results");
+          const code = documentBody.querySelector("pre");
+          return {
+            outerFits: document.documentElement.scrollHeight === innerHeight && scrollY === 0,
+            actionFits: action.height >= 29 && action.top >= 0 && action.bottom <= innerHeight && action.right <= innerWidth,
+            documentScrolls: documentBody.scrollHeight > documentBody.clientHeight,
+            resultsScroll: results.scrollHeight > results.clientHeight,
+            codeOverflow: getComputedStyle(code).overflowY,
+            backDisplay: getComputedStyle(document.querySelector(".explore-back")).display
+          };
+        })()`), { outerFits: true, actionFits: true, documentScrolls: true, resultsScroll: true,
+          codeOverflow: 'visible', backDisplay: 'none' }, width + ' × ' + height);
+      }
+      await size(768, 660, 1);
+      await wait('innerWidth === 768');
+      assert.equal(await evaluate('getComputedStyle(document.querySelector(".explore-back")).display'), 'none');
+      await delay(1300);
       assert.equal(await evaluate('document.querySelector("#explore-preview h2").textContent'), 'Fast review');
+      assert.equal(fixture.prefetched.get('Fast/SKILL.md'), 1);
       await size(480, 600, 1);
+      await wait('innerWidth === 480');
       assert.equal(await evaluate('getComputedStyle(document.querySelector(".explore-results")).display'), 'none');
       await textButton('← Back to results');
       await click('#explore-screen .result-row:nth-child(3) button');
       await wait('document.querySelector("#explore-preview h2")?.textContent === "Preview unavailable"');
-      assert.equal(await evaluate('[...document.querySelectorAll("#explore-preview button")].find(b => b.textContent === "Import skill").disabled'), true);
+      assert.equal(await evaluate('document.querySelector(".preview-actions .primary")'), null);
       await textButton('← Back to results');
       await click('#explore-screen .result-row:nth-child(2) button');
       await wait('document.querySelector("#explore-preview h2")?.textContent === "Fast review"');
-      await textButton('Add to My Skills');
+      await evaluate('document.querySelector(".import-document > details").open = true');
+      await textButton('references/notes.md');
+      await wait('document.querySelector("dialog[open]")?.textContent.includes("The pinned supporting file.")');
+      await key('Escape');
+      await wait('!document.querySelector("dialog[open]")');
+      await textButton('+ Add to My Skills');
       await until(() => fixture.applied, 'No import request received');
+      assert.equal(fixture.preparing.get('Fast/SKILL.md'), 'Fast-commit');
       assert.deepEqual(fixture.applied, { route: '/imports/Fast-plan/apply', data: { revision: 'Fast-commit', name: 'fixture', providers: [] } });
       await wait('!document.querySelector("#reader-screen").hidden');
 

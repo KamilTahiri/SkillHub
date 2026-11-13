@@ -1,8 +1,8 @@
-import { api } from '../api.js?v=20261113-v11';
-import { deployment, installedProviders, destinationLabel, targetIssues, PROVIDERS, skillKey, tagSlug } from '../state.js?v=20261113-v11';
-import { renderMarkdown } from '../markdown.js?v=20261113-v11';
-import { h, button, heading, panel, disclosure, copy, download, busy, notify, modal, confirmAction, field, errorText } from '../ui.js?v=20261113-v11';
-import { showProviderPreview } from './transpilerPreview.js?v=20261113-v11';
+import { api } from '../api.js?v=20261113-v12';
+import { deployment, installedProviders, destinationLabel, targetIssues, PROVIDERS, skillKey, tagSlug } from '../state.js?v=20261113-v12';
+import { renderMarkdown } from '../markdown.js?v=20261113-v12';
+import { h, button, heading, panel, disclosure, copy, download, busy, notify, modal, confirmAction, field, errorText } from '../ui.js?v=20261113-v12';
+import { showProviderPreview } from './transpilerPreview.js?v=20261113-v12';
 
 export function createReader(root, app) {
   let modelKey;

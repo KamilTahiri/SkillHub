@@ -1,12 +1,14 @@
-import { api } from '../api.js?v=20261113-v11';
-import { COLLECTIONS, PROVIDERS, Latest, deployment, installedProviders, matchesFilters, inCollection, skillKey, targetIssues, slugify, tagSlug } from '../state.js?v=20261113-v11';
-import { icon, PROVIDER_NAMES } from '../icons.js?v=20261113-v11';
-import { highlighted } from '../markdown.js?v=20261113-v11';
-import { h, button, heading, field, select, modal, confirmAction, errorText, notify, busy } from '../ui.js?v=20261113-v11';
+import { api } from '../api.js?v=20261113-v12';
+import { COLLECTIONS, PROVIDERS, Latest, deployment, installedProviders, matchesFilters, inCollection, skillKey, targetIssues, slugify, tagSlug } from '../state.js?v=20261113-v12';
+import { icon, PROVIDER_NAMES } from '../icons.js?v=20261113-v12';
+import { highlighted } from '../markdown.js?v=20261113-v12';
+import { h, button, field, select, modal, confirmAction, errorText, notify, busy } from '../ui.js?v=20261113-v12';
 
 const STATUSES = { synced: 'Synced', issue: 'Needs attention', disabled: 'Disabled', pending: 'Pending or undeployed', catalog: 'Catalog' };
 const EMPTY_FILTERS = { tags: [], tagMode: 'all', origin: '', provider: '', status: '' };
 const FACETS = ['origin', 'provider', 'status'];
+const RESERVED_TAGS = new Set(['system', 'skillhub', 'meta-skill']);
+const SYNC_NAMES = { ...PROVIDER_NAMES, codex: 'ChatGPT / Codex', gemini: 'Gemini & Antigravity' };
 
 export function createLibrary(root, app) {
   let collection = 'user';
@@ -24,8 +26,7 @@ export function createLibrary(root, app) {
   let selectedKey;
   let savedScroll = 0;
   const searchJob = new Latest();
-  const count = h('p', { class: 'result-count', role: 'status' });
-  const title = heading('My Skills', button('+ New skill', () => app.newSkill(), 'primary', { id: 'new-skill' }), count);
+  const count = h('p', { class: 'sr-only', role: 'status' });
   const search = h('input', { type: 'search', id: 'library-search', class: 'input', 'aria-label': 'Search skills',
     placeholder: 'Search skills, tags, and instructions', oninput: () => scheduleSearch() });
   const filtersButton = button([icon('filters'), 'Tags & filters'], toggleFilters, '', {
@@ -33,38 +34,68 @@ export function createLibrary(root, app) {
   });
   const navigation = h('nav', { class: 'collections', 'aria-label': 'Skill collections' });
   const active = h('div', { class: 'chips active-filters', 'aria-label': 'Active filters' });
-  const filterPanel = h('section', { class: 'library-filters stack', id: 'library-filters', 'aria-label': 'Tags and filters', hidden: true });
+  const filterPanel = h('section', { class: 'library-filters', id: 'library-filters', 'aria-label': 'Tags and filters', hidden: true });
   const tagOptions = h('div', { class: 'chips tag-options', role: 'group', 'aria-label': 'Filter by tags' });
   const tagMode = select([['all', 'Match all tags'], ['any', 'Match any tag']], 'all', {
     'aria-label': 'Tag matching', onchange: event => setFilter('tagMode', event.target.value)
   });
   const tagSearch = h('input', { class: 'input', type: 'search', placeholder: 'Find a tag', 'aria-label': 'Find a tag',
     oninput: () => renderTags() });
-  const scope = button('All skills', () => { allScope = !allScope; limit = 50; render(); }, '', { 'aria-pressed': 'false' });
+  const scope = select([['collection', 'This collection'], ['all', 'All skills']], 'collection', {
+    onchange: event => {
+      allScope = event.target.value === 'all';
+      filters.tags = filters.tags.filter(tag => tagsForCollection().includes(tag));
+      limit = 50;
+      render();
+    }
+  });
   const origin = select([], '', { onchange: event => setFilter('origin', event.target.value) });
   const provider = select([], '', { onchange: event => setFilter('provider', event.target.value) });
   const status = select([], '', { onchange: event => setFilter('status', event.target.value) });
-  const tagTools = h('div', { class: 'filter-tag-tools' }, tagSearch, tagMode,
-    button('Manage tags', () => showTagManager(app, snapshot.tags, tag => { if (!filters.tags.includes(tag)) toggleTag(tag); }), 'quiet small'));
-  filterPanel.append(h('div', { class: 'stack filter-tags' }, tagTools, tagOptions),
-    h('div', { class: 'filter-facets' }, field('Origin', origin), field('Provider', provider),
-      field('Sync status', status), field('Search scope', scope)));
+  const tagDropSummary = h('summary', {}, 'More tags');
+  const extraTags = h('div', { class: 'tag-options', role: 'group', 'aria-label': 'More tags' });
+  const tagDropdown = h('details', { class: 'filter-dropdown', hidden: true }, tagDropSummary,
+    h('div', { class: 'filter-menu stack' }, tagSearch, extraTags));
+  const manage = button('Manage tags', () => showTagManager(app, snapshot.tags, tag => {
+    if (filters.tags.includes(tag)) return;
+    if (!tagsForCollection().includes(tag)) {
+      const next = RESERVED_TAGS.has(tag) ? 'system' : 'all';
+      if (!snapshot.skills.some(skill => inCollection(skill, next, syncFor(skill)) &&
+        (skill.tags ?? []).some(value => slugify(value) === tag))) {
+        notify('No skills in the library use #' + tag + '.');
+        return;
+      }
+      if (next === 'system') collection = 'system';
+      allScope = next === 'all';
+      filters = { ...EMPTY_FILTERS };
+    }
+    toggleTag(tag);
+  }), 'quiet small');
+  filterPanel.append(tagOptions, tagDropdown, h('div', { class: 'filter-facets' },
+    h('label', {}, 'Origin', origin), h('label', {}, 'Provider', provider),
+    h('label', {}, 'Sync status', status), h('label', {}, 'Scope', scope), tagMode), manage);
   filterPanel.addEventListener('keydown', event => {
     if (event.key === 'Escape') {
       event.preventDefault();
-      toggleFilters();
-      filtersButton.focus();
+      if (tagDropdown.open) { tagDropdown.open = false; tagDropSummary.focus(); }
+      else { toggleFilters(); filtersButton.focus(); }
     }
   });
   const results = h('div', { id: 'library-results' });
-  root.append(title, h('div', { class: 'stack library-body' },
-    h('div', { class: 'search-row' }, h('div', { class: 'search-field' }, search), filtersButton),
-    navigation, active, filterPanel, results));
+  const summary = h('div', { class: 'sync-summary', hidden: true });
+  const collectionView = h('div', { class: 'stack library-view' }, summary, results);
+  collectionView.addEventListener('animationend', () => collectionView.classList.remove('collection-enter'));
+  root.append(h('div', { class: 'stack library-body' }, count,
+    h('div', { class: 'library-search-row', role: 'search', 'aria-label': 'Library' },
+      h('div', { class: 'search-field' }, search), filtersButton,
+      button('+ New skill', () => app.newSkill(), 'primary', { id: 'new-skill' })),
+    navigation, filterPanel, active, collectionView));
 
   function toggleFilters() {
     filterPanel.hidden = !filterPanel.hidden;
     filtersButton.setAttribute('aria-expanded', String(!filterPanel.hidden));
     if (!filterPanel.hidden) renderFilterPanel();
+    else tagDropdown.open = false;
   }
 
   function setFilter(key, value) {
@@ -77,32 +108,52 @@ export function createLibrary(root, app) {
     setFilter('tags', filters.tags.includes(tag) ? filters.tags.filter(value => value !== tag) : [...filters.tags, tag]);
   }
 
+  function tagsForCollection() {
+    return [...new Set(snapshot.skills.filter(skill => inCollection(skill, allScope ? 'all' : collection, syncFor(skill)))
+      .flatMap(skill => skill.tags ?? []).map(slugify)
+      .filter(tag => tag && (collection === 'system' && !allScope || !RESERVED_TAGS.has(tag))))].sort();
+  }
+
   function renderTags() {
-    const tags = [...new Set([...snapshot.tags.map(tag => tag.tag), ...filters.tags, ...snapshot.skills
-      .flatMap(skill => skill.tags ?? []).map(slugify).filter(Boolean)])].sort();
+    const tags = tagsForCollection();
+    const available = tags.filter(tag => !filters.tags.includes(tag));
     const term = tagSearch.value.trim().toLowerCase();
-    const available = tags.filter(tag => !filters.tags.includes(tag) && tag.includes(term));
-    tagOptions.replaceChildren(...available.map(tag => button('#' + tag, () => {
+    const pill = tag => button('#' + tag, () => {
       toggleTag(tag);
       active.querySelector('[data-control="active-tag-' + CSS.escape(tag) + '"]')?.focus({ preventScroll: true });
-    }, 'filter-tag', {
-      'data-control': 'filter-tag-' + tag, 'data-tag': tag, 'aria-pressed': String(filters.tags.includes(tag))
-    })));
-    if (!available.length) tagOptions.append(h('p', { class: 'muted' }, term ? 'No matching tags' : tags.length ? 'All tags are applied' : 'No tags in the library'));
+    }, 'filter-tag', { 'data-control': 'filter-tag-' + tag, 'data-tag': tag, 'aria-pressed': 'false' });
+    const inline = available.slice(0, tags.length > 10 ? 4 : 10);
+    tagOptions.replaceChildren(...inline.map(pill));
+    tagDropdown.hidden = tags.length <= 10;
+    if (tagDropdown.hidden) tagDropdown.open = false;
+    if (!tagDropdown.hidden && tagDropdown.open) {
+      const matching = available.filter(tag => tag.includes(term) && !inline.includes(tag));
+      extraTags.replaceChildren(...matching.map(pill));
+      if (!matching.length) extraTags.append(h('p', { class: 'muted' }, 'No matching tags'));
+    }
   }
+  tagDropdown.addEventListener('toggle', () => {
+    if (tagDropdown.open) {
+      renderTags();
+      tagSearch.focus({ preventScroll: true });
+    }
+  });
 
   function renderFilterPanel() {
     renderTags();
     tagMode.value = filters.tagMode;
-    const origins = [...new Set(snapshot.skills.map(skill => skill.origin_provider).filter(Boolean))].sort();
+    tagMode.hidden = filters.tags.length < 2;
+    const origins = [...new Set(snapshot.skills.filter(skill => inCollection(skill, allScope ? 'all' : collection, syncFor(skill)))
+      .map(skill => skill.origin_provider).filter(Boolean))].sort();
     const replaceOptions = (control, entries, value) => {
       control.replaceChildren(h('option', { value: '' }, 'Any'), ...entries.map(([key, label]) => h('option', { value: key }, label)));
+      if (value && !entries.some(([key]) => key === value)) control.append(h('option', { value }, value));
       control.value = value;
     };
     replaceOptions(origin, origins.map(value => [value, value]), filters.origin);
-    replaceOptions(provider, installed.map(id => [id, PROVIDERS[id]]), filters.provider);
+    replaceOptions(provider, installed.map(id => [id, PROVIDER_NAMES[id]]), filters.provider);
     replaceOptions(status, Object.entries(STATUSES), filters.status);
-    scope.setAttribute('aria-pressed', String(allScope));
+    scope.value = allScope ? 'all' : 'collection';
   }
 
   function syncFor(skill) {
@@ -111,10 +162,18 @@ export function createLibrary(root, app) {
   }
 
   function setCollection(next) {
+    if (collection === next && !allScope) return;
     collection = next;
     allScope = false;
+    filters.tags = filters.tags.filter(tag => tagsForCollection().includes(tag));
+    if (filters.origin && !snapshot.skills.some(skill => inCollection(skill, collection, syncFor(skill)) &&
+      skill.origin_provider === filters.origin)) filters.origin = '';
+    tagDropdown.open = false;
+    tagSearch.value = '';
     limit = 50;
     render();
+    collectionView.classList.remove('collection-enter');
+    requestAnimationFrame(() => collectionView.classList.add('collection-enter'));
   }
 
   function scheduleSearch() {
@@ -154,14 +213,34 @@ export function createLibrary(root, app) {
     const filtered = matches.filter(skill => matchesFilters(skill, filters, syncFor(skill)));
     const scoped = (skill, category) => inCollection(skill, category, syncFor(skill));
     const visible = filtered.filter(skill => scoped(skill, allScope ? 'all' : collection));
-    title.querySelector('h1').textContent = allScope ? 'All Skills' : COLLECTIONS[collection];
     count.textContent = state === 'loading' ? 'Loading skills…' : state === 'searching' ? 'Searching…'
       : state === 'error' ? 'Search unavailable' : visible.length + (visible.length === 1 ? ' skill' : ' skills');
-    navigation.replaceChildren(...Object.entries(COLLECTIONS).map(([key, name]) => button([
-      name
+    const totals = Object.fromEntries(Object.keys(COLLECTIONS).map(category => [category, 0]));
+    for (const skill of filtered) {
+      for (const category of Object.keys(totals)) if (scoped(skill, category)) totals[category]++;
+    }
+    navigation.replaceChildren(...Object.entries(COLLECTIONS).map(([key, label]) => button([
+      label, h('span', { class: 'collection-count' }, state === 'ready' ? totals[key] : '–')
     ], () => setCollection(key), '', {
       'aria-pressed': String(!allScope && key === collection), 'data-control': 'category-' + key
     })));
+    const syncView = collection === 'synced' && !allScope;
+    summary.hidden = !syncView || state !== 'ready';
+    if (!summary.hidden) {
+      const activeProviders = installed.filter(provider => visible.some(skill => syncFor(skill).synced.includes(provider)));
+      const personal = visible.filter(skill => skill.source_category === 'user').length;
+      const templates = visible.filter(skill => skill.source_category === 'template').length;
+      const enabled = visible.length ? count.textContent + ' actively synced to ' + activeProviders.map(id => SYNC_NAMES[id]).join(', ')
+        : 'No skills actively synced';
+      summary.replaceChildren(h('div', {}, h('strong', {}, enabled), h('span', {}, personal + ' Personal · ' + templates + ' Templates')),
+        button('+ Enable a template', () => {
+          filters = { ...EMPTY_FILTERS };
+          search.value = '';
+          scheduleSearch();
+          setCollection('template');
+          navigation.querySelector('[data-control="category-template"]').focus();
+        }, 'quiet small'));
+    }
 
     const current = FACETS.filter(key => filters[key]);
     const labels = { origin: filters.origin, provider: PROVIDERS[filters.provider], status: STATUSES[filters.status] };
@@ -201,7 +280,7 @@ export function createLibrary(root, app) {
       const list = h('ul', { class: 'results' }, visible.slice(0, limit).map(skill => {
         const key = skillKey(skill);
         const sync = syncFor(skill);
-        const tags = skill.tags ?? [];
+        const tags = (skill.tags ?? []).filter(tag => collection === 'system' && !allScope || !RESERVED_TAGS.has(slugify(tag)));
         const issues = targetIssues(skill, installed);
         const origin = skill.origin_provider;
         const row = h('button', { type: 'button', class: 'result-button', 'data-control': 'row-' + key,
@@ -212,13 +291,19 @@ export function createLibrary(root, app) {
           } },
           h('span', { class: 'result-title' }, highlighted(skill.title || skill.name, query)),
           h('span', { class: 'result-description' }, highlighted(skill.instruction_match ?? skill.description ?? '', query)),
-          h('span', { class: 'chips' }, origin && !['My Skill', 'Personal', 'SkillHub'].includes(origin) &&
+          !syncView && h('span', { class: 'chips' }, origin && !['My Skill', 'Personal', 'SkillHub'].includes(origin) &&
             h('span', { class: 'result-meta', title: origin }, origin),
             tags.slice(0, 2).map(tag => h('span', { class: 'chip' }, '#' + tag)),
             tags.length > 2 && h('span', { class: 'chip', title: tags.slice(2).join(', ') }, '+' + (tags.length - 2))));
         const providers = h('div', { class: 'result-providers' },
-          sync.synced.map(id => h('span', { class: 'provider-badge', title: 'Synced to ' + PROVIDERS[id],
-            'aria-label': 'Synced to ' + PROVIDER_NAMES[id], 'data-synced-provider': id }, icon(id), h('span', { class: 'sr-only' }, PROVIDER_NAMES[id]))),
+          sync.synced.map(id => {
+            const partial = sync.issues.includes(id);
+            const label = (partial ? 'Partially synced to ' : 'Synced to ') + SYNC_NAMES[id];
+            return h('span', { class: 'provider-badge' + (syncView ? ' sync-pill' + (partial ? ' partial' : '') : ''), title: label,
+              'aria-label': label, 'data-synced-provider': id },
+              syncView ? h('span', { class: 'sync-dot', 'aria-hidden': 'true' }) : icon(id),
+              h('span', { class: syncView ? '' : 'sr-only' }, PROVIDER_NAMES[id]));
+          }),
           !sync.synced.length && !issues.length && h('span', { class: 'result-status muted' }, sync.label));
         const exceptions = issues.map(issue => button(issue.label + (issue.state === 'missing' ? ' copy missing' : ' needs review') + ' →',
           () => app.review(skill.name, issue), 'quiet small warning', { 'data-control': 'review-' + issue.path }));

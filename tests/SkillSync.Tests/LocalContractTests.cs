@@ -276,6 +276,43 @@ public sealed class LocalContractTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task GithubSearchReadsSkillMetadataAndReusesPinnedPreviews()
+    {
+        const string commit = "1212121212121212121212121212121212121212";
+        using var gitHub = new GithubFixture(commit);
+        using var client = new HttpClient(gitHub);
+        var importer = new SkillImporterService(_engine, client);
+        var repository = "https://github.com/fixture/repo/tree/release%2Fnext";
+        var browsed = await importer.BrowseRepositorySkillsAsync(repository);
+        Assert.Contains(browsed, row => row.Path == ".cursor/rules/fixture.mdc");
+        Assert.All(browsed, row => Assert.Equal(commit, row.GitRef));
+
+        var skill = Assert.Single(await importer.BrowseRepositorySkillsAsync(repository, "one exact revision"));
+        Assert.Equal("pinned-github", skill.Slug);
+        Assert.Equal("Pinned GitHub Skill", skill.Title);
+        Assert.Equal("Imported at one exact revision", skill.Description);
+        var requestCount = gitHub.Requests.Count;
+        var previews = await Task.WhenAll(Enumerable.Range(0, 18).Select(_ =>
+            importer.PreviewCommunitySkillAsync(skill.Repo, skill.Path, skill.GitRef)));
+        Assert.All(previews, preview =>
+        {
+            Assert.Equal(commit, preview.Revision);
+            Assert.Contains("Pinned instructions.", preview.InstructionsMarkdown);
+            Assert.Equal("references/notes.md", Assert.Single(preview.SupportingPaths));
+        });
+        Assert.Equal(requestCount, gitHub.Requests.Count);
+        Assert.DoesNotContain(gitHub.Requests, uri => uri.AbsolutePath.EndsWith("notes.md", StringComparison.Ordinal));
+
+        var rule = Assert.Single(await importer.BrowseRepositorySkillsAsync(repository, "Cursor rule instructions"));
+        Assert.Equal(".cursor/rules/fixture.mdc", rule.Path);
+        var plan = await importer.PrepareImportAsync(new(Repo: skill.Repo, Path: skill.Path, GitRef: skill.GitRef));
+        Assert.Equal("Pinned reference.", plan.SupportingFiles["references/notes.md"]);
+        Assert.Single(gitHub.Requests, uri => uri.AbsolutePath.EndsWith("skills/two/SKILL.md", StringComparison.Ordinal));
+        Assert.Equal("Pinned reference.", await importer.ReadPreviewFileAsync(skill.Repo, skill.Path, skill.GitRef,
+            "references/notes.md", CancellationToken.None));
+    }
+
+    [Fact]
     public async Task PreferencePutRequiresBothSnakeCaseBooleansBeforeChangingAnything()
     {
         async Task<HttpResponseMessage> Put(object body)
@@ -363,12 +400,12 @@ public sealed class LocalContractTests : IAsyncLifetime
 
     private sealed class GithubFixture(string commit) : HttpMessageHandler
     {
-        public List<Uri> Requests { get; } = [];
+        public System.Collections.Concurrent.ConcurrentQueue<Uri> Requests { get; } = new();
 
         protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
         {
             var uri = request.RequestUri!;
-            Requests.Add(uri);
+            Requests.Enqueue(uri);
             string? content = Uri.UnescapeDataString(uri.AbsolutePath) switch
             {
                 "/repos/fixture/repo/commits/release/next" => JsonSerializer.Serialize(new { sha = commit }),
@@ -376,16 +413,26 @@ public sealed class LocalContractTests : IAsyncLifetime
                     {"truncated":false,"tree":[
                       {"path":"skills/one/SKILL.md","type":"blob"},
                       {"path":"skills/two/SKILL.md","type":"blob"},
+                      {"path":".cursor/rules/fixture.mdc","type":"blob"},
                       {"path":"skills/two/references/notes.md","type":"blob"}
                     ]}
                     """,
                 var path when path == $"/fixture/repo/{commit}/skills/two/SKILL.md" => """
                     ---
                     name: pinned-github
+                    title: Pinned GitHub Skill
                     description: Imported at one exact revision
                     license: MIT
                     ---
                     Pinned instructions.
+                    """,
+                var path when path == $"/fixture/repo/{commit}/.cursor/rules/fixture.mdc" => """
+                    ---
+                    description: Cursor fixture
+                    globs: '**/*.cs'
+                    alwaysApply: false
+                    ---
+                    Cursor rule instructions.
                     """,
                 var path when path == $"/fixture/repo/{commit}/skills/two/references/notes.md" => "Pinned reference.",
                 _ => null

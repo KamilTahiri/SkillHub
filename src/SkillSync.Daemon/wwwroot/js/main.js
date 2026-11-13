@@ -1,18 +1,19 @@
-import { api } from './api.js?v=20261113-v11';
-import { Latest, PROVIDERS, deployment, installedProviders, skillKey, tagSlug } from './state.js?v=20261113-v11';
-import { icon } from './icons.js?v=20261113-v11';
-import { button, confirmAction, h, modal, notify } from './ui.js?v=20261113-v11';
-import { createLibrary } from './components/skillList.js?v=20261113-v11';
-import { createReader } from './components/skillReader.js?v=20261113-v11';
-import { createEditor } from './components/skillEditor.js?v=20261113-v11';
-import { createExplore } from './components/explore.js?v=20261113-v11';
-import { showDestinationReview } from './components/destinationReview.js?v=20261113-v11';
-import { createSettings } from './components/statusBar.js?v=20261113-v11';
+import { api } from './api.js?v=20261113-v12';
+import { Latest, PROVIDERS, deployment, installedProviders, skillKey, tagSlug } from './state.js?v=20261113-v12';
+import { icon } from './icons.js?v=20261113-v12';
+import { button, confirmAction, h, modal, notify } from './ui.js?v=20261113-v12';
+import { createLibrary } from './components/skillList.js?v=20261113-v12';
+import { createReader } from './components/skillReader.js?v=20261113-v12';
+import { createEditor } from './components/skillEditor.js?v=20261113-v12';
+import { createExplore } from './components/explore.js?v=20261113-v12';
+import { showDestinationReview } from './components/destinationReview.js?v=20261113-v12';
+import { createSettings } from './components/statusBar.js?v=20261113-v12';
 
 const views = Object.fromEntries(['library', 'reader', 'editor', 'explore', 'settings']
   .map(name => [name, document.getElementById(name + '-screen')]));
 const nav = document.getElementById('primary-nav');
 const status = document.getElementById('connection-status');
+const providerNames = { ...PROVIDERS, codex: 'ChatGPT / Codex', gemini: 'Gemini & Antigravity' };
 const providerButton = document.getElementById('provider-overview');
 const themeButton = document.getElementById('quick-theme');
 let online = false;
@@ -80,7 +81,7 @@ function activate(next, focus = true) {
   const hash = next === 'reader' && selectedKey ? 'skill/' + encodeURIComponent(selectedKey) : next === 'editor' ? 'library' : next;
   history.replaceState(null, '', '#' + hash);
   window.scrollTo(0, 0);
-  if (focus) (views[next].querySelector('h1') ?? document.getElementById('workspace')).focus({ preventScroll: true });
+  if (focus) (views[next].querySelector('h1, input[type=search]') ?? document.getElementById('workspace')).focus({ preventScroll: true });
 }
 
 async function navigate(next, { focusSearch = false, catalog = false, section } = {}) {
@@ -170,13 +171,15 @@ function renderProviderButton() {
   const providers = installedProviders(snapshot.providers);
   const count = providers.length;
   const label = loaded ? count + (count === 1 ? ' AI Provider Connected' : ' AI Providers Connected') : 'Checking providers';
+  const tooltip = label + (count ? ': ' + providers.map(id => providerNames[id]).join(', ') : '') +
+    (online ? '' : ' · Reconnecting to SkillHub');
   providerButton.disabled = !loaded;
   providerButton.classList.toggle('offline', !online);
-  providerButton.setAttribute('aria-label', label + (online ? '' : ' · Reconnecting to SkillHub'));
+  providerButton.classList.toggle('no-providers', !count);
+  providerButton.setAttribute('aria-label', tooltip);
   providerButton.querySelector('.provider-overview-icons').replaceChildren(...providers.map(icon));
-  providerButton.querySelector('.provider-overview-label').textContent = label;
-  providerButton.querySelector('.provider-overview-compact').textContent = loaded ? count + (count === 1 ? ' provider' : ' providers') : 'Checking';
-  providerButton.title = label + (online ? '' : ' · Reconnecting to SkillHub');
+  providerButton.querySelector('.provider-overview-count').textContent = loaded ? count : '–';
+  providerButton.title = tooltip;
 }
 function connection(connected) {
   online = connected;

@@ -376,6 +376,10 @@ public static class SkillRestEndpoints
             SkillImporterService importer, CancellationToken ct) =>
             Results.Ok(await importer.PreviewCommunitySkillAsync(repo, path, git_ref ?? "HEAD", ct).ConfigureAwait(false)));
 
+        api.MapGet("/community/preview-file", async (string repo, string path, string revision, string file,
+            SkillImporterService importer, CancellationToken ct) =>
+            Results.Ok(new { text = await importer.ReadPreviewFileAsync(repo, path, revision, file, ct).ConfigureAwait(false) }));
+
         api.MapGet("/tags", (SyncEngine engine) => Results.Json(engine.ListTags(), WebJsonOptions));
         api.MapPost("/tags", async (TagDeleteRequest request, SyncEngine engine, CancellationToken ct) =>
             Results.Ok(new { tag = await engine.CreateTagAsync(request.Tag, ct).ConfigureAwait(false) }));
