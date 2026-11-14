@@ -44,7 +44,7 @@ The scores below are deliberately strict. A 10 means "best available anywhere fo
 - Honest error messages.
 
 **Debt:**
-- **Large files.** Several are big and mix concerns: `SkillImporterService.cs` at ~700 lines, `InstallManager.cs` at ~880, `McpJsonRpcHandler.cs` at ~820, and `explore.js` at ~560.
+- **Large files.** Several are big and mix concerns: `SkillImporterService.cs` at ~810 lines, `InstallManager.cs` at ~885, `McpJsonRpcHandler.cs` at ~815, and `explore.js` at ~605.
 - **Manual DOM patching.** The vanilla-JS views rebuild DOM by hand and patch focus back afterwards. Every new feature pays this tax. A ~100-line keyed-render helper or tiny signals library (still build-free) would remove whole bug classes.
 - **Override CSS.** `polish.css` (Design System v2) overrides `components.css` instead of replacing it, so two sources of truth now exist for buttons, rows and panels. I introduced that layering for speed. It should be folded together.
 - **Loose API contracts.** DTOs are anonymous objects in endpoints, and the frontend has no typed contract. JSDoc types or a shared schema would catch API drift.
