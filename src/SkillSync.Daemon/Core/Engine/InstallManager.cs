@@ -205,10 +205,30 @@ public sealed partial class InstallManager : IDesktopStartup
         return results;
     }
 
-    public bool CanConfigure(McpClientConfigTarget target) =>
-        target.ConfigFileExists || (target.ClientId == "claude-code"
-            ? Directory.Exists(Path.Combine(_userHomeRoot, ".claude"))
-            : target.ParentDirectoryExists);
+    /// <summary>
+    /// Whether SkillHub may write this client's MCP configuration. Claude is checked against real install evidence
+    /// (the Store package, ~/.claude.json, session history) so a leftover folder never offers a Connect button.
+    /// </summary>
+    public bool CanConfigure(McpClientConfigTarget target)
+    {
+        if (target.ConfigFileExists) return true;
+        return target.ClientId switch
+        {
+            "claude-code" => ClaudeEvidence().ClaudeCode,
+            "claude-desktop" => ClaudeEvidence().ClaudeDesktop,
+            _ => target.ParentDirectoryExists
+        };
+    }
+
+    /// <summary>A short explanation of how a client was detected, for the Connections screen.</summary>
+    public string? DescribeInstall(string clientId) => clientId switch
+    {
+        "claude-code" or "claude-desktop" => ClaudeEvidence().Description,
+        _ => null
+    };
+
+    private Watchers.ClaudeInstallEvidence ClaudeEvidence() =>
+        new Watchers.ProviderDiscoveryService(_hasCustomHome ? _userHomeRoot : null).DetectClaude();
 
     public McpClientConfigTarget ConfigureClient(string id, string action)
     {

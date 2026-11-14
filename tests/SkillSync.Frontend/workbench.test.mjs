@@ -38,7 +38,7 @@ const template = { ...sample, name: 'template', catalog_id: 'fixture-template', 
   is_catalog_only: true, tags: ['workflow'] };
 const system = { ...sample, name: 'bootstrap', source_category: 'system', tags: ['system', 'skillhub', 'meta-skill'] };
 const item = name => ({ slug: name.toLowerCase(), title: name, description: name, repo: 'fixture/repo',
-  path: name + '/SKILL.md', git_ref: 'main', kind: name === 'Broken' ? 'doc' : 'skill', group: name === 'Broken' ? 'docs' : 'skills',
+  path: name + '/SKILL.md', git_ref: 'main', kind: name === 'Skill 29' ? 'doc' : 'skill', group: name === 'Skill 29' ? 'docs' : 'skills',
   file_count: name === 'Fast' ? 1 : 0 });
 
 async function fixtureServer() {
@@ -334,6 +334,14 @@ test('workbench at desktop and docked sizes, with keyboard, themes, Markdown and
       // Ctrl+K opens the command palette; leaving the dirty editor from it still goes through the discard guard.
       await key('k', 2, 'KeyK');
       await wait('document.querySelector("dialog.palette[open]") && document.activeElement.classList.contains("palette-input")');
+      await key('Escape');
+      await wait('!document.querySelector("dialog.palette")');
+      await key('k', 2, 'KeyK');
+      await wait('document.querySelector("dialog.palette[open]")');
+      await click('.palette-close');
+      await wait('!document.querySelector("dialog.palette")');
+      await key('k', 2, 'KeyK');
+      await wait('document.querySelector("dialog.palette[open]") && document.activeElement.classList.contains("palette-input")');
       await evaluate('const paletteInput = document.querySelector(".palette-input"); paletteInput.value = "srch lib"; paletteInput.dispatchEvent(new Event("input"));');
       await wait('document.querySelector(".palette-item[aria-selected=true] .palette-label")?.textContent === "Search the library"');
       await key('Enter');
@@ -354,6 +362,8 @@ test('workbench at desktop and docked sizes, with keyboard, themes, Markdown and
       await until(() => fixture.prefetched.has('Slow/SKILL.md'), 'Prefetch did not start');
       assert.match(await evaluate('document.querySelector(".repo-card h2").textContent'), /fixture\/repo/);
       assert.deepEqual(await evaluate('[...document.querySelectorAll(".group-tabs .btn")].map(tab => tab.textContent)'), ['All33', 'Skills32', 'Docs1']);
+      // A repository opens on the Skills tab so READMEs and docs do not crowd out actual skills.
+      assert.equal(await evaluate('document.querySelector(".group-tabs [aria-pressed=true]").textContent'), 'Skills32');
       assert.match(await evaluate('document.querySelector(".result-row:nth-child(2) .files-badge").textContent'), /\+1 files/);
       await evaluate('for (const box of [...document.querySelectorAll(".result-pick")].slice(3, 5)) box.click()');
       await wait('!document.querySelector(".batch-bar").hidden && document.querySelector(".batch-bar").textContent.includes("2 selected")');

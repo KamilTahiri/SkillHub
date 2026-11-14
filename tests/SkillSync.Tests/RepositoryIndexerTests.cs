@@ -31,7 +31,10 @@ public sealed class RepositoryIndexerTests : IDisposable
         [".github/instructions/csharp.instructions.md"] = Text("---\napplyTo: '**/*.cs'\ndescription: C# conventions\n---\nUse file-scoped namespaces.\n"),
         ["prompts/review.prompt.md"] = Text("# Review a pull request\n\nCheck **correctness** before style.\n"),
         ["commands/deploy.md"] = Text("Deploy the app to staging.\n"),
-        ["node_modules/pkg/README.md"] = Text("# Ignored\n")
+        ["node_modules/pkg/README.md"] = Text("# Ignored\n"),
+        ["CHANGELOG.md"] = Text("# Changes\n"),
+        ["website/src/content/learning/agents.md"] = Text("# A website page\n"),
+        ["packages/cli/test/fixtures/README.md"] = Text("# Fixture output\n")
     };
 
     private static byte[] Text(string value) => Encoding.UTF8.GetBytes(value);
@@ -66,6 +69,10 @@ public sealed class RepositoryIndexerTests : IDisposable
         Assert.Contains(index.Documents, document => document.Path == "docs/guide.md" && document.Group == "docs");
         Assert.DoesNotContain(index.Documents, document => document.Path.StartsWith("node_modules/"));
         Assert.DoesNotContain(index.Documents, document => document.Path == "skills/pdf/reference.md");
+        // Housekeeping files, deep website pages and test fixtures are not listed as documents.
+        Assert.DoesNotContain(index.Documents, document => document.Path is "CHANGELOG.md" or "website/src/content/learning/agents.md"
+            or "packages/cli/test/fixtures/README.md");
+        Assert.All(index.Documents, document => Assert.Matches(@"\.(md|mdc|markdown)$", document.Path.ToLowerInvariant()));
 
         // A second process reuses the SHA-keyed disk cache without any network access.
         using var offline = new Fixture();
@@ -89,6 +96,26 @@ public sealed class RepositoryIndexerTests : IDisposable
         var (sha, path) = await indexer.ResolveRefAndPathAsync("fixture", "repo", ["feature", "x", "skills", "pdf"], CancellationToken.None);
         Assert.Equal(Commit, sha);
         Assert.Equal("skills/pdf", path);
+    }
+
+    [Fact]
+    public async Task SkillsShResultsOpenFromTheirSourceRepository()
+    {
+        using var github = new Fixture();
+        await using var engine = new SyncEngine(new ProviderDiscoveryService(_root));
+        var importer = new SkillImporterService(engine, new HttpClient(github));
+
+        var listed = Assert.Single((await importer.BrowseRepositoryAsync("skills.sh", "pdf")).Skills);
+        Assert.Equal("fixture/repo", listed.Repo);
+        Assert.Equal(1234, listed.Installs);
+        var preview = await importer.PreviewCommunitySkillAsync(listed.Repo, listed.Path, listed.GitRef);
+        Assert.Equal("skills/pdf/SKILL.md", preview.Path);
+        Assert.Equal(Commit, preview.Revision);
+
+        // Keyword search folds skills.sh in, skipping hosts that are not GitHub repositories.
+        var search = await importer.SearchCommunityAsync("pdf");
+        Assert.Contains(search.Skills, row => row.Repo == "fixture/repo");
+        Assert.DoesNotContain(search.Skills, row => row.Repo.Contains("example.com"));
     }
 
     [Fact]
@@ -150,6 +177,31 @@ public sealed class RepositoryIndexerTests : IDisposable
         }
     }
 
+    [Fact]
+    public async Task LiveExploreRowsAreMarkdownDocumentsOnly()
+    {
+        if (Environment.GetEnvironmentVariable("SKILLHUB_LIVE_GITHUB") != "1") return;
+        using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(120) };
+        http.DefaultRequestHeaders.UserAgent.ParseAdd("SkillHub-tests/1.0");
+        await using var engine = new SyncEngine(new ProviderDiscoveryService(_root));
+        var importer = new SkillImporterService(engine, http);
+        foreach (var repo in new[] { "anthropics/skills", "github/awesome-copilot", "vercel-labs/agent-skills" })
+        {
+            var rows = (await importer.BrowseRepositoryAsync(repo)).Skills;
+            var byGroup = string.Join(", ", rows.GroupBy(row => row.Group).Select(group => group.Key + "=" + group.Count()));
+            Console.WriteLine($"{repo}: {rows.Count} rows ({byGroup}); first five: " + string.Join(" | ", rows.Take(5).Select(row => row.Path)));
+            Console.WriteLine("  agents-md rows: " + string.Join(" | ", rows.Where(row => row.Path.EndsWith("AGENTS.md", StringComparison.OrdinalIgnoreCase)).Take(8).Select(row => row.Path)));
+            Console.WriteLine("  doc samples: " + string.Join(" | ", rows.Where(row => row.Group == "docs").Take(8).Select(row => row.Path)));
+            Assert.All(rows, row => Assert.Matches(@"\.(md|mdc|markdown)$", row.Path.ToLowerInvariant()));
+        }
+        var directory = (await importer.BrowseRepositoryAsync("skills.sh", "react")).Skills;
+        Console.WriteLine("skills.sh react: " + string.Join(" | ", directory.Take(6).Select(row => row.Repo + "/" + row.Path + " (" + row.Installs + ")")));
+        var opened = await importer.PreviewCommunitySkillAsync(directory[0].Repo, directory[0].Path, directory[0].GitRef);
+        Console.WriteLine("opened skills.sh row: " + opened.Repo + ":" + opened.Path + " · " + opened.SupportingPaths.Count + " files");
+        var search = await importer.SearchCommunityAsync("python");
+        Console.WriteLine("search python: " + string.Join(" | ", search.Skills.Take(12).Select(row => row.Repo + ":" + row.Path + " [" + row.Title + "]")));
+    }
+
     public void Dispose()
     {
         if (Directory.Exists(_root)) Directory.Delete(_root, recursive: true);
@@ -185,7 +237,16 @@ public sealed class RepositoryIndexerTests : IDisposable
             var path = Uri.UnescapeDataString(uri.AbsolutePath);
             if (uri.Host == "codeload.github.com" && path == $"/fixture/repo/tar.gz/{Commit}")
                 return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK) { Content = new ByteArrayContent(Tarball()) });
-            if (path is "/repos/fixture/repo/commits/main" or "/repos/fixture/repo/commits/feature/x")
+            if (uri.Host == "skills.sh" && path == "/api/search")
+                return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent(JsonSerializer.Serialize(new
+                {
+                    skills = new object[]
+                    {
+                        new { id = "fixture/repo/pdf", source = "fixture/repo", skillId = "pdf", name = "pdf", installs = 1234 },
+                        new { id = "example.com/pdf", source = "example.com", skillId = "pdf", name = "pdf", installs = 99 }
+                    }
+                })) });
+            if (path is "/repos/fixture/repo/commits/main" or "/repos/fixture/repo/commits/feature/x" or "/repos/fixture/repo/commits/HEAD")
             {
                 if (request.Headers.IfNoneMatch.Any(tag => tag.Tag == "\"v1\""))
                 {

@@ -15,6 +15,7 @@ public sealed class SyncSafetyTests : IDisposable
     private ProviderDiscoveryService CreateDiscovery(bool mirrors = false)
     {
         Directory.CreateDirectory(Path.Combine(_root, ".claude", "skills"));
+        Directory.CreateDirectory(Path.Combine(_root, ".claude", "projects"));
         Directory.CreateDirectory(Path.Combine(_root, ".gemini", "skills"));
         if (mirrors)
         {
@@ -107,9 +108,28 @@ public sealed class SyncSafetyTests : IDisposable
     }
 
     [Fact]
+    public async Task LeftoverClaudeSkillsFolderAloneIsNotAnInstalledProvider()
+    {
+        Directory.CreateDirectory(Path.Combine(_root, ".claude", "skills"));
+        Directory.CreateDirectory(Path.Combine(_root, ".gemini", "skills"));
+        var discovery = new ProviderDiscoveryService(_root);
+        Assert.False(discovery.DetectClaude().Installed);
+        Assert.Contains("leftover", discovery.DetectClaude().Description);
+        Assert.False(discovery.DiscoverProviders().Single(item => item.Provider == ProviderType.Claude).IsInstalled);
+
+        await using var engine = new SyncEngine(discovery);
+        var saved = await engine.CreateSkillAsync(Fixture(), "test");
+        Assert.False(File.Exists(discovery.GetSkillPrimaryFilePath(ProviderType.Claude, saved.Name)));
+
+        File.WriteAllText(Path.Combine(_root, ".claude.json"), "{}");
+        Assert.True(discovery.DetectClaude().ClaudeCode);
+    }
+
+    [Fact]
     public async Task UninstalledProviderDoesNotKeepSkillActiveOrCountAsSyncFailure()
     {
         Directory.CreateDirectory(Path.Combine(_root, ".claude", "skills"));
+        Directory.CreateDirectory(Path.Combine(_root, ".claude", "projects"));
         var discovery = new ProviderDiscoveryService(_root);
         await using var engine = new SyncEngine(discovery);
         var skill = Fixture();

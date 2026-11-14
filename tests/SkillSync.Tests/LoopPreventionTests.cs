@@ -17,6 +17,7 @@ public sealed class LoopPreventionTests : IDisposable
         _tempRoot = Path.Combine(Path.GetTempPath(), $"skillhub-tests-{Guid.NewGuid():N}");
         Directory.CreateDirectory(_tempRoot);
         Directory.CreateDirectory(Path.Combine(_tempRoot, ".claude", "skills"));
+        Directory.CreateDirectory(Path.Combine(_tempRoot, ".claude", "projects"));
         Directory.CreateDirectory(Path.Combine(_tempRoot, ".gemini", "skills"));
         Directory.CreateDirectory(Path.Combine(_tempRoot, ".codex", "skills"));
         Directory.CreateDirectory(Path.Combine(_tempRoot, ".cursor", "rules"));

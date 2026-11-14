@@ -42,7 +42,9 @@ public sealed record CommunitySkillSummary(
     [property: JsonPropertyName("kind")] string Kind = "skill",
     [property: JsonPropertyName("group")] string Group = "skills",
     [property: JsonPropertyName("file_count")] int FileCount = 0,
-    [property: JsonPropertyName("has_frontmatter")] bool HasFrontmatter = true
+    [property: JsonPropertyName("has_frontmatter")] bool HasFrontmatter = true,
+    [property: JsonPropertyName("installs")] long? Installs = null,
+    [property: JsonIgnore] int SearchScore = 0
 );
 
 /// <summary>Context for a repository view in Explore: what was indexed, its README and how documents are grouped.</summary>
@@ -88,6 +90,7 @@ public sealed partial class SkillImporterService
     private static readonly HttpClient SharedHttp = CreateHttpClient();
     private readonly HttpClient _http;
     private readonly RepositoryIndexer _indexer;
+    private readonly SkillsShDirectory _skillsSh;
 
     private readonly SyncEngine _engine;
     private readonly CodexTranspiler _codexTranspiler = new();
@@ -100,6 +103,7 @@ public sealed partial class SkillImporterService
         _engine = engine;
         _http = remote ?? SharedHttp;
         _indexer = new RepositoryIndexer(_http, Path.Combine(engine.Discovery.SkillHubRoot, "cache", "github"));
+        _skillsSh = new SkillsShDirectory(_http);
     }
 
     public RepositoryIndexer Indexer => _indexer;
@@ -131,6 +135,10 @@ public sealed partial class SkillImporterService
             "local/catalog",
             "Local Plugin Catalog",
             "Skills from plugin caches on this PC."),
+        new(
+            SkillsShDirectory.SourceId,
+            "skills.sh • Community directory",
+            "The open skills.sh directory of public SKILL.md repositories, ranked by installs."),
         new(
             "anthropics/skills",
             "Anthropic • Official Skills",
@@ -248,6 +256,14 @@ public sealed partial class SkillImporterService
                 .OrderBy(s => s.Title, StringComparer.OrdinalIgnoreCase).ToList(), null);
         }
 
+        if (string.Equals(repoInput, SkillsShDirectory.SourceId, StringComparison.OrdinalIgnoreCase))
+        {
+            var entries = string.IsNullOrWhiteSpace(filterQuery) || filterQuery.Trim().Length < 2
+                ? await _skillsSh.PopularAsync(ct).ConfigureAwait(false)
+                : await _skillsSh.SearchAsync(filterQuery, 60, ct).ConfigureAwait(false);
+            return new(entries.Select(FromSkillsSh).ToList(), null);
+        }
+
         if (string.Equals(repoInput, "featured/all", StringComparison.OrdinalIgnoreCase) ||
             string.Equals(repoInput, "all", StringComparison.OrdinalIgnoreCase))
         {
@@ -263,7 +279,9 @@ public sealed partial class SkillImporterService
         var (owner, repo, sha, hint) = await ResolveSelectionAsync(new SkillImportSelection(Source: cleaned), ct).ConfigureAwait(false);
         var fullRepo = $"{owner}/{repo}";
         var index = await _indexer.GetIndexAsync(owner, repo, sha, ct).ConfigureAwait(false);
-        var rows = index.Documents.Select(document => Summarize(fullRepo, sha, document)).ToList();
+        // Skills first, then commands, rules and agents; documentation last.
+        var rows = index.Documents.Select(document => Summarize(fullRepo, sha, document))
+            .OrderBy(row => GroupOrder(row.Group)).ThenBy(row => row.Path, StringComparer.OrdinalIgnoreCase).ToList();
 
         var query = filterQuery?.Trim();
         if (string.IsNullOrEmpty(query)) query = skillFilter;
@@ -282,7 +300,8 @@ public sealed partial class SkillImporterService
             var candidates = visible.ToList();
             var ranked = Rank(candidates, query).ToList();
             // Then look inside cached document bodies. This reads local files only and never calls GitHub.
-            var bodyMatches = candidates.Except(ranked).Where(row =>
+            var rankedPaths = ranked.Select(row => row.Path).ToHashSet(StringComparer.Ordinal);
+            var bodyMatches = candidates.Where(row => !rankedPaths.Contains(row.Path)).Where(row =>
                 _indexer.TryReadCachedText(index, row.Path) is { } body && body.Contains(query, StringComparison.OrdinalIgnoreCase));
             visible = ranked.Concat(bodyMatches);
         }
@@ -294,6 +313,29 @@ public sealed partial class SkillImporterService
             counts, index.Truncated, pinned, $"https://github.com/{fullRepo}");
         return new(visible.ToList(), info);
     }
+
+    /// <summary>
+    /// A skills.sh entry knows its repository and skill id but not the file path. The path field carries the skill id,
+    /// which <see cref="SelectDocument"/> resolves against the indexed repository when the skill is opened.
+    /// </summary>
+    private CommunitySkillSummary FromSkillsSh(SkillsShEntry entry)
+    {
+        var slug = ProviderDiscoveryService.NormalizeSlug(entry.Name);
+        if (slug.Length == 0) slug = ProviderDiscoveryService.NormalizeSlug(entry.SkillId);
+        var existing = _engine.ListSkills().FirstOrDefault(skill => !skill.IsCatalogOnly &&
+            string.Equals(skill.Passthrough.GetValueOrDefault("import_source")?.ToString(), entry.Source, StringComparison.OrdinalIgnoreCase) &&
+            (skill.Name == slug || Compact(skill.Name) == Compact(entry.SkillId)))?.Name;
+        return new CommunitySkillSummary(slug, CanonicalSkillModel.HumanizeSlug(slug), entry.Source, "HEAD", entry.SkillId,
+            SkillsShDirectory.SourceId, $"{entry.Installs:N0} installs on skills.sh · {entry.Source}", existing is not null,
+            InferTopic(slug, entry.Source), existing, Installs: entry.Installs);
+    }
+
+    private static string Compact(string value) => Regex.Replace(value.ToLowerInvariant(), "[^a-z0-9]", string.Empty);
+
+    private static int GroupOrder(string group) => group switch
+    {
+        "skills" => 0, "commands" => 1, "rules" => 2, "agents" => 3, _ => 4
+    };
 
     private CommunitySkillSummary Summarize(string fullRepo, string sha, IndexedDocument document)
     {
@@ -321,11 +363,12 @@ public sealed partial class SkillImporterService
                     score += best;
                 }
                 if (row.Title.StartsWith(query, StringComparison.OrdinalIgnoreCase)) score += 4;
-                if (row.Group == "docs") score -= 2;
+                if (row.Group == "docs") score -= 6;
+                else if (row.Group == "skills") score += 3;
                 return (Row: row, Score: score);
             })
             .Where(item => item.Score >= 0).OrderByDescending(item => item.Score)
-            .ThenBy(item => item.Row.Title, StringComparer.OrdinalIgnoreCase).Select(item => item.Row);
+            .ThenBy(item => item.Row.Title, StringComparer.OrdinalIgnoreCase).Select(item => item.Row with { SearchScore = Math.Max(item.Score, 1) });
     }
 
     private static IEnumerable<CommunitySkillSummary> FilterLocal(IEnumerable<CommunitySkillSummary> rows, string? filterQuery)
@@ -377,6 +420,11 @@ public sealed partial class SkillImporterService
         }
 
         var pending = new System.Collections.Concurrent.ConcurrentBag<string>();
+        async Task<IReadOnlyList<CommunitySkillSummary>> SearchSkillsShAsync()
+        {
+            try { return (await _skillsSh.SearchAsync(q, 40, ct).ConfigureAwait(false)).Select(FromSkillsSh).ToArray(); }
+            catch (Exception error) when (error is CommunitySourceException or InvalidDataException or JsonException) { return []; }
+        }
         async Task<(IReadOnlyList<CommunitySkillSummary> Skills, CommunitySourceException? Error)> SearchAsync(string source)
         {
             try
@@ -398,8 +446,17 @@ public sealed partial class SkillImporterService
 
         var sources = new[] { "local/catalog" }.Concat(CuratedSearchRepositories).Concat(ReadPinnedSources())
             .Distinct(StringComparer.OrdinalIgnoreCase);
+        var directory = SearchSkillsShAsync();
         var results = await Task.WhenAll(sources.Select(SearchAsync)).ConfigureAwait(false);
-        var combined = results.SelectMany(result => result.Skills.Take(60))
+        var indexed = results.SelectMany(result => result.Skills.Take(60)).ToList();
+        var listed = (await directory.ConfigureAwait(false))
+            .Where(entry => !indexed.Any(row => row.Repo.Equals(entry.Repo, StringComparison.OrdinalIgnoreCase) &&
+                (row.Slug == entry.Slug || Compact(row.Slug) == Compact(entry.Path))));
+        // Metadata matches from every source rank together, then skills.sh listings, then matches found only inside a
+        // document body, and documentation last.
+        var strong = indexed.Where(row => row.Group != "docs" && row.SearchScore > 0).OrderByDescending(row => row.SearchScore);
+        var bodyOnly = indexed.Where(row => row.Group != "docs" && row.SearchScore == 0);
+        var combined = strong.Concat(listed).Concat(bodyOnly).Concat(indexed.Where(row => row.Group == "docs"))
             .DistinctBy(skill => (skill.Repo.ToLowerInvariant(), skill.Path)).ToArray();
         if (combined.Length == 0 && pending.IsEmpty && results.FirstOrDefault(result => result.Error is not null).Error is { } failure)
             throw failure;
@@ -462,8 +519,12 @@ public sealed partial class SkillImporterService
             document.Path.Equals(path + "/SKILL.md", StringComparison.OrdinalIgnoreCase));
         if (exact is not null) return exact;
         var slug = ProviderDiscoveryService.NormalizeSlug(path.Split('/')[^1]);
+        var compact = Compact(path.Split('/')[^1]);
         var matches = index.Documents.Where(document => document.Name == slug ||
             ProviderDiscoveryService.NormalizeSlug(SkillDocumentClassifier.FallbackName(index.Repo, document.Path)) == slug).ToArray();
+        if (matches.Length == 0)
+            matches = index.Documents.Where(document => Compact(document.Name) == compact ||
+                Compact(SkillDocumentClassifier.FallbackName(index.Repo, document.Path)) == compact).ToArray();
         if (matches.Length > 1) matches = matches.Where(document => document.Group == "skills").DefaultIfEmpty(matches[0]).ToArray();
         return matches.Length switch
         {

@@ -36,7 +36,9 @@ export function openPalette(app, commands) {
     role: 'combobox', 'aria-expanded': 'true', 'aria-controls': 'palette-list', 'aria-autocomplete': 'list', 'aria-label': 'Command palette' });
   const list = h('ul', { class: 'palette-list', id: 'palette-list', role: 'listbox', 'aria-label': 'Results' });
   const dialog = h('dialog', { class: 'palette', 'aria-label': 'Command palette' },
-    h('div', { class: 'palette-search' }, icon('search'), input, h('kbd', {}, 'Esc')),
+    h('div', { class: 'palette-search' }, icon('search'), input,
+      h('button', { type: 'button', class: 'palette-close', 'aria-label': 'Close command palette', title: 'Close (Esc)',
+        onclick: () => dialog.close() }, h('kbd', {}, 'Esc'), icon('close'))),
     list,
     h('footer', { class: 'palette-foot' }, h('span', {}, h('kbd', {}, '↑'), h('kbd', {}, '↓'), ' to move'),
       h('span', {}, h('kbd', {}, '↵'), ' to run'), h('span', {}, h('kbd', {}, 'Ctrl'), h('kbd', {}, 'K'), ' to toggle')));
@@ -95,8 +97,15 @@ export function openPalette(app, commands) {
   }
 
   input.addEventListener('input', () => { active = 0; render(); });
+  // Escape is handled here rather than left to the native dialog "cancel" behaviour, which Chromium and
+  // WebView2 can skip (for example while the input has focus or after repeated cancels).
+  dialog.addEventListener('cancel', event => { event.preventDefault(); dialog.close(); });
   dialog.addEventListener('keydown', event => {
-    if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+    if (event.key === 'Escape' || event.key === 'Esc') {
+      event.preventDefault();
+      event.stopPropagation();
+      dialog.close();
+    } else if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
       event.preventDefault();
       if (!entries.length) return;
       active = (active + (event.key === 'ArrowDown' ? 1 : -1) + entries.length) % entries.length;

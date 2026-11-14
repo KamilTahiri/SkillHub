@@ -74,25 +74,40 @@ export function createSettings(root, app) {
     if (group.items.some(item => item.client.error)) return ['Needs attention', 'warn'];
     if (group.items.some(item => item.client.restart_required)) return ['Restart required', 'warn'];
     if (group.items.some(item => item.client.is_registered)) return ['Connected', 'ok'];
+    if (group.synced > 0) return ['Skills synced', 'info'];
     return ['Detected', 'muted'];
   }
 
+  // Folder sync and MCP registration are separate: skills reach a tool through its skills folder,
+  // while the MCP connection lets that tool create and edit skills through SkillHub.
   function connectionCard(group) {
     const [state, tone] = groupState(group);
-    const summary = [group.synced + (group.synced === 1 ? ' skill synced' : ' skills synced'),
-      group.issues > 0 && group.issues + (group.issues === 1 ? ' needs' : ' need') + ' review'].filter(Boolean).join(' · ');
+    const registered = group.items.filter(item => item.client.is_registered).map(item => item.client.display_name);
+    const evidence = group.items.map(item => item.client.install_evidence).find(Boolean);
+    const folder = group.provider?.skills_root;
+    const skillsLine = h('li', { class: 'capability', 'data-state': group.synced > 0 ? 'ok' : 'muted' }, icon('library'),
+      h('span', {}, h('strong', {}, 'Skills folder'), ' ',
+        group.synced > 0
+          ? group.synced + (group.synced === 1 ? ' skill synced' : ' skills synced') + (folder ? ' to ' + folder.replace(/\\/g, '/').replace(/^.*?\/(\.[^/]+)/, '~/$1') : '')
+          : 'No skills synced yet',
+        group.issues > 0 && h('span', { class: 'warning' }, ' · ' + group.issues + (group.issues === 1 ? ' needs' : ' need') + ' review')));
+    const mcpLine = h('li', { class: 'capability', 'data-state': registered.length ? 'ok' : 'muted' }, icon('plug'),
+      h('span', {}, h('strong', {}, 'SkillHub tools (MCP)'), ' ',
+        registered.length ? 'Connected in ' + registered.join(' and ')
+          : 'Not connected. Connect below so ' + group.label.split(' ')[0] + ' can create and update skills through SkillHub.'));
     return h('section', { class: 'connection-card', 'data-state': tone, 'aria-label': group.label },
       h('header', { class: 'connection-head' },
         h('span', { class: 'provider-mark', 'data-provider': group.id }, icon(group.id)),
-        h('div', { class: 'connection-title' }, h('h2', {}, group.label), h('p', { class: 'muted' }, summary)),
+        h('div', { class: 'connection-title' }, h('h2', {}, group.label), evidence && h('p', { class: 'muted' }, evidence)),
         h('span', { class: 'status-badge ' + tone }, h('span', { class: 'status-badge-dot', 'aria-hidden': 'true' }), state)),
+      h('ul', { class: 'capabilities' }, skillsLine, mcpLine),
       group.items.length > 0 && h('ul', { class: 'connection-clients' }, group.items.map(item => clientRow(group, item))));
   }
 
   function clientRow(group, { client, available }) {
     const feedback = h('div', { role: 'status' });
     const [state, tone] = client.error ? ['Needs attention', 'warn'] : client.restart_required ? ['Restart required', 'warn']
-      : client.is_registered ? ['Connected', 'ok'] : available ? ['Not connected', 'muted'] : ['Not installed', 'muted'];
+      : client.is_registered ? ['MCP connected', 'ok'] : available ? ['MCP not connected', 'muted'] : ['Not installed', 'muted'];
     const action = client.is_registered ? 'repair' : 'connect';
     const update = button([icon(client.is_registered ? 'wrench' : 'plug'), client.is_registered ? 'Repair' : 'Connect'],
       () => updateClient(client, action, update, feedback), client.is_registered ? 'small' : 'primary small',

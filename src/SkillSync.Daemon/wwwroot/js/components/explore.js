@@ -10,6 +10,8 @@ const GROUPS = [['skills', 'Skills'], ['commands', 'Commands'], ['rules', 'Rules
 const KIND_LABELS = { skill: 'Skill', command: 'Command', prompt: 'Prompt', rule: 'Rule', instructions: 'Instructions',
   'project-rules': 'Project rules', agent: 'Agent', chatmode: 'Chat mode', doc: 'Doc' };
 
+const compactNumber = value => new Intl.NumberFormat(undefined, { notation: 'compact', maximumFractionDigits: 1 }).format(value);
+
 export function createExplore(root, app) {
   const listJob = new Latest();
   const previewJob = new Latest();
@@ -127,7 +129,8 @@ export function createExplore(root, app) {
   }
 
   function prefetch(skills) {
-    prefetchQueue = skills.slice(0, 12);
+    // skills.sh rows live in many different repositories; previewing one downloads its whole repository, so only on click.
+    prefetchQueue = skills.filter(skill => skill.source !== 'skills.sh').slice(0, 12);
     while (prefetchWorkers < 3 && prefetchQueue.length) {
       prefetchWorkers++;
       warmPreviews();
@@ -179,8 +182,13 @@ export function createExplore(root, app) {
       const response = await api.community(source, search.value.trim(), job.signal);
       if (!job.current()) return;
       const nextRepo = response.repository?.repo ?? null;
-      if (nextRepo !== repository?.repo) { chosen.clear(); group = ''; }
+      const changedRepo = nextRepo !== repository?.repo;
       items = response.skills ?? [];
+      if (changedRepo) {
+        chosen.clear();
+        // A repository opens on its actual skills; README files, AGENTS.md and docs stay one tab away.
+        group = nextRepo && items.some(skill => skill.group === 'skills') && items.some(skill => skill.group !== 'skills') ? 'skills' : '';
+      }
       repository = response.repository ?? null;
       pendingSources = response.pending_sources ?? [];
       clearTimeout(pendingTimer);
@@ -268,10 +276,13 @@ export function createExplore(root, app) {
             listScroll = narrow.matches ? window.scrollY : results.scrollTop;
             openPreview(skill, skill);
           } }, h('span', { class: 'result-title' }, skill.title || skill.slug),
-          h('span', { class: 'result-description' }, skill.description || (skill.has_frontmatter === false ? 'No description in this file.' : '')),
+          h('span', { class: 'result-description' }, skill.installs > 0 ? 'Listed on skills.sh · ' + skill.repo
+            : skill.description || (skill.has_frontmatter === false ? 'No description in this file.' : '')),
           h('span', { class: 'result-meta' },
             skill.kind && skill.kind !== 'skill' && h('span', { class: 'kind-badge', 'data-kind': skill.kind }, KIND_LABELS[skill.kind] ?? skill.kind),
             skill.file_count > 0 && h('span', { class: 'files-badge', title: skill.file_count + ' bundled files' }, '+' + skill.file_count + ' files'),
+            skill.installs > 0 && h('span', { class: 'installs-badge', title: skill.installs.toLocaleString() + ' installs on skills.sh' },
+              icon('download'), compactNumber(skill.installs)),
             skill.is_installed && h('span', { class: 'installed-badge' }, icon('check'), 'In library'),
             h('span', { class: 'result-path' }, repository ? skill.path : skill.repo)));
         row.skill = skill;

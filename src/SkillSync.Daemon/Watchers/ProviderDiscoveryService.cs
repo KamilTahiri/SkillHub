@@ -88,7 +88,9 @@ public sealed class ProviderDiscoveryService
                 "Claude",
                 Path.Combine(_userHomeRoot, ".claude"),
                 Path.Combine(_userHomeRoot, ".claude", "skills"),
-                "~/.claude/skills/<name>/SKILL.md"),
+                "~/.claude/skills/<name>/SKILL.md",
+                forceInstalled: DetectClaude().Installed,
+                folderImpliesInstall: false),
             BuildInfo(
                 ProviderType.Gemini,
                 "Gemini & Antigravity",
@@ -391,6 +393,35 @@ public sealed class ProviderDiscoveryService
     /// 3. VS Code / Antigravity / Cursor extensions matching openai.chatgpt*
     /// 4. Windows Store package %LOCALAPPDATA%\Packages\OpenAI.ChatGPT-Desktop* or OpenAI.Codex*
     /// </summary>
+    /// <summary>
+    /// Detects Claude from evidence that the apps themselves leave behind, not from a <c>~/.claude/skills</c> folder,
+    /// which can be a leftover. Claude Code writes <c>~/.claude.json</c> and session history under <c>~/.claude</c>;
+    /// Claude Desktop installs as a Microsoft Store package or under <c>%LOCALAPPDATA%\AnthropicClaude</c>.
+    /// </summary>
+    public ClaudeInstallEvidence DetectClaude()
+    {
+        var claudeHome = Path.Combine(_userHomeRoot, ".claude");
+        var code = File.Exists(Path.Combine(_userHomeRoot, ".claude.json")) ||
+            new[] { "projects", "sessions", "statsig", "todos" }.Any(name => Directory.Exists(Path.Combine(claudeHome, name))) ||
+            File.Exists(Path.Combine(claudeHome, "settings.json"));
+        var localAppData = _isCustomHome ? Path.Combine(_userHomeRoot, "AppData", "Local") : Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
+        var roamingAppData = _isCustomHome ? Path.Combine(_userHomeRoot, "AppData", "Roaming") : Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData);
+        var packages = Path.Combine(localAppData, "Packages");
+        var desktopPackage = Directory.Exists(packages) &&
+            Directory.EnumerateDirectories(packages, "Claude_*").Any();
+        var desktop = desktopPackage ||
+            Directory.Exists(Path.Combine(localAppData, "AnthropicClaude")) ||
+            File.Exists(Path.Combine(roamingAppData, "Claude", "claude_desktop_config.json"));
+        var description = (code, desktop) switch
+        {
+            (true, true) => "Claude Desktop and Claude Code found on this PC",
+            (false, true) => desktopPackage ? "Claude Desktop (Microsoft Store app) found" : "Claude Desktop found",
+            (true, false) => "Claude Code found (~/.claude.json)",
+            _ => Directory.Exists(claudeHome) ? "Only a leftover ~/.claude folder was found; no Claude app is installed" : "Not installed"
+        };
+        return new ClaudeInstallEvidence(code || desktop, code, desktop, description);
+    }
+
     public bool DetectOpenAiCodexOrChatGpt()
     {
         var codexDir = Path.Combine(_userHomeRoot, ".codex");
@@ -665,12 +696,12 @@ public sealed class ProviderDiscoveryService
         string providerRoot,
         string skillsRoot,
         string patternDesc,
-        bool forceInstalled = false)
+        bool forceInstalled = false,
+        bool folderImpliesInstall = true)
     {
         var isInstalled = forceInstalled
             || provider == ProviderType.Canonical
-            || Directory.Exists(providerRoot)
-            || Directory.Exists(skillsRoot);
+            || folderImpliesInstall && (Directory.Exists(providerRoot) || Directory.Exists(skillsRoot));
 
         return new ProviderDirectoryInfo(
             provider,
@@ -681,5 +712,7 @@ public sealed class ProviderDiscoveryService
             patternDesc);
     }
 }
+
+public sealed record ClaudeInstallEvidence(bool Installed, bool ClaudeCode, bool ClaudeDesktop, string Description);
 
 public sealed record ObservedSkillPath(ProviderType Provider, string Slug, string PrimaryPath, string? SupportingPath);

@@ -44,7 +44,7 @@ public sealed record RepositoryIndex(
     [property: JsonPropertyName("license_path")] string? LicensePath,
     [property: JsonPropertyName("truncated")] bool Truncated)
 {
-    public const int SchemaVersion = 1;
+    public const int SchemaVersion = 2;
     [JsonPropertyName("schema")] public int Schema { get; init; } = SchemaVersion;
 }
 
@@ -619,15 +619,36 @@ public static class SkillDocumentClassifier
         if (lower.EndsWith(".prompt.md", StringComparison.Ordinal)) return "prompt";
         if (lower.EndsWith(".chatmode.md", StringComparison.Ordinal)) return "chatmode";
         if (lower.EndsWith(".agent.md", StringComparison.Ordinal)) return "agent";
-        if (lower is "agents.md" or "claude.md" or "gemini.md") return "project-rules";
         if (!lower.EndsWith(".md", StringComparison.Ordinal) && !lower.EndsWith(".markdown", StringComparison.Ordinal)) return null;
         var directories = path.Split('/')[..^1].Select(segment => segment.ToLowerInvariant()).ToArray();
+        // Only repository-level AGENTS.md, CLAUDE.md and GEMINI.md are project rules. Files with those names deeper in a
+        // repository (website pages, examples, nested packages) are ordinary documents.
+        if (lower is "agents.md" or "claude.md" or "gemini.md")
+            return directories.Length == 0 || directories is [".github" or ".claude" or ".cursor" or ".gemini"] ? "project-rules"
+                : IsUsefulDoc(lower, directories) ? "doc" : null;
         if (directories.Contains("commands")) return "command";
         if (directories.Contains("agents")) return "agent";
         if (directories.Contains("rules")) return "rule";
         if (directories.Contains("prompts")) return "prompt";
-        return "doc";
+        return IsUsefulDoc(lower, directories) ? "doc" : null;
     }
+
+    private static readonly HashSet<string> NoiseDocNames = new(StringComparer.Ordinal)
+    {
+        "changelog.md", "code_of_conduct.md", "security.md", "third_party_notices.md", "notice.md", "license.md",
+        "pull_request_template.md", "issue_template.md", "support.md", "codeowners.md"
+    };
+    private static readonly HashSet<string> NoiseDocFolders = new(StringComparer.Ordinal)
+    {
+        "test", "tests", "__tests__", "fixtures", "fixture", "testdata", "website", "site", "blog", "issue_template", ".github", "examples", "example"
+    };
+
+    /// <summary>
+    /// Only top-level documentation is listed (README, CONTRIBUTING, guides in a shallow docs folder). Deep website pages,
+    /// test fixtures and repository housekeeping files would otherwise outnumber the actual skills.
+    /// </summary>
+    private static bool IsUsefulDoc(string fileName, string[] directories) =>
+        directories.Length <= 1 && !NoiseDocNames.Contains(fileName) && !directories.Any(NoiseDocFolders.Contains);
 
     /// <summary>The file name without its Markdown or compound format suffix, for example <c>review.prompt.md</c> → <c>review</c>.</summary>
     public static string BaseName(string path)

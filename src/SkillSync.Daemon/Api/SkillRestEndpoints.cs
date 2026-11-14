@@ -175,6 +175,7 @@ public static class SkillRestEndpoints
                         is_registered = c.IsSkillHubRegistered,
                         detected = installManager.CanConfigure(c),
                         restart_required = installManager.IsRestartPending(c.ClientId),
+                        install_evidence = installManager.DescribeInstall(c.ClientId),
                         error = c.Error
                     })
                 },

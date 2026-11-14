@@ -242,3 +242,26 @@ dialog.palette[open] { display: flex; flex-direction: column; max-height: min(56
 .pending-note { display: inline-flex; align-items: center; margin-left: 10px; color: var(--secondary); }
 .pending-note .spinner { width: 11px; height: 11px; margin-right: 6px; }
 .theme-switching *, .theme-switching *::before, .theme-switching *::after { transition: none !important; }
+
+/* Provider marks carry their brand tint wherever they appear outside a tinted container. */
+.ui-icon.icon-claude { color: var(--p-claude); }
+.ui-icon.icon-gemini { color: var(--p-gemini); }
+.ui-icon.icon-codex { color: var(--text); }
+.provider-mark .ui-icon, .skill-glyph .ui-icon { color: inherit; }
+
+/* Connections: what reaches the tool (skills folder) and what the tool can do back (MCP) are listed separately. */
+.status-badge.info { --tone: var(--accent); }
+.capabilities { list-style: none; margin: 0; padding: 0 16px 12px 67px; display: grid; gap: 5px; font-size: .84rem; color: var(--secondary); }
+.capability { display: flex; align-items: flex-start; gap: 8px; }
+.capability > .ui-icon { width: 15px; height: 15px; margin-top: 2px; flex: none; }
+.capability[data-state="ok"] > .ui-icon { color: var(--live); }
+.capability strong { color: var(--text); font-weight: 600; }
+@media (max-width: 600px) { .capabilities { padding-inline: 12px; } }
+
+.palette-close { display: inline-flex; align-items: center; gap: 6px; border: 1px solid transparent; background: transparent; color: var(--muted);
+  padding: 3px 4px 3px 3px; border-radius: 8px; transition: background 120ms var(--ease), color 120ms var(--ease); }
+.palette-close .ui-icon { width: 14px; height: 14px; }
+.palette-close:hover { color: var(--text); background: var(--surface-2); border-color: var(--hairline); }
+.installs-badge { display: inline-flex; align-items: center; gap: 3px; padding: 0 7px; border-radius: 999px; font-size: .72rem; font-weight: 650;
+  line-height: 1.6; color: var(--warn); background: color-mix(in srgb, var(--warn) 13%, transparent); }
+.installs-badge .ui-icon { width: 11px; height: 11px; }
