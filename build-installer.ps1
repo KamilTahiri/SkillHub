@@ -11,6 +11,16 @@ $ErrorActionPreference = 'Stop'
 if (-not $Compiler) {
     $command = Get-Command ISCC.exe -ErrorAction SilentlyContinue
     $Compiler = if ($command) { $command.Source } else { "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" }
+    if (-not (Test-Path -LiteralPath $Compiler -PathType Leaf)) {
+        # Per-user or custom-folder installs (for example through winget) record their folder in the uninstall registry.
+        $registered = Get-ItemProperty -Path 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\*',
+            'HKLM:\Software\Microsoft\Windows\CurrentVersion\Uninstall\*',
+            'HKLM:\Software\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\*' -ErrorAction SilentlyContinue |
+            Where-Object { $_.DisplayName -like 'Inno Setup*6*' -and $_.InstallLocation } |
+            ForEach-Object { Join-Path $_.InstallLocation 'ISCC.exe' } |
+            Where-Object { Test-Path -LiteralPath $_ -PathType Leaf } | Select-Object -First 1
+        if ($registered) { $Compiler = $registered }
+    }
 }
 if (-not (Test-Path -LiteralPath $Compiler -PathType Leaf)) { throw 'Install Inno Setup 6 or set SKILLHUB_ISCC.' }
 
