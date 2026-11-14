@@ -35,6 +35,9 @@ public sealed class SkillHubMainForm : Form
     private const int DWMWA_BORDER_COLOR = 34;
     private const int DWMWA_CAPTION_COLOR = 35;
     private const int DWMWA_TEXT_COLOR = 36;
+    private const int DWMWA_SYSTEMBACKDROP_TYPE = 38;
+    private const int DWMSBT_MAINWINDOW = 2;
+    private const int DWMWA_COLOR_DEFAULT = unchecked((int)0xFFFFFFFF);
 
     private const uint SWP_NOSIZE = 0x0001;
     private const uint SWP_NOMOVE = 0x0002;
@@ -282,6 +285,16 @@ public sealed class SkillHubMainForm : Form
             var textColorRef = isDark ? 0x00F6F4F3 : 0x003B291E;
             var borderColorRef = isDark ? 0x0036251E : 0x00E9DED5;
             if (SystemInformation.HighContrast) captionColorRef = textColorRef = borderColorRef = -1;
+            else if (SupportsMica)
+            {
+                // Windows 11 22H2+: let the Mica material show through the title bar instead of a flat caption color.
+                var backdrop = DWMSBT_MAINWINDOW;
+                if (DwmSetWindowAttribute(hwnd, DWMWA_SYSTEMBACKDROP_TYPE, ref backdrop, sizeof(int)) == 0)
+                {
+                    captionColorRef = DWMWA_COLOR_DEFAULT;
+                    textColorRef = DWMWA_COLOR_DEFAULT;
+                }
+            }
             _ = DwmSetWindowAttribute(hwnd, DWMWA_CAPTION_COLOR, ref captionColorRef, sizeof(int));
             _ = DwmSetWindowAttribute(hwnd, DWMWA_TEXT_COLOR, ref textColorRef, sizeof(int));
             _ = DwmSetWindowAttribute(hwnd, DWMWA_BORDER_COLOR, ref borderColorRef, sizeof(int));
@@ -304,6 +317,31 @@ public sealed class SkillHubMainForm : Form
         }
         catch
         {
+        }
+    }
+
+    private static bool SupportsMica => OperatingSystem.IsWindowsVersionAtLeast(10, 0, 22621);
+
+    /// <summary>
+    /// Opens an https documentation link from the page in the user's default browser. Loopback and SkillHub's own
+    /// origin are refused, so the desktop UI itself never opens in an external browser (see AGENTS.md invariant 2).
+    /// </summary>
+    private static void OpenExternalLink(string? value, string appOrigin)
+    {
+        if (string.IsNullOrWhiteSpace(value) || value.Length > 2048 ||
+            !Uri.TryCreate(value, UriKind.Absolute, out var uri) || uri.Scheme != Uri.UriSchemeHttps ||
+            uri.IsLoopback || uri.HostNameType is UriHostNameType.IPv4 or UriHostNameType.IPv6 || !string.IsNullOrEmpty(uri.UserInfo) ||
+            uri.GetLeftPart(UriPartial.Authority).Equals(appOrigin, StringComparison.OrdinalIgnoreCase))
+        {
+            return;
+        }
+        try
+        {
+            using var _ = Process.Start(new ProcessStartInfo(uri.AbsoluteUri) { UseShellExecute = true });
+        }
+        catch (Exception exception) when (exception is System.ComponentModel.Win32Exception or InvalidOperationException)
+        {
+            // No default browser is registered. The page already told the user which site it tried to open.
         }
     }
 
@@ -398,12 +436,16 @@ public sealed class SkillHubMainForm : Form
                 try
                 {
                     var raw = args.TryGetWebMessageAsString();
-                    if (raw.Length > 128) return;
+                    if (raw.Length > 4096) return;
                     using var doc = JsonDocument.Parse(raw);
-                    if (doc.RootElement.TryGetProperty("type", out var type) && type.GetString() == "theme" &&
-                        doc.RootElement.TryGetProperty("theme", out var value) && value.GetString() is "light" or "dark")
+                    var kind = doc.RootElement.TryGetProperty("type", out var type) ? type.GetString() : null;
+                    if (kind == "theme" && doc.RootElement.TryGetProperty("theme", out var value) && value.GetString() is "light" or "dark")
                     {
                         ApplyWindowTheme(value.GetString() == "dark");
+                    }
+                    else if (kind == "open-external" && doc.RootElement.TryGetProperty("url", out var link))
+                    {
+                        OpenExternalLink(link.GetString(), appOrigin);
                     }
                 }
                 catch (Exception exception) when (exception is JsonException or InvalidOperationException or ArgumentException)

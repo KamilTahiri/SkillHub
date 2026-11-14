@@ -30,12 +30,40 @@ export const select = (entries, value, attrs = {}) => {
 };
 export const optionPairs = object => Object.entries(object);
 
-let noticeTimer;
-export function notify(message) {
+const MAX_TOASTS = 3;
+
+/**
+ * Shows a toast. Up to three stack in the corner; hovering pauses their timers.
+ * options: { action: 'Undo', run: () => {}, tone: 'warning' | 'error' | 'success', duration: ms }
+ */
+export function notify(message, options = {}) {
   const region = document.getElementById('notifications');
-  region.replaceChildren(h('p', { class: 'notice' }, message));
-  clearTimeout(noticeTimer);
-  noticeTimer = setTimeout(() => region.replaceChildren(), 4800);
+  if (!region) return;
+  const tone = options.tone ?? (/fail|could not|unavailable|error/i.test(message) ? 'error' : 'info');
+  let remaining = options.duration ?? (tone === 'error' ? 8000 : 5200);
+  let started = Date.now();
+  let timer;
+  const toast = h('div', { class: 'notice', 'data-tone': tone },
+    h('span', { class: 'notice-text' }, message));
+  const dismiss = () => {
+    clearTimeout(timer);
+    toast.classList.add('leaving');
+    setTimeout(() => toast.remove(), 160);
+  };
+  if (options.action && options.run) {
+    toast.append(h('button', { type: 'button', class: 'notice-action', onclick: () => { dismiss(); options.run(); } }, options.action));
+  }
+  toast.append(h('button', { type: 'button', class: 'notice-close', 'aria-label': 'Dismiss notification', onclick: dismiss }, '×'));
+  const progress = h('span', { class: 'notice-progress', 'aria-hidden': 'true' });
+  progress.style.animationDuration = remaining + 'ms';
+  toast.append(progress);
+  const schedule = () => { started = Date.now(); timer = setTimeout(dismiss, remaining); };
+  toast.addEventListener('mouseenter', () => { clearTimeout(timer); remaining -= Date.now() - started; toast.classList.add('paused'); });
+  toast.addEventListener('mouseleave', () => { toast.classList.remove('paused'); schedule(); });
+  region.append(toast);
+  while (region.children.length > MAX_TOASTS) region.firstElementChild.remove();
+  schedule();
+  return dismiss;
 }
 
 let dialogNumber = 0;
@@ -67,16 +95,26 @@ export function confirmAction(title, text, action, dangerous = true) {
   });
 }
 
-export function busy(control, run, onError = error => notify(error.message)) {
+export function busy(control, run, onError = error => notify(error.message, { tone: 'error' })) {
   if (control.disabled) return;
   control.disabled = true;
-  Promise.resolve().then(run).catch(onError).finally(() => { control.disabled = false; });
+  // Keep the button's width while its label is replaced by a spinner.
+  const width = control.getBoundingClientRect?.().width;
+  if (width) control.style.minWidth = width + 'px';
+  control.classList.add('is-loading');
+  control.setAttribute('aria-busy', 'true');
+  Promise.resolve().then(run).catch(onError).finally(() => {
+    control.disabled = false;
+    control.classList.remove('is-loading');
+    control.removeAttribute('aria-busy');
+    control.style.minWidth = '';
+  });
 }
 
 export async function copy(text) {
   try {
     await navigator.clipboard.writeText(text);
-    notify('Copied to clipboard.');
+    notify('Copied to clipboard.', { tone: 'success', duration: 2600 });
   } catch {
     notify('Clipboard access is unavailable. Select and copy the text.');
   }
@@ -87,4 +125,15 @@ export function download(name, content, type = 'text/plain') {
   const anchor = h('a', { href: url, download: name });
   anchor.click();
   setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+/** Opens an https link in the user's default browser through the desktop host, or copies it outside the app. */
+export function openExternal(url) {
+  let parsed;
+  try { parsed = new URL(url); } catch { return; }
+  if (parsed.protocol !== 'https:') { copy(url); return; }
+  if (window.chrome?.webview) {
+    window.chrome.webview.postMessage(JSON.stringify({ type: 'open-external', url: parsed.href }));
+    notify('Opened ' + parsed.host + ' in your browser.', { tone: 'success', duration: 2600 });
+  } else copy(url);
 }

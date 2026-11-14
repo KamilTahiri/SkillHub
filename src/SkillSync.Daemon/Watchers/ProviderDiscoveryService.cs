@@ -600,6 +600,13 @@ public sealed class ProviderDiscoveryService
                 {
                     return Observed(provider, segments[^2], path, null);
                 }
+
+                // A text file beside SKILL.md (reference.md, forms.md, LICENSE.txt) belongs to that bundle.
+                if (flatExtension is null && segments.Length >= 2 && SkillPaths.IsRootSiblingFile(segments[^1]))
+                {
+                    var primary = SkillPaths.Resolve(root, string.Join('/', segments.SkipLast(1).Append("SKILL.md")));
+                    if (File.Exists(primary)) return Observed(provider, segments[^2], primary, segments[^1]);
+                }
             }
 
             if (flatExtension is not null && Path.GetExtension(path).Equals(flatExtension, StringComparison.OrdinalIgnoreCase))

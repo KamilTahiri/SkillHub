@@ -40,6 +40,8 @@ export const api = {
   deleteTag: tag => request('/tags/delete', { method: 'POST', data: { tag } }),
   undoTag: id => request('/tags/undo/' + encode(id), { method: 'POST' }),
   repositories: signal => request('/community/repos', { signal }),
+  pinSource: repo => request('/community/sources', { method: 'POST', data: { repo } }),
+  unpinSource: repo => request('/community/sources/remove', { method: 'POST', data: { repo } }),
   community: (repo, q, signal) => request('/community/skills?' + new URLSearchParams({ repo, q }), { signal }),
   communityPreview: ({ repo, path, git_ref }, signal) =>
     request('/community/preview?' + new URLSearchParams({ repo, path, git_ref }), { signal }),

@@ -265,10 +265,13 @@ public sealed class LocalContractTests : IAsyncLifetime
         Assert.Equal("MIT", plan.License);
         Assert.Equal("Pinned reference.", plan.SupportingFiles["references/notes.md"]);
         Assert.Contains("Pinned instructions.", plan.InstructionsMarkdown);
-        Assert.DoesNotContain(gitHub.Requests, uri => uri.AbsolutePath.Contains("skills/one"));
-        Assert.Equal(4, gitHub.Requests.Count);
+        // The fixture has no codeload archive, so the indexer falls back to one Trees API call.
+        Assert.Single(gitHub.Requests, uri => uri.Host == "codeload.github.com");
+        Assert.Single(gitHub.Requests, uri => uri.AbsolutePath.Contains("/git/trees/"));
+        Assert.Single(gitHub.Requests, uri => uri.AbsolutePath.Contains("/commits/"));
+        var requests = gitHub.Requests.Count;
         var saved = await importer.ApplyImportAsync(plan.PlanId, new(plan.Revision, null, ["gemini"]));
-        Assert.Equal(4, gitHub.Requests.Count);
+        Assert.Equal(requests, gitHub.Requests.Count);
         Assert.Equal("Pinned reference.", saved.SupportingFiles["references/notes.md"]);
         Assert.Equal(commit, saved.Passthrough["import_revision"]);
         Assert.True(saved.Targets.Gemini.Enabled);

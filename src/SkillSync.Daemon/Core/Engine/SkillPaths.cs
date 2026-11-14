@@ -17,13 +17,30 @@ public static class SkillPaths
 
     public static bool IsSupportingFolder(string folder) => SupportingFolders.Contains(folder, StringComparer.OrdinalIgnoreCase);
 
+    private static readonly HashSet<string> RootSiblingExtensions = new(StringComparer.OrdinalIgnoreCase)
+    {
+        ".md", ".mdc", ".markdown", ".txt", ".json", ".yaml", ".yml", ".toml", ".csv", ".xml", ".html", ".css",
+        ".js", ".mjs", ".cjs", ".ts", ".py", ".sh", ".ps1", ".sql"
+    };
+
+    private static readonly HashSet<string> RootSiblingNames = new(StringComparer.OrdinalIgnoreCase) { "LICENSE", "NOTICE", "COPYING" };
+
+    /// <summary>
+    /// True for a text file that sits next to SKILL.md, such as <c>reference.md</c>, <c>forms.md</c> or <c>LICENSE.txt</c>.
+    /// Hidden files, SKILL.md itself and non-text formats are excluded.
+    /// </summary>
+    public static bool IsRootSiblingFile(string name) =>
+        !string.IsNullOrEmpty(name) && !name.StartsWith('.') && !name.Equals("SKILL.md", StringComparison.OrdinalIgnoreCase) &&
+        !name.Contains('/') && !name.Contains('\\') &&
+        (RootSiblingExtensions.Contains(Path.GetExtension(name)) || RootSiblingNames.Contains(name));
+
     public static string SupportingPath(string input)
     {
         var normalized = NormalizeRelative(input);
         var separator = normalized.IndexOf('/');
-        if (separator < 0 || !IsSupportingFolder(normalized[..separator]))
+        if (separator < 0 ? !IsRootSiblingFile(normalized) : !IsSupportingFolder(normalized[..separator]))
         {
-            throw new ArgumentException($"Supporting file '{input}' must be inside a supported bundle folder.");
+            throw new ArgumentException($"Supporting file '{input}' must be a text file next to SKILL.md or inside a supported bundle folder.");
         }
 
         return normalized;

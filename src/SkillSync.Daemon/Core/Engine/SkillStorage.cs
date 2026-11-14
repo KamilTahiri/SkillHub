@@ -123,20 +123,31 @@ internal sealed class SkillStorage(ProviderDiscoveryService discovery)
             ? ReadBundle(Path.GetDirectoryName(primary)!) : new(SkillPaths.Comparer));
     }
 
+    /// <summary>Root-level sibling files next to SKILL.md, then each supported bundle folder.</summary>
+    public static IEnumerable<IEnumerable<string>> EnumerateBundleFileGroups(string directory)
+    {
+        if (Directory.Exists(directory))
+        {
+            yield return Directory.EnumerateFiles(directory)
+                .Where(file => SkillPaths.IsRootSiblingFile(Path.GetFileName(file)) &&
+                    (File.GetAttributes(file) & FileAttributes.ReparsePoint) == 0)
+                .Order(StringComparer.Ordinal).ToArray();
+        }
+        foreach (var folder in SkillPaths.SupportingFolders)
+        {
+            var root = SkillPaths.Resolve(directory, folder);
+            if (Directory.Exists(root)) yield return EnumerateSafeFiles(root);
+        }
+    }
+
     public static Dictionary<string, string> ReadBundle(string directory)
     {
         var files = new Dictionary<string, string>(SkillPaths.Comparer);
         var size = 0;
         var scanned = 0;
-        foreach (var folder in SkillPaths.SupportingFolders)
+        foreach (var candidates in EnumerateBundleFileGroups(directory))
         {
-            var root = SkillPaths.Resolve(directory, folder);
-            if (!Directory.Exists(root))
-            {
-                continue;
-            }
-
-            foreach (var file in EnumerateSafeFiles(root))
+            foreach (var file in candidates)
             {
                 if (++scanned > 4096)
                 {

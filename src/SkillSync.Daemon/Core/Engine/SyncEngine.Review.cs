@@ -59,11 +59,9 @@ public sealed partial class SyncEngine
     private static bool HasUnreviewedFiles(Destination destination, IReadOnlyDictionary<string, string> raw)
     {
         if (!destination.HasBundle) return false;
-        foreach (var folder in SkillPaths.SupportingFolders)
+        foreach (var group in SkillStorage.EnumerateBundleFileGroups(destination.Directory))
         {
-            var root = SkillPaths.Resolve(destination.Directory, folder);
-            if (Directory.Exists(root) && SkillStorage.EnumerateSafeFiles(root).Any(file =>
-                !AtomicFileWriter.IsTemporaryOrIgnoredPath(file) &&
+            if (group.Any(file => !AtomicFileWriter.IsTemporaryOrIgnoredPath(file) &&
                 !raw.ContainsKey(Path.GetRelativePath(destination.Directory, file).Replace('\\', '/'))))
                 return true;
         }

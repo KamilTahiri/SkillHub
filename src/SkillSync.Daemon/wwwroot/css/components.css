@@ -193,7 +193,6 @@ dialog::backdrop { background: #10111bb5; }
 }
 
 /* Connections: active providers as elevated cards, missing tools collapsed. */
-html { --p-codex: #10a37f; --p-gemini: #5b8def; --p-claude: #d97757; --p-cursor: var(--text); }
 .btn .ui-icon { width: 15px; height: 15px; }
 .btn.icon-only { width: 29px; padding: 0; }
 .btn.danger:hover:not(:disabled) { background: color-mix(in srgb, var(--error) 14%, transparent); }

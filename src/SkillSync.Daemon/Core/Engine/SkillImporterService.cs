@@ -24,7 +24,8 @@ public sealed record SkillImportResult(
 public sealed record CommunityRepoSummary(
     [property: JsonPropertyName("repo")] string Repo,
     [property: JsonPropertyName("title")] string Title,
-    [property: JsonPropertyName("description")] string Description
+    [property: JsonPropertyName("description")] string Description,
+    [property: JsonPropertyName("pinned")] bool Pinned = false
 );
 
 public sealed record CommunitySkillSummary(
@@ -37,8 +38,30 @@ public sealed record CommunitySkillSummary(
     [property: JsonPropertyName("description")] string Description,
     [property: JsonPropertyName("is_installed")] bool IsInstalled,
     [property: JsonPropertyName("topic")] string Topic = "coding",
-    [property: JsonPropertyName("existing_name")] string? ExistingName = null
+    [property: JsonPropertyName("existing_name")] string? ExistingName = null,
+    [property: JsonPropertyName("kind")] string Kind = "skill",
+    [property: JsonPropertyName("group")] string Group = "skills",
+    [property: JsonPropertyName("file_count")] int FileCount = 0,
+    [property: JsonPropertyName("has_frontmatter")] bool HasFrontmatter = true
 );
+
+/// <summary>Context for a repository view in Explore: what was indexed, its README and how documents are grouped.</summary>
+public sealed record CommunityRepositoryInfo(
+    [property: JsonPropertyName("repo")] string Repo,
+    [property: JsonPropertyName("sha")] string Sha,
+    [property: JsonPropertyName("mode")] string Mode,
+    [property: JsonPropertyName("readme_path")] string? ReadmePath,
+    [property: JsonPropertyName("readme_excerpt")] string? ReadmeExcerpt,
+    [property: JsonPropertyName("license_path")] string? LicensePath,
+    [property: JsonPropertyName("counts")] IReadOnlyDictionary<string, int> Counts,
+    [property: JsonPropertyName("truncated")] bool Truncated,
+    [property: JsonPropertyName("pinned")] bool Pinned,
+    [property: JsonPropertyName("url")] string Url);
+
+public sealed record CommunityBrowseResult(
+    IReadOnlyList<CommunitySkillSummary> Skills,
+    CommunityRepositoryInfo? Repository,
+    IReadOnlyList<string>? PendingSources = null);
 
 public sealed record CommunitySkillPreview(
     [property: JsonPropertyName("slug")] string Slug,
@@ -54,13 +77,17 @@ public sealed record CommunitySkillPreview(
     [property: JsonPropertyName("license")] string License,
     [property: JsonPropertyName("supporting_paths")] IReadOnlyList<string> SupportingPaths,
     [property: JsonPropertyName("name_exists")] bool NameExists,
-    [property: JsonPropertyName("existing_name")] string? ExistingName
+    [property: JsonPropertyName("existing_name")] string? ExistingName,
+    [property: JsonPropertyName("kind")] string Kind = "skill",
+    [property: JsonPropertyName("excluded_paths")] IReadOnlyList<string>? ExcludedPaths = null,
+    [property: JsonPropertyName("has_frontmatter")] bool HasFrontmatter = true
 );
 
 public sealed partial class SkillImporterService
 {
     private static readonly HttpClient SharedHttp = CreateHttpClient();
     private readonly HttpClient _http;
+    private readonly RepositoryIndexer _indexer;
 
     private readonly SyncEngine _engine;
     private readonly CodexTranspiler _codexTranspiler = new();
@@ -72,18 +99,27 @@ public sealed partial class SkillImporterService
     {
         _engine = engine;
         _http = remote ?? SharedHttp;
+        _indexer = new RepositoryIndexer(_http, Path.Combine(engine.Discovery.SkillHubRoot, "cache", "github"));
     }
+
+    public RepositoryIndexer Indexer => _indexer;
 
     private static HttpClient CreateHttpClient()
     {
         var client = new HttpClient
         {
-            Timeout = TimeSpan.FromSeconds(20)
+            Timeout = TimeSpan.FromSeconds(60)
         };
-        client.DefaultRequestHeaders.UserAgent.Add(new ProductInfoHeaderValue("SkillHub", "1.0"));
-        client.DefaultRequestHeaders.Accept.Add(new MediaTypeWithQualityHeaderValue("application/vnd.github+json"));
+        client.DefaultRequestHeaders.UserAgent.Add(new ProductInfoHeaderValue("SkillHub", ProductVersionText()));
         return client;
     }
+
+    private static string ProductVersionText() =>
+        typeof(SkillImporterService).Assembly.GetName().Version?.ToString(3) ?? "1.0";
+
+    internal static TimeSpan SearchIndexWait { get; set; } = TimeSpan.FromSeconds(8);
+
+    private static readonly string[] CuratedSearchRepositories = ["anthropics/skills", "vercel-labs/agent-skills", "github/awesome-copilot"];
 
     public static IReadOnlyList<CommunityRepoSummary> GetCuratedRepositories() =>
     [
@@ -106,8 +142,64 @@ public sealed partial class SkillImporterService
         new(
             "github/awesome-copilot",
             "GitHub • Awesome Copilot & Agent Skills",
-            "Community-curated coding workflows, architecture reviews, and testing rules.")
+            "Community-curated instructions, prompts, chat modes, agents and skills.")
     ];
+
+    /// <summary>Curated sources followed by the repositories the user pinned in <c>~/.skillhub/sources.json</c>.</summary>
+    public IReadOnlyList<CommunityRepoSummary> GetSources()
+    {
+        var curated = GetCuratedRepositories();
+        var pinned = ReadPinnedSources()
+            .Where(repo => !curated.Any(item => item.Repo.Equals(repo, StringComparison.OrdinalIgnoreCase)))
+            .Select(repo => new CommunityRepoSummary(repo, repo, "Pinned repository", Pinned: true));
+        return [.. curated, .. pinned];
+    }
+
+    public async Task<IReadOnlyList<CommunityRepoSummary>> PinSourceAsync(string input, CancellationToken ct = default)
+    {
+        var (owner, repo, _, _, _) = ParseSelection(new SkillImportSelection(Source: input));
+        var key = $"{owner}/{repo}";
+        var pinned = ReadPinnedSources();
+        if (!pinned.Contains(key, StringComparer.OrdinalIgnoreCase))
+        {
+            if (pinned.Count >= 50) throw new ArgumentException("Unpin a repository before pinning another one.");
+            pinned.Add(key);
+            await WritePinnedSourcesAsync(pinned, ct).ConfigureAwait(false);
+        }
+        return GetSources();
+    }
+
+    public async Task<IReadOnlyList<CommunityRepoSummary>> UnpinSourceAsync(string input, CancellationToken ct = default)
+    {
+        var (owner, repo, _, _, _) = ParseSelection(new SkillImportSelection(Source: input));
+        var pinned = ReadPinnedSources();
+        if (pinned.RemoveAll(item => item.Equals($"{owner}/{repo}", StringComparison.OrdinalIgnoreCase)) > 0)
+            await WritePinnedSourcesAsync(pinned, ct).ConfigureAwait(false);
+        return GetSources();
+    }
+
+    private string SourcesPath => Path.Combine(_engine.Discovery.SkillHubRoot, "sources.json");
+
+    private List<string> ReadPinnedSources()
+    {
+        try
+        {
+            if (!File.Exists(SourcesPath)) return [];
+            using var document = JsonDocument.Parse(File.ReadAllText(SourcesPath));
+            return document.RootElement.TryGetProperty("pinned", out var list) && list.ValueKind == JsonValueKind.Array
+                ? list.EnumerateArray().Select(item => item.GetString()).OfType<string>()
+                    .Where(item => Regex.IsMatch(item, @"\A[A-Za-z0-9-]{1,100}/[A-Za-z0-9_.-]{1,100}\z")).ToList()
+                : [];
+        }
+        catch (Exception error) when (error is JsonException or IOException)
+        {
+            return [];
+        }
+    }
+
+    private Task WritePinnedSourcesAsync(List<string> pinned, CancellationToken ct) =>
+        AtomicFileWriter.WriteTextAtomicallyAsync(SourcesPath,
+            JsonSerializer.Serialize(new { pinned }, new JsonSerializerOptions { WriteIndented = true }) + "\n", ct);
 
     // Keywords match whole words. Keywords longer than three letters also match as a word prefix
     // ("test" matches "testing"), so short keywords such as "ai" or "ci" no longer hit "email" or "decision".
@@ -144,233 +236,242 @@ public sealed partial class SkillImporterService
     public async Task<IReadOnlyList<CommunitySkillSummary>> BrowseRepositorySkillsAsync(
         string repoInput,
         string? filterQuery = null,
-        CancellationToken ct = default)
+        CancellationToken ct = default) =>
+        (await BrowseRepositoryAsync(repoInput, filterQuery, ct).ConfigureAwait(false)).Skills;
+
+    public async Task<CommunityBrowseResult> BrowseRepositoryAsync(string repoInput, string? filterQuery = null, CancellationToken ct = default)
     {
         if (string.Equals(repoInput, "local/catalog", StringComparison.OrdinalIgnoreCase) ||
             string.Equals(repoInput, "local", StringComparison.OrdinalIgnoreCase))
         {
-            var plugins = _engine.ListSkills(category: "plugin");
-            var localResults = new List<CommunitySkillSummary>();
-            foreach (var p in plugins)
-            {
-                var existingName = _engine.FindManagedCatalogCopy(p.CatalogId!);
-
-                var topic = InferTopic(p.Name, p.Description);
-                localResults.Add(new CommunitySkillSummary(
-                    Slug: p.Name,
-                    Title: p.GetEffectiveTitle(),
-                    Repo: "local/catalog",
-                    GitRef: "LOCAL",
-                    Path: $"plugins/{p.CatalogId}/SKILL.md",
-                    Source: $"local/catalog/{p.CatalogId}",
-                    Description: p.Description ?? $"Offline catalog skill: {p.GetEffectiveTitle()}",
-                    IsInstalled: existingName is not null,
-                    ExistingName: existingName,
-                    Topic: topic
-                ));
-            }
-
-            if (!string.IsNullOrWhiteSpace(filterQuery))
-            {
-                var q = filterQuery.Trim();
-                localResults = localResults
-                    .Where(s =>
-                        s.Title.Contains(q, StringComparison.OrdinalIgnoreCase) ||
-                        s.Slug.Contains(q, StringComparison.OrdinalIgnoreCase) ||
-                        s.Description.Contains(q, StringComparison.OrdinalIgnoreCase) ||
-                        s.Topic.Equals(q, StringComparison.OrdinalIgnoreCase))
-                    .ToList();
-            }
-
-            return localResults.OrderBy(s => s.Title, StringComparer.OrdinalIgnoreCase).ToList();
+            return new(FilterLocal(LocalCatalogSummaries(), filterQuery)
+                .OrderBy(s => s.Title, StringComparer.OrdinalIgnoreCase).ToList(), null);
         }
 
         if (string.Equals(repoInput, "featured/all", StringComparison.OrdinalIgnoreCase) ||
             string.Equals(repoInput, "all", StringComparison.OrdinalIgnoreCase))
         {
-            var allHighlights = new List<CommunitySkillSummary>();
-            allHighlights.AddRange(GetFallbackCuratedSkills(string.Empty));
-
-            // Surface top popular local plugins (e.g. stripe, supabase, playwright, cloudflare, docker, figma, notion)
-            var localPlugins = _engine.ListSkills(category: "plugin");
+            var highlights = new List<CommunitySkillSummary>(GetFallbackCuratedSkills(string.Empty));
             var popularKeywords = new[] { "playwright", "stripe", "supabase", "cloudflare", "docker", "figma", "notion", "github", "react", "sql", "git" };
-            var featuredPlugins = localPlugins
-                .Where(p => popularKeywords.Any(k => p.Name.Contains(k, StringComparison.OrdinalIgnoreCase) || (p.Description ?? string.Empty).Contains(k, StringComparison.OrdinalIgnoreCase)))
-                .Take(25);
-
-            foreach (var p in featuredPlugins)
-            {
-                var existingName = _engine.FindManagedCatalogCopy(p.CatalogId!);
-
-                allHighlights.Add(new CommunitySkillSummary(
-                    Slug: p.Name,
-                    Title: p.GetEffectiveTitle(),
-                    Repo: "local/catalog",
-                    GitRef: "LOCAL",
-                    Path: $"plugins/{p.CatalogId}/SKILL.md",
-                    Source: $"local/catalog/{p.CatalogId}",
-                    Description: p.Description ?? $"Offline catalog skill: {p.GetEffectiveTitle()}",
-                    IsInstalled: existingName is not null,
-                    ExistingName: existingName,
-                    Topic: InferTopic(p.Name, p.Description)
-                ));
-            }
-
-            if (!string.IsNullOrWhiteSpace(filterQuery))
-            {
-                var q = filterQuery.Trim();
-                allHighlights = allHighlights
-                    .Where(s =>
-                        s.Title.Contains(q, StringComparison.OrdinalIgnoreCase) ||
-                        s.Slug.Contains(q, StringComparison.OrdinalIgnoreCase) ||
-                        s.Description.Contains(q, StringComparison.OrdinalIgnoreCase) ||
-                        s.Topic.Equals(q, StringComparison.OrdinalIgnoreCase) ||
-                        s.Repo.Contains(q, StringComparison.OrdinalIgnoreCase))
-                    .ToList();
-            }
-
-            return allHighlights;
+            highlights.AddRange(LocalCatalogSummaries().Where(summary => popularKeywords.Any(keyword =>
+                summary.Slug.Contains(keyword, StringComparison.OrdinalIgnoreCase) ||
+                summary.Description.Contains(keyword, StringComparison.OrdinalIgnoreCase))).Take(25));
+            return new(FilterLocal(highlights, filterQuery).ToList(), null);
         }
 
         var cleaned = NormalizeCliAndSkillsShInput(repoInput, out var skillFilter);
-        if (string.IsNullOrWhiteSpace(filterQuery)) filterQuery = skillFilter;
-        var (owner, repo, gitRef, _) = ParseSelection(new SkillImportSelection(Source: cleaned));
+        var (owner, repo, sha, hint) = await ResolveSelectionAsync(new SkillImportSelection(Source: cleaned), ct).ConfigureAwait(false);
         var fullRepo = $"{owner}/{repo}";
-
-        var revision = await ResolveCommitAsync(owner, repo, gitRef, ct).ConfigureAwait(false);
-        var entries = await GetRepositoryBlobPathsAsync(owner, repo, revision, ct).ConfigureAwait(false);
-        var results = entries.Where(IsSkillDocument).Order(StringComparer.OrdinalIgnoreCase).Select(path =>
-        {
-            var slug = ProviderDiscoveryService.NormalizeSlug(SkillFallbackName(repo, path));
-            var existingName = _engine.FindImportedSkill(fullRepo, path);
-            var item = new CommunitySkillSummary(slug, CanonicalSkillModel.HumanizeSlug(slug), fullRepo, revision,
-                path, fullRepo, string.Empty, existingName is not null, InferTopic(slug, null), existingName);
-            return _previewCache.TryGet(PreviewKey(owner, repo, path, revision), out var document)
-                ? WithSkillMetadata(item, document.Model) : item;
-        }).ToList();
+        var index = await _indexer.GetIndexAsync(owner, repo, sha, ct).ConfigureAwait(false);
+        var rows = index.Documents.Select(document => Summarize(fullRepo, sha, document)).ToList();
 
         var query = filterQuery?.Trim();
-        if (!string.IsNullOrEmpty(query))
+        if (string.IsNullOrEmpty(query)) query = skillFilter;
+        IEnumerable<CommunitySkillSummary> visible = rows;
+        if (!string.IsNullOrWhiteSpace(hint) && string.IsNullOrWhiteSpace(filterQuery))
         {
-            // Read path matches first, then look for terms that only appear in the document.
-            const int searchReadLimit = 24;
-            var candidates = results.OrderByDescending(MatchesPath).ToArray();
-            var matches = new CommunitySkillSummary?[Math.Min(searchReadLimit, candidates.Length)];
-            await Parallel.ForEachAsync(Enumerable.Range(0, matches.Length),
-                new ParallelOptions { MaxDegreeOfParallelism = 4, CancellationToken = ct }, async (index, token) =>
-                {
-                    var item = candidates[index];
-                    try
-                    {
-                        var document = await GetRemoteSkillAsync(owner, repo, revision, item.Path, entries, token).ConfigureAwait(false);
-                        var model = document.Model;
-                        var topic = InferTopic(model.Name, model.Description);
-                        if (MatchesPath(item) || Contains(model.Name) || Contains(model.GetEffectiveTitle()) || Contains(model.Description) ||
-                            Contains(model.WhenToUse) || Contains(model.InstructionsMarkdown) || Contains(topic))
-                            matches[index] = WithSkillMetadata(item, model);
-                    }
-                    catch (Exception error) when (error is ArgumentException or InvalidDataException or YamlDotNet.Core.YamlException ||
-                        error is CommunitySourceException { StatusCode: 404 })
-                    {
-                        // One invalid or unavailable document should not hide the rest of the repository.
-                    }
-                }).ConfigureAwait(false);
-            return matches.OfType<CommunitySkillSummary>().Concat(candidates.Skip(matches.Length).Where(MatchesPath)).ToArray();
-
-            bool Contains(string value) => value.Contains(query, StringComparison.OrdinalIgnoreCase);
-            bool MatchesPath(CommunitySkillSummary item) => Contains(item.Path) || Contains(item.Slug) ||
-                Contains(item.Title) || Contains(item.Repo);
+            // A link to a folder or file narrows the listing to that part of the repository.
+            var scope = hint.Trim('/');
+            var scoped = rows.Where(row => row.Path.Equals(scope, StringComparison.OrdinalIgnoreCase) ||
+                row.Path.StartsWith(scope + "/", StringComparison.OrdinalIgnoreCase) ||
+                row.Slug.Equals(ProviderDiscoveryService.NormalizeSlug(scope), StringComparison.Ordinal)).ToList();
+            if (scoped.Count > 0) visible = scoped;
+        }
+        if (!string.IsNullOrWhiteSpace(query) && !LooksLikeRepositoryInput(query))
+        {
+            var candidates = visible.ToList();
+            var ranked = Rank(candidates, query).ToList();
+            // Then look inside cached document bodies. This reads local files only and never calls GitHub.
+            var bodyMatches = candidates.Except(ranked).Where(row =>
+                _indexer.TryReadCachedText(index, row.Path) is { } body && body.Contains(query, StringComparison.OrdinalIgnoreCase));
+            visible = ranked.Concat(bodyMatches);
         }
 
-        return results;
+        var pinned = ReadPinnedSources().Contains(fullRepo, StringComparer.OrdinalIgnoreCase) ||
+            GetCuratedRepositories().Any(item => item.Repo.Equals(fullRepo, StringComparison.OrdinalIgnoreCase));
+        var counts = rows.GroupBy(row => row.Group).ToDictionary(group => group.Key, group => group.Count());
+        var info = new CommunityRepositoryInfo(fullRepo, sha, index.Mode, index.ReadmePath, index.ReadmeExcerpt, index.LicensePath,
+            counts, index.Truncated, pinned, $"https://github.com/{fullRepo}");
+        return new(visible.ToList(), info);
     }
+
+    private CommunitySkillSummary Summarize(string fullRepo, string sha, IndexedDocument document)
+    {
+        var existingName = _engine.FindImportedSkill(fullRepo, document.Path);
+        return new CommunitySkillSummary(document.Name, document.Title, fullRepo, sha, document.Path, fullRepo,
+            document.Description, existingName is not null, InferTopic(document.Name, document.Description), existingName,
+            document.Kind, document.Group, document.Files.Count, document.HasFrontmatter);
+    }
+
+    /// <summary>Orders matches by where the query appears: title, then name, then description, then path.</summary>
+    private static IEnumerable<CommunitySkillSummary> Rank(IEnumerable<CommunitySkillSummary> rows, string query)
+    {
+        var terms = query.Split(' ', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        return rows.Select(row =>
+            {
+                var score = 0;
+                foreach (var term in terms)
+                {
+                    var best = row.Title.Contains(term, StringComparison.OrdinalIgnoreCase) ? 8
+                        : row.Slug.Contains(term, StringComparison.OrdinalIgnoreCase) ? 6
+                        : row.Description.Contains(term, StringComparison.OrdinalIgnoreCase) ? 3
+                        : row.Path.Contains(term, StringComparison.OrdinalIgnoreCase) || row.Kind.Equals(term, StringComparison.OrdinalIgnoreCase) ||
+                          row.Topic.Equals(term, StringComparison.OrdinalIgnoreCase) ? 1 : 0;
+                    if (best == 0) return (Row: row, Score: -1);
+                    score += best;
+                }
+                if (row.Title.StartsWith(query, StringComparison.OrdinalIgnoreCase)) score += 4;
+                if (row.Group == "docs") score -= 2;
+                return (Row: row, Score: score);
+            })
+            .Where(item => item.Score >= 0).OrderByDescending(item => item.Score)
+            .ThenBy(item => item.Row.Title, StringComparer.OrdinalIgnoreCase).Select(item => item.Row);
+    }
+
+    private static IEnumerable<CommunitySkillSummary> FilterLocal(IEnumerable<CommunitySkillSummary> rows, string? filterQuery)
+    {
+        if (string.IsNullOrWhiteSpace(filterQuery)) return rows;
+        var q = filterQuery.Trim();
+        return rows.Where(s =>
+            s.Title.Contains(q, StringComparison.OrdinalIgnoreCase) ||
+            s.Slug.Contains(q, StringComparison.OrdinalIgnoreCase) ||
+            s.Description.Contains(q, StringComparison.OrdinalIgnoreCase) ||
+            s.Topic.Equals(q, StringComparison.OrdinalIgnoreCase) ||
+            s.Repo.Contains(q, StringComparison.OrdinalIgnoreCase));
+    }
+
+    private IEnumerable<CommunitySkillSummary> LocalCatalogSummaries() =>
+        _engine.ListSkills(category: "plugin").Select(p =>
+        {
+            var existingName = _engine.FindManagedCatalogCopy(p.CatalogId!);
+            return new CommunitySkillSummary(
+                Slug: p.Name,
+                Title: p.GetEffectiveTitle(),
+                Repo: "local/catalog",
+                GitRef: "LOCAL",
+                Path: $"plugins/{p.CatalogId}/SKILL.md",
+                Source: $"local/catalog/{p.CatalogId}",
+                Description: p.Description ?? $"Offline catalog skill: {p.GetEffectiveTitle()}",
+                IsInstalled: existingName is not null,
+                ExistingName: existingName,
+                Topic: InferTopic(p.Name, p.Description),
+                FileCount: p.SupportingFiles.Count);
+        });
 
     public async Task<IReadOnlyList<CommunitySkillSummary>> SearchCommunitySkillsAsync(
         string? query,
-        CancellationToken ct = default)
+        CancellationToken ct = default) =>
+        (await SearchCommunityAsync(query, ct).ConfigureAwait(false)).Skills;
+
+    public async Task<CommunityBrowseResult> SearchCommunityAsync(string? query, CancellationToken ct = default)
     {
         var q = (query ?? string.Empty).Trim();
         if (string.IsNullOrWhiteSpace(q))
         {
-            return await BrowseRepositorySkillsAsync("featured/all", null, ct).ConfigureAwait(false);
+            return await BrowseRepositoryAsync("featured/all", null, ct).ConfigureAwait(false);
         }
 
         if (LooksLikeRepositoryInput(q))
         {
-            var (owner, repo, gitRef, path) = ParseSelection(new SkillImportSelection(Source: q));
-            return await BrowseRepositorySkillsAsync($"https://github.com/{owner}/{repo}/tree/{Uri.EscapeDataString(gitRef)}", path, ct)
-                .ConfigureAwait(false);
+            return await BrowseRepositoryAsync(q, null, ct).ConfigureAwait(false);
         }
 
+        var pending = new System.Collections.Concurrent.ConcurrentBag<string>();
         async Task<(IReadOnlyList<CommunitySkillSummary> Skills, CommunitySourceException? Error)> SearchAsync(string source)
         {
-            try { return (await BrowseRepositorySkillsAsync(source, q, ct).ConfigureAwait(false), null); }
+            try
+            {
+                var browse = BrowseRepositoryAsync(source, q, ct);
+                // A repository that is being indexed for the first time keeps indexing in the background.
+                // The search answers with what is ready instead of waiting for a large download.
+                if (source != "local/catalog" && await Task.WhenAny(browse, Task.Delay(SearchIndexWait, ct)).ConfigureAwait(false) != browse)
+                {
+                    pending.Add(source);
+                    _ = browse.ContinueWith(task => _ = task.Exception, TaskScheduler.Default);
+                    return ([], null);
+                }
+                return ((await browse.ConfigureAwait(false)).Skills, null);
+            }
             catch (CommunitySourceException exception) { return ([], exception); }
+            catch (InvalidDataException) { return ([], null); }
         }
 
-        var results = await Task.WhenAll(new[] { "local/catalog", "vercel-labs/agent-skills", "anthropics/skills", "github/awesome-copilot" }.Select(SearchAsync))
-            .ConfigureAwait(false);
-        var combined = results.SelectMany(result => result.Skills)
+        var sources = new[] { "local/catalog" }.Concat(CuratedSearchRepositories).Concat(ReadPinnedSources())
+            .Distinct(StringComparer.OrdinalIgnoreCase);
+        var results = await Task.WhenAll(sources.Select(SearchAsync)).ConfigureAwait(false);
+        var combined = results.SelectMany(result => result.Skills.Take(60))
             .DistinctBy(skill => (skill.Repo.ToLowerInvariant(), skill.Path)).ToArray();
-        if (combined.Length == 0 && results.FirstOrDefault(result => result.Error is not null).Error is { } failure)
+        if (combined.Length == 0 && pending.IsEmpty && results.FirstOrDefault(result => result.Error is not null).Error is { } failure)
             throw failure;
-        return combined;
+        return new(combined, null, pending.Order(StringComparer.OrdinalIgnoreCase).ToArray());
     }
 
     public async Task<CommunitySkillPreview> PreviewCommunitySkillAsync(string repoInput, string path, string gitRef = "HEAD",
         CancellationToken ct = default)
     {
-        CanonicalSkillModel model;
-        string source;
-        string revision;
-        string license;
-        IReadOnlyList<string> supportingPaths;
-        string? existingName;
         if (repoInput == "local/catalog")
         {
-            model = GetImportableCatalogSkill(null, path).Clone();
-            model.IsCatalogOnly = false;
-            model.SourceCategory = "user";
-            source = $"Local catalog · {model.OriginProvider}";
-            revision = ContentHasher.ComputeSemanticHash(model);
-            license = model.Passthrough.GetValueOrDefault("license")?.ToString() ?? UnknownLicense;
-            supportingPaths = model.SupportingFiles.Keys.Order(StringComparer.Ordinal).ToArray();
-            existingName = _engine.FindManagedCatalogCopy(model.CatalogId!);
-        }
-        else
-        {
-            var (owner, repo, requested, _) = ParseSelection(new SkillImportSelection(Repo: repoInput, GitRef: gitRef));
-            repoInput = $"{owner}/{repo}";
-            source = repoInput;
-            revision = await ResolveCommitAsync(owner, repo, requested, ct).ConfigureAwait(false);
-            var entries = await GetRepositoryBlobPathsAsync(owner, repo, revision, ct).ConfigureAwait(false);
-            path = SelectSkillPath(entries, path);
-            var document = await GetRemoteSkillAsync(owner, repo, revision, path, entries, ct).ConfigureAwait(false);
-            model = document.Model;
-            license = document.License;
-            supportingPaths = SupportingPaths(entries, path);
-            existingName = _engine.FindImportedSkill(repoInput, path);
+            var catalog = GetImportableCatalogSkill(null, path).Clone();
+            catalog.IsCatalogOnly = false;
+            catalog.SourceCategory = "user";
+            var catalogExisting = _engine.FindManagedCatalogCopy(catalog.CatalogId!);
+            var exists = ImportNameExists(catalog.Name);
+            return new CommunitySkillPreview(catalog.Name, catalog.GetEffectiveTitle(), repoInput, path,
+                $"Local catalog · {catalog.OriginProvider}", catalog.Description, catalog.WhenToUse, catalog.InstructionsMarkdown,
+                exists || catalogExisting is not null, ContentHasher.ComputeSemanticHash(catalog),
+                catalog.Passthrough.GetValueOrDefault("license")?.ToString() ?? UnknownLicense,
+                catalog.SupportingFiles.Keys.Order(StringComparer.Ordinal).ToArray(), exists, catalogExisting);
         }
 
+        var (owner, repo, sha, _) = await ResolveSelectionAsync(new SkillImportSelection(Repo: repoInput, GitRef: gitRef), ct).ConfigureAwait(false);
+        var fullRepo = $"{owner}/{repo}";
+        var index = await _indexer.GetIndexAsync(owner, repo, sha, ct).ConfigureAwait(false);
+        var document = SelectDocument(index, path);
+        var raw = await _indexer.ReadTextAsync(index, document.Path, ct).ConfigureAwait(false);
+        var model = ParseMarkdownToSkillModel(raw, SkillDocumentClassifier.FallbackName(repo, document.Path), $"GitHub ({fullRepo})");
+        var existingName = _engine.FindImportedSkill(fullRepo, document.Path);
         var nameExists = ImportNameExists(model.Name);
-        return new CommunitySkillPreview(model.Name, model.GetEffectiveTitle(), repoInput, path, source,
+        return new CommunitySkillPreview(model.Name, model.GetEffectiveTitle(), fullRepo, document.Path, fullRepo,
             model.Description, model.WhenToUse, model.InstructionsMarkdown, nameExists || existingName is not null,
-            revision, license, supportingPaths, nameExists, existingName);
+            sha, License(index, document, raw), document.Files, nameExists, existingName,
+            document.Kind, document.ExcludedFiles, document.HasFrontmatter);
     }
 
-    private Task<List<string>> GetRepositoryBlobPathsAsync(string owner, string repo, string gitRef, CancellationToken ct) =>
-        _treeCache.GetAsync((owner.ToLowerInvariant(), repo.ToLowerInvariant(), gitRef), async token =>
-        {
-            var url = $"https://api.github.com/repos/{Uri.EscapeDataString(owner)}/{Uri.EscapeDataString(repo)}/git/trees/{Uri.EscapeDataString(gitRef)}?recursive=1";
-            using var doc = JsonDocument.Parse(await ReadRemoteTextAsync(url, MaxTreeBytes, token).ConfigureAwait(false));
-            if (doc.RootElement.TryGetProperty("truncated", out var truncated) && truncated.ValueKind == JsonValueKind.True)
-                throw new InvalidDataException("GitHub truncated the file tree. An incomplete bundle cannot be reviewed.");
+    private static string License(RepositoryIndex index, IndexedDocument document, string raw)
+    {
+        var declared = ReadDeclaredLicense(raw);
+        if (declared is not null) return declared;
+        var sibling = document.Files.FirstOrDefault(file => Regex.IsMatch(file, @"\A(?:LICENSE|LICENCE)(?:\.[A-Za-z]+)?\z", RegexOptions.IgnoreCase));
+        return sibling is not null ? $"License file present · {RepositoryIndexer.SkillDirectoryPrefix(document.Path)}{sibling}"
+            : index.LicensePath is not null ? $"License file present · {index.LicensePath}" : UnknownLicense;
+    }
 
-            return doc.RootElement.GetProperty("tree").EnumerateArray()
-                .Where(entry => entry.GetProperty("type").GetString() == "blob" &&
-                    (!entry.TryGetProperty("mode", out var mode) || mode.GetString() != "120000"))
-                .Select(entry => entry.GetProperty("path").GetString()!).ToList();
-        }, ct);
+    /// <summary>Finds the indexed document for a path, a skill folder, or a skill name.</summary>
+    private static IndexedDocument SelectDocument(RepositoryIndex index, string? hint)
+    {
+        if (string.IsNullOrWhiteSpace(hint))
+        {
+            var skills = index.Documents.Where(document => document.Group == "skills").ToArray();
+            return skills.Length == 1 ? skills[0]
+                : index.Documents.Count == 1 ? index.Documents[0]
+                : index.Documents.Count == 0 ? throw new KeyNotFoundException("No skill matches that repository and path.")
+                : throw new ArgumentException("This repository contains several skills. Choose a result in Explore or paste a link to a specific skill.");
+        }
+        var path = SkillPaths.NormalizeRelative(hint.Trim().TrimEnd('/'));
+        var exact = index.Documents.FirstOrDefault(document => document.Path == path ||
+            document.Path.Equals(path + "/SKILL.md", StringComparison.OrdinalIgnoreCase));
+        if (exact is not null) return exact;
+        var slug = ProviderDiscoveryService.NormalizeSlug(path.Split('/')[^1]);
+        var matches = index.Documents.Where(document => document.Name == slug ||
+            ProviderDiscoveryService.NormalizeSlug(SkillDocumentClassifier.FallbackName(index.Repo, document.Path)) == slug).ToArray();
+        if (matches.Length > 1) matches = matches.Where(document => document.Group == "skills").DefaultIfEmpty(matches[0]).ToArray();
+        return matches.Length switch
+        {
+            1 => matches[0],
+            0 => throw new KeyNotFoundException("No skill matches that repository and path."),
+            _ => throw new ArgumentException("This repository contains several skills with that name. Choose a result in Explore.")
+        };
+    }
 
     private IEnumerable<CommunitySkillSummary> GetFallbackCuratedSkills(string fullRepo)
     {
@@ -460,10 +561,9 @@ public sealed partial class SkillImporterService
         {
             throw new ArgumentException("The imported document exceeds the supported size.");
         }
-        var fallbackSlug = ProviderDiscoveryService.NormalizeSlug(
-            Path.GetFileNameWithoutExtension(fallbackNameOrFile).Equals("SKILL", StringComparison.OrdinalIgnoreCase)
-                ? Path.GetFileName(Path.GetDirectoryName(fallbackNameOrFile) ?? "imported-skill")
-                : Path.GetFileNameWithoutExtension(fallbackNameOrFile));
+        var fallbackSlug = ProviderDiscoveryService.NormalizeSlug(fallbackNameOrFile.Contains('.') || fallbackNameOrFile.Contains('/')
+            ? SkillDocumentClassifier.FallbackName("imported-skill", fallbackNameOrFile.Replace('\\', '/'))
+            : fallbackNameOrFile);
 
         if (string.IsNullOrWhiteSpace(fallbackSlug))
         {
@@ -471,7 +571,11 @@ public sealed partial class SkillImporterService
         }
 
         CanonicalSkillModel model;
-        if (FrontmatterParser.TrySplitFrontmatter(rawMarkdown, out var yaml, out _))
+        if (!FrontmatterParser.TrySplitFrontmatter(rawMarkdown, out var yaml, out var plainBody))
+        {
+            throw new ArgumentException("The imported document has incomplete frontmatter or is empty.");
+        }
+        if (yaml.Length > 0)
         {
             Dictionary<string, object?> dict;
             try { dict = FrontmatterParser.ParseYamlToDictionary(yaml); }
@@ -506,10 +610,32 @@ public sealed partial class SkillImporterService
             }
             if (dict.GetValueOrDefault("title") is string title && !string.IsNullOrWhiteSpace(title))
                 model.Title = title.Trim();
+            // GitHub Copilot instructions scope themselves with applyTo; Cursor expresses the same idea with globs.
+            if (dict.GetValueOrDefault("applyTo") is string applyTo && !dict.ContainsKey("globs"))
+            {
+                var globs = applyTo.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+                    .Where(glob => glob.Length is > 0 and <= 256).Take(32).ToList();
+                if (globs.Count > 0) model.Targets.Cursor.Globs = globs;
+            }
         }
         else
         {
-            throw new ArgumentException("The imported document has incomplete frontmatter or is empty.");
+            // Plain Markdown (rules, prompts, READMEs) has no metadata, so infer it from the document itself.
+            var body = plainBody.TrimStart('﻿').Trim();
+            if (body.Length == 0)
+            {
+                throw new ArgumentException("The imported document is empty.");
+            }
+            var heading = FrontmatterParser.ExtractFirstMarkdownHeading(body);
+            var description = SkillDocumentClassifier.FirstParagraph(body);
+            if (description.Length > 300) description = description[..297].TrimEnd() + "…";
+            model = new CanonicalSkillModel
+            {
+                Name = fallbackSlug,
+                Title = heading ?? CanonicalSkillModel.HumanizeSlug(fallbackSlug),
+                Description = string.IsNullOrWhiteSpace(description) ? heading ?? CanonicalSkillModel.HumanizeSlug(fallbackSlug) : description,
+                InstructionsMarkdown = body
+            };
         }
 
         model.Name = ProviderDiscoveryService.NormalizeSlug(model.Name);
@@ -554,7 +680,11 @@ public sealed partial class SkillImporterService
         return s.Trim('"', '\'', ' ');
     }
 
-    private static (string Owner, string Repo, string GitRef, string? SubPath) ParseGitHubCoordinates(string cleaned)
+    /// <summary>
+    /// Splits a GitHub link into owner, repository, a provisional ref and sub-path. For <c>tree/</c>, <c>blob/</c> and raw
+    /// links the remaining segments are also returned, because a branch name may itself contain slashes.
+    /// </summary>
+    private static (string Owner, string Repo, string GitRef, string? SubPath, string[]? RefTail) ParseGitHubCoordinates(string cleaned)
     {
         var s = cleaned.Trim();
         if (s.StartsWith("https://github.com/", StringComparison.OrdinalIgnoreCase))
@@ -589,19 +719,22 @@ public sealed partial class SkillImporterService
         var repo = parts[1];
         var gitRef = "HEAD";
         string? subPath = null;
+        string[]? tail = null;
 
         if (isRaw && parts.Length >= 4)
         {
-            gitRef = Uri.UnescapeDataString(parts[2]);
-            subPath = string.Join("/", parts.Skip(3).Select(Uri.UnescapeDataString));
+            tail = parts.Skip(2).Select(Uri.UnescapeDataString).ToArray();
+            gitRef = tail[0];
+            subPath = string.Join("/", tail.Skip(1));
         }
         else if (parts.Length >= 4 && (parts[2].Equals("tree", StringComparison.OrdinalIgnoreCase) ||
                                       parts[2].Equals("blob", StringComparison.OrdinalIgnoreCase)))
         {
-            gitRef = Uri.UnescapeDataString(parts[3]);
-            if (parts.Length > 4)
+            tail = parts.Skip(3).SelectMany(part => Uri.UnescapeDataString(part).Split('/')).ToArray();
+            gitRef = tail[0];
+            if (tail.Length > 1)
             {
-                subPath = string.Join("/", parts.Skip(4).Select(Uri.UnescapeDataString));
+                subPath = string.Join("/", tail.Skip(1));
             }
         }
         else if (parts.Length > 2)
@@ -609,6 +742,6 @@ public sealed partial class SkillImporterService
             subPath = string.Join("/", parts.Skip(2).Select(Uri.UnescapeDataString));
         }
 
-        return (owner, repo, gitRef, subPath);
+        return (owner, repo, gitRef, string.IsNullOrEmpty(subPath) ? null : subPath, tail);
     }
 }

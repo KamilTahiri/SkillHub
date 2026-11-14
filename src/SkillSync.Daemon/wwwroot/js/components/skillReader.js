@@ -1,6 +1,6 @@
 import { api } from '../api.js';
 import { deployment, installedProviders, destinationLabel, targetIssues, PROVIDERS, skillKey, tagSlug } from '../state.js';
-import { renderMarkdown } from '../markdown.js';
+import { renderMarkdown, outline } from '../markdown.js';
 import { h, button, heading, panel, disclosure, copy, download, busy, notify, modal, confirmAction, field, errorText } from '../ui.js';
 import { showProviderPreview } from './transpilerPreview.js';
 
@@ -60,9 +60,11 @@ export function createReader(root, app) {
     const issues = targetIssues(skill, installedProviders(snapshot.providers));
     const content = h('div', { class: 'stack reader-section' });
     const tabs = h('nav', { class: 'reader-tabs', 'aria-label': 'Skill sections' });
+    const article = h('article', { class: 'markdown reader-document', 'aria-label': 'Skill instructions' },
+      renderMarkdown(skill.instructions_markdown, { title: skill.title, query, openFile }));
+    const headings = outline(article);
     const sections = {
-      Instructions: () => h('article', { class: 'markdown reader-document', 'aria-label': 'Skill instructions' },
-        renderMarkdown(skill.instructions_markdown, { title: skill.title, query, openFile })),
+      Instructions: () => article,
       Files: () => Object.keys(files).length ? h('div', { class: 'stack' },
         Object.keys(files).sort().map(path => button(path, () => openFile(path), 'quiet')))
         : h('p', { class: 'muted' }, 'This skill has no supporting files.'),
@@ -81,8 +83,18 @@ export function createReader(root, app) {
     showSection();
     const source = disclosure('Source details', h('p', { class: 'path' }, skill.source_path ?? skill.name),
       skill.revision && h('p', { class: 'muted' }, 'Canonical revision ' + skill.revision));
+    const contents = headings.length > 1 && h('nav', { class: 'outline', 'aria-label': 'On this page' },
+      h('h3', {}, 'On this page'),
+      h('ul', {}, headings.map(item => h('li', { class: 'outline-level-' + item.level },
+        h('button', { type: 'button', class: 'outline-link', onclick: () => {
+          if (activeSection !== 'Instructions') { activeSection = 'Instructions'; showSection(); }
+          const target = document.getElementById(item.id);
+          target?.scrollIntoView({ behavior: matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth', block: 'start' });
+          target?.setAttribute('tabindex', '-1');
+          target?.focus({ preventScroll: true });
+        } }, item.text)))));
     const inspector = h('details', { class: 'reader-inspector' }, h('summary', {}, 'Skill details'),
-      h('div', { class: 'stack' }, tags, source));
+      h('div', { class: 'stack' }, tags, contents, source));
     inspector.open = !narrow.matches || narrowDetailsOpen;
     inspector.addEventListener('toggle', () => { if (narrow.matches) narrowDetailsOpen = inspector.open; });
     const section = h('div', { class: 'stack' }, h('div', { class: 'actions' }, button('← Library', () => app.navigate('library'), 'quiet')),

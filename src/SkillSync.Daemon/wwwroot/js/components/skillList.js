@@ -2,7 +2,7 @@ import { api } from '../api.js';
 import { COLLECTIONS, PROVIDERS, Latest, deployment, installedProviders, matchesFilters, inCollection, skillKey, targetIssues, slugify, tagSlug } from '../state.js';
 import { icon, PROVIDER_NAMES } from '../icons.js';
 import { highlighted } from '../markdown.js';
-import { h, button, field, select, modal, confirmAction, errorText, notify, busy } from '../ui.js';
+import { h, button, field, select, modal, confirmAction, errorText, notify, busy, copy } from '../ui.js';
 
 const STATUSES = { synced: 'Synced', issue: 'Needs attention', disabled: 'Disabled', pending: 'Pending or undeployed', catalog: 'Catalog' };
 const EMPTY_FILTERS = { tags: [], tagMode: 'all', origin: '', provider: '', status: '' };
@@ -81,14 +81,37 @@ export function createLibrary(root, app) {
       else { toggleFilters(); filtersButton.focus(); }
     }
   });
+  const readSetting = (key, fallback) => { try { return localStorage.getItem(key) ?? fallback; } catch { return fallback; } };
+  const writeSetting = (key, value) => { try { localStorage.setItem(key, value); } catch { /* Preferences are optional. */ } };
+  let sortOrder = readSetting('skillhub.library.sort', 'name');
+  let density = readSetting('skillhub.library.density', 'comfortable');
+  const sorter = select([['name', 'Name'], ['issues', 'Needs attention first'], ['synced', 'Most synced'], ['recent', 'Recently changed']],
+    sortOrder, { class: 'select sort-select', 'aria-label': 'Sort skills', title: 'Sort skills', onchange: event => {
+      sortOrder = event.target.value;
+      writeSetting('skillhub.library.sort', sortOrder);
+      render();
+    } });
+  const densityButton = button([icon(density === 'compact' ? 'rows-comfortable' : 'rows-compact')], () => {
+    density = density === 'compact' ? 'comfortable' : 'compact';
+    writeSetting('skillhub.library.density', density);
+    applyDensity();
+  }, 'icon-only', { id: 'library-density' });
+  function applyDensity() {
+    root.dataset.density = density;
+    densityButton.replaceChildren(icon(density === 'compact' ? 'rows-comfortable' : 'rows-compact'));
+    const label = density === 'compact' ? 'Use comfortable rows' : 'Use compact rows';
+    densityButton.setAttribute('aria-label', label);
+    densityButton.title = label;
+  }
+  applyDensity();
   const results = h('div', { id: 'library-results' });
   const summary = h('div', { class: 'sync-summary', hidden: true });
   const collectionView = h('div', { class: 'stack library-view' }, summary, results);
   collectionView.addEventListener('animationend', () => collectionView.classList.remove('collection-enter'));
   root.append(h('div', { class: 'stack library-body' }, count,
     h('div', { class: 'library-search-row', role: 'search', 'aria-label': 'Library' },
-      h('div', { class: 'search-field' }, search), filtersButton,
-      button('+ New skill', () => app.newSkill(), 'primary', { id: 'new-skill' })),
+      h('div', { class: 'search-field' }, search), filtersButton, sorter, densityButton,
+      button([icon('plus'), 'New skill'], () => app.newSkill(), 'primary', { id: 'new-skill' })),
     navigation, filterPanel, active, collectionView));
 
   function toggleFilters() {
@@ -277,7 +300,12 @@ export function createLibrary(root, app) {
         h('h2', {}, hasFilters ? 'No matching skills' : 'No skills in this collection'),
         h('div', { class: 'actions' }, button('Browse Plugin Catalog', () => app.exploreCatalog()))));
     } else {
-      const list = h('ul', { class: 'results' }, visible.slice(0, limit).map(skill => {
+      const severity = skill => syncFor(skill).issues.length ? 0 : syncFor(skill).key === 'pending' ? 1 : 2;
+      const ordered = sortOrder === 'name' ? visible : [...visible].sort((a, b) =>
+        sortOrder === 'issues' ? severity(a) - severity(b) || (a.title || a.name).localeCompare(b.title || b.name)
+          : sortOrder === 'synced' ? syncFor(b).synced.length - syncFor(a).synced.length || (a.title || a.name).localeCompare(b.title || b.name)
+            : (b.revision ?? 0) - (a.revision ?? 0) || (a.title || a.name).localeCompare(b.title || b.name));
+      const list = h('ul', { class: 'results' }, ordered.slice(0, limit).map(skill => {
         const key = skillKey(skill);
         const sync = syncFor(skill);
         const tags = (skill.tags ?? []).filter(tag => collection === 'system' && !allScope || !RESERVED_TAGS.has(slugify(tag)));
@@ -289,6 +317,8 @@ export function createLibrary(root, app) {
             savedScroll = window.scrollY;
             app.read(key);
           } },
+          h('span', { class: 'skill-glyph', 'data-provider': sync.synced[0] ?? (skill.is_catalog_only ? 'catalog' : skill.source_category),
+            'aria-hidden': 'true' }, glyphText(skill.title || skill.name)),
           h('span', { class: 'result-title' }, highlighted(skill.title || skill.name, query)),
           h('span', { class: 'result-description' }, highlighted(skill.instruction_match ?? skill.description ?? '', query)),
           !syncView && h('span', { class: 'chips' }, origin && !['My Skill', 'Personal', 'SkillHub'].includes(origin) &&
@@ -307,7 +337,26 @@ export function createLibrary(root, app) {
           !sync.synced.length && !issues.length && h('span', { class: 'result-status muted' }, sync.label));
         const exceptions = issues.map(issue => button(issue.label + (issue.state === 'missing' ? ' copy missing' : ' needs review') + ' →',
           () => app.review(skill.name, issue), 'quiet small warning', { 'data-control': 'review-' + issue.path }));
-        return h('li', { class: 'result-row library-row' }, row, h('div', { class: 'library-row-status' }, providers, exceptions));
+        const readOnly = skill.source_category === 'system';
+        const detailThen = (control, action) => busy(control, async () => action(await api.detail(key)));
+        const menu = h('details', { class: 'action-menu row-menu' },
+          h('summary', { class: 'btn small icon-only', 'aria-label': 'More actions for ' + (skill.title || skill.name), title: 'More actions' }, icon('more')),
+          h('div', { class: 'action-menu-list' },
+            button([icon('copy'), 'Copy instructions'], event => { menu.open = false; detailThen(event.currentTarget, detail => copy(detail.skill.instructions_markdown)); }, 'quiet small'),
+            button([icon('copy'), 'Copy name'], () => { menu.open = false; copy(skill.name); }, 'quiet small'),
+            issues[0] && button([icon('sync'), 'Review ' + issues[0].label], () => { menu.open = false; app.review(skill.name, issues[0]); }, 'quiet small')));
+        menu.addEventListener('focusout', event => { if (!menu.contains(event.relatedTarget)) menu.open = false; });
+        menu.addEventListener('keydown', event => {
+          if (event.key === 'Escape' && menu.open) { event.stopPropagation(); menu.open = false; menu.firstElementChild.focus(); }
+        });
+        const quick = h('div', { class: 'row-actions' },
+          button([icon('open')], () => { selectedKey = key; savedScroll = window.scrollY; app.read(key); }, 'small icon-only',
+            { 'aria-label': 'Open ' + (skill.title || skill.name), title: 'Open' }),
+          !readOnly && button([icon('edit')], event => detailThen(event.currentTarget, detail => app.edit(detail, { clone: skill.is_catalog_only })),
+            'small icon-only', { 'aria-label': (skill.is_catalog_only ? 'Clone ' : 'Edit ') + (skill.title || skill.name),
+              title: skill.is_catalog_only ? 'Clone to My Skills' : 'Edit' }),
+          menu);
+        return h('li', { class: 'result-row library-row' }, row, h('div', { class: 'library-row-status' }, providers, exceptions), quick);
       }));
       results.replaceChildren(list);
       if (visible.length > limit) results.append(button('Show more skills', () => {
@@ -338,6 +387,11 @@ export function createLibrary(root, app) {
     },
     get query() { return query; }
   };
+}
+
+function glyphText(title) {
+  const words = String(title).replace(/[^\p{L}\p{Nd}\s-]/gu, ' ').split(/[\s-]+/).filter(Boolean);
+  return ((words[0]?.[0] ?? '?') + (words[1]?.[0] ?? '')).toUpperCase();
 }
 
 function showTagManager(app, initialTags, onUsage) {

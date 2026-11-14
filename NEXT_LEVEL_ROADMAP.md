@@ -7,6 +7,18 @@
 
 ---
 
+## Status (updated 14 November 2026)
+
+| Phase | State | Notes |
+|---|---|---|
+| A · Quick wins | Done (`fdaf1f9`) | Live status dot, Connections cards, inline deploy chips, importer input fixes, ETag caching |
+| B · Repository Indexer & Explore v2 | Done | `RepositoryIndexer` (codeload tarball, SHA-keyed cache in `~/.skillhub/cache/github`, ETag refs, Trees API fallback), slash branches, all Markdown formats classified, root-level sibling files in bundles, repo card, kind tabs, bundle file tabs, pinned sources, multi-select import, non-blocking search |
+| C · Design System v2 | Done | Surface and elevation tokens, `polish.css`, button press/hover/loading states, Library glyph rows with hover actions, sort and density, Ctrl+K command palette, toast stack, Markdown task lists/strikethrough/code highlighting/outline, external links via the desktop host, Mica title bar |
+| D · Flagship features | Not started | |
+| E · Launch polish | Not started | |
+
+Live-verified indexing: `anthropics/skills` keeps `FORMS.md`, `REFERENCE.md` and `LICENSE.txt` with the pdf skill. `github/awesome-copilot` (113 MB archive) indexes 481 skills, 197 instructions and 231 agents.
+
 ## 0. Verdict
 
 The engine is now in good shape. The two previous audits found data-loss, containment, and config-corruption bugs, and these are fixed and covered by tests (`SyncSafetyTests`, `LocalContractTests`, `LoopPreventionTests`). The loopback trust boundary is good: Host, Origin and Sec-Fetch checks, a per-session desktop token, and a strict CSP (`Api/LocalHttpAccess.cs`). Ownership tracking and conflict review are careful, more careful than most commercial sync tools.

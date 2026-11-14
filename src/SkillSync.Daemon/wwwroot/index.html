@@ -8,6 +8,7 @@
   <link rel="stylesheet" href="/css/base.css">
   <link rel="stylesheet" href="/css/layout.css">
   <link rel="stylesheet" href="/css/components.css">
+  <link rel="stylesheet" href="/css/polish.css">
 </head>
 <body>
   <a class="skip-link" href="#workspace">Skip to workspace</a>
@@ -19,6 +20,10 @@
       <button type="button" data-route="settings"><span>Settings</span></button>
     </nav>
     <div class="app-tools">
+      <button id="palette-button" class="palette-trigger" type="button" aria-label="Open command palette (Ctrl+K)" title="Search skills and commands">
+        <svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="m20 20-4-4"/></svg>
+        <span class="palette-trigger-label">Search</span><kbd>Ctrl K</kbd>
+      </button>
       <button id="provider-overview" class="provider-overview" type="button" aria-haspopup="dialog" aria-label="Checking providers" disabled>
         <span class="provider-overview-dot" aria-hidden="true"></span><span class="provider-overview-icons" aria-hidden="true"></span><span class="provider-overview-count" aria-hidden="true">–</span>
       </button>
@@ -33,7 +38,7 @@
     <section id="explore-screen" class="screen" aria-label="Explore" hidden></section>
     <section id="settings-screen" class="screen" aria-label="Settings" hidden></section>
   </main>
-  <div id="notifications" role="status" aria-live="polite" aria-atomic="true"></div>
+  <div id="notifications" role="status" aria-live="polite" aria-atomic="false"></div>
   <script type="module" src="/js/main.js"></script>
 </body>
 </html>

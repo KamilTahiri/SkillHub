@@ -38,7 +38,8 @@ const template = { ...sample, name: 'template', catalog_id: 'fixture-template', 
   is_catalog_only: true, tags: ['workflow'] };
 const system = { ...sample, name: 'bootstrap', source_category: 'system', tags: ['system', 'skillhub', 'meta-skill'] };
 const item = name => ({ slug: name.toLowerCase(), title: name, description: name, repo: 'fixture/repo',
-  path: name + '/SKILL.md', git_ref: 'main' });
+  path: name + '/SKILL.md', git_ref: 'main', kind: name === 'Broken' ? 'doc' : 'skill', group: name === 'Broken' ? 'docs' : 'skills',
+  file_count: name === 'Fast' ? 1 : 0 });
 
 async function fixtureServer() {
   let releaseSlow;
@@ -98,7 +99,9 @@ async function fixtureServer() {
       }
       if (route === '/community/repos') return send({ repositories: [{ repo: 'featured/all', title: 'Featured' }] });
       if (route === '/community/skills') return send({ skills: ['Slow', 'Fast', 'Broken',
-        ...Array.from({ length: 30 }, (_, index) => 'Skill ' + index)].map(item) });
+        ...Array.from({ length: 30 }, (_, index) => 'Skill ' + index)].map(item),
+        repository: { repo: 'fixture/repo', sha: 'f'.repeat(40), mode: 'tarball', readme_excerpt: '# Fixture\n\nFixture readme text.',
+          license_path: 'LICENSE', counts: { skills: 32, docs: 1 }, truncated: false, pinned: false } });
       if (route === '/community/preview') {
         const path = url.searchParams.get('path');
         fixture.prefetched.set(path, (fixture.prefetched.get(path) ?? 0) + 1);
@@ -328,12 +331,20 @@ test('workbench at desktop and docked sizes, with keyboard, themes, Markdown and
       await wait('!document.querySelector("dialog[open]")');
       await textButton('Edit skill');
       await evaluate('const titleField = document.querySelector("#editor-screen label input"); titleField.value = "Edited"; titleField.dispatchEvent(new Event("input", { bubbles: true }));');
+      // Ctrl+K opens the command palette; leaving the dirty editor from it still goes through the discard guard.
       await key('k', 2, 'KeyK');
+      await wait('document.querySelector("dialog.palette[open]") && document.activeElement.classList.contains("palette-input")');
+      await evaluate('const paletteInput = document.querySelector(".palette-input"); paletteInput.value = "srch lib"; paletteInput.dispatchEvent(new Event("input"));');
+      await wait('document.querySelector(".palette-item[aria-selected=true] .palette-label")?.textContent === "Search the library"');
+      await key('Enter');
       await wait('document.querySelector("dialog[open]") && document.activeElement.textContent === "Cancel"');
       await key('Enter');
       await wait('!document.querySelector("dialog") && !document.querySelector("#editor-screen").hidden');
       await key('k', 2, 'KeyK');
-      await wait('document.querySelector("dialog[open]")');
+      await wait('document.querySelector("dialog.palette[open]")');
+      await evaluate('const paletteAgain = document.querySelector(".palette-input"); paletteAgain.value = "Search the library"; paletteAgain.dispatchEvent(new Event("input"));');
+      await key('Enter');
+      await wait('document.querySelector("dialog[open]:not(.palette)")');
       await textButton('Discard changes');
       await wait('document.activeElement.id === "library-search"');
 
@@ -341,6 +352,13 @@ test('workbench at desktop and docked sizes, with keyboard, themes, Markdown and
       await click('[data-route="explore"]');
       await wait('document.querySelector("#explore-screen .result-button")');
       await until(() => fixture.prefetched.has('Slow/SKILL.md'), 'Prefetch did not start');
+      assert.match(await evaluate('document.querySelector(".repo-card h2").textContent'), /fixture\/repo/);
+      assert.deepEqual(await evaluate('[...document.querySelectorAll(".group-tabs .btn")].map(tab => tab.textContent)'), ['All33', 'Skills32', 'Docs1']);
+      assert.match(await evaluate('document.querySelector(".result-row:nth-child(2) .files-badge").textContent'), /\+1 files/);
+      await evaluate('for (const box of [...document.querySelectorAll(".result-pick")].slice(3, 5)) box.click()');
+      await wait('!document.querySelector(".batch-bar").hidden && document.querySelector(".batch-bar").textContent.includes("2 selected")');
+      await textButton('Clear');
+      await wait('document.querySelector(".batch-bar").hidden');
       await wait('document.querySelector("#explore-screen .result-row:nth-child(2) .result-title")?.textContent === "Fast review"');
       assert.equal(fixture.preparing.size, 0);
       await click('#explore-screen .result-row:nth-child(1) button');
@@ -378,7 +396,7 @@ test('workbench at desktop and docked sizes, with keyboard, themes, Markdown and
       assert.equal(fixture.prefetched.get('Fast/SKILL.md'), 1);
       await size(480, 600, 1);
       await wait('innerWidth === 480');
-      assert.equal(await evaluate('getComputedStyle(document.querySelector(".explore-results")).display'), 'none');
+      assert.equal(await evaluate('getComputedStyle(document.querySelector(".explore-results-column")).display'), 'none');
       await textButton('← Back to results');
       await click('#explore-screen .result-row:nth-child(3) button');
       await wait('document.querySelector("#explore-preview h2")?.textContent === "Preview unavailable"');
@@ -386,11 +404,11 @@ test('workbench at desktop and docked sizes, with keyboard, themes, Markdown and
       await textButton('← Back to results');
       await click('#explore-screen .result-row:nth-child(2) button');
       await wait('document.querySelector("#explore-preview h2")?.textContent === "Fast review"');
-      await evaluate('document.querySelector(".import-document > details").open = true');
-      await textButton('references/notes.md');
-      await wait('document.querySelector("dialog[open]")?.textContent.includes("The pinned supporting file.")');
-      await key('Escape');
-      await wait('!document.querySelector("dialog[open]")');
+      // Bundle files open as tabs inside the preview instead of a modal.
+      await click('.file-tab[data-path="references/notes.md"]');
+      await wait('document.querySelector(".import-document")?.textContent.includes("The pinned supporting file.")');
+      await click('.file-tab[data-path=""]');
+      await wait('document.querySelector(".import-document")?.textContent.includes("Reviewed body")');
       await textButton('+ Add to My Skills');
       await until(() => fixture.applied, 'No import request received');
       assert.equal(fixture.preparing.get('Fast/SKILL.md'), 'Fast-commit');

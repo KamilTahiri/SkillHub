@@ -356,23 +356,23 @@ public static class SkillRestEndpoints
         });
 
         // 5c. Browse Curated Community Skill Repositories
-        api.MapGet("/community/repos", () =>
-        {
-            return Results.Ok(new
-            {
-                repositories = SkillImporterService.GetCuratedRepositories()
-            });
-        });
+        api.MapGet("/community/repos", (SkillImporterService importer) =>
+            Results.Ok(new { repositories = importer.GetSources() }));
+        api.MapPost("/community/sources", async (CommunitySourceRequest request, SkillImporterService importer, CancellationToken ct) =>
+            Results.Ok(new { repositories = await importer.PinSourceAsync(request.Repo ?? string.Empty, ct).ConfigureAwait(false) }));
+        api.MapPost("/community/sources/remove", async (CommunitySourceRequest request, SkillImporterService importer, CancellationToken ct) =>
+            Results.Ok(new { repositories = await importer.UnpinSourceAsync(request.Repo ?? string.Empty, ct).ConfigureAwait(false) }));
 
         // 5d. Browse or Search Community Skills in GitHub / skills.sh
         api.MapGet("/community/skills", async (string? repo, string? q, SkillImporterService importer, CancellationToken ct) =>
         {
             // A pasted repository or skill link opens that repository whichever source is selected.
-            var skills = string.IsNullOrWhiteSpace(repo) || repo == "featured/all" && !string.IsNullOrWhiteSpace(q) ||
+            var result = string.IsNullOrWhiteSpace(repo) || repo == "featured/all" && !string.IsNullOrWhiteSpace(q) ||
                 SkillImporterService.LooksLikeRepositoryInput(q)
-                ? await importer.SearchCommunitySkillsAsync(q, ct).ConfigureAwait(false)
-                : await importer.BrowseRepositorySkillsAsync(repo, q, ct).ConfigureAwait(false);
-            return Results.Ok(new { count = skills.Count, skills });
+                ? await importer.SearchCommunityAsync(q, ct).ConfigureAwait(false)
+                : await importer.BrowseRepositoryAsync(repo, q, ct).ConfigureAwait(false);
+            return Results.Ok(new { count = result.Skills.Count, skills = result.Skills, repository = result.Repository,
+                pending_sources = result.PendingSources ?? [] });
         });
 
         api.MapGet("/community/preview", async (string repo, string path, string? git_ref,
@@ -609,3 +609,5 @@ internal sealed record ThemeRequest(string Theme);
 internal sealed record BooleanPreferenceRequest(bool? Enabled);
 
 internal sealed record ResolveDestinationRequest(string Path, string Version, string Action);
+
+public sealed record CommunitySourceRequest([property: System.Text.Json.Serialization.JsonPropertyName("repo")] string? Repo);

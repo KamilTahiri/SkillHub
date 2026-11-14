@@ -8,6 +8,7 @@ import { createEditor } from './components/skillEditor.js';
 import { createExplore } from './components/explore.js';
 import { showDestinationReview } from './components/destinationReview.js';
 import { createSettings } from './components/statusBar.js';
+import { openPalette } from './components/palette.js';
 
 const views = Object.fromEntries(['library', 'reader', 'editor', 'explore', 'settings']
   .map(name => [name, document.getElementById(name + '-screen')]));
@@ -231,7 +232,10 @@ function startEvents() {
 function applyTheme(value) {
   theme = ['system', 'dark', 'light'].includes(value) ? value : 'system';
   const effective = theme === 'system' ? systemTheme.matches ? 'dark' : 'light' : theme;
+  // Switch colors in one frame; per-control transitions would otherwise fade every surface separately.
+  document.documentElement.classList.add('theme-switching');
   document.documentElement.dataset.theme = effective;
+  requestAnimationFrame(() => requestAnimationFrame(() => document.documentElement.classList.remove('theme-switching')));
   const switchLabel = effective === 'dark' ? 'Switch to light theme' : 'Switch to dark theme';
   themeButton.replaceChildren(icon(effective === 'dark' ? 'sun' : 'moon'));
   themeButton.setAttribute('aria-label', switchLabel);
@@ -246,11 +250,46 @@ nav.addEventListener('click', event => {
   if (destination) navigate(destination);
 });
 document.getElementById('brand-home').addEventListener('click', () => navigate('library'));
+function paletteCommands() {
+  const dark = document.documentElement.dataset.theme === 'dark';
+  return [
+    { group: 'Actions', label: 'New skill', icon: 'plus', run: () => app.newSkill() },
+    { group: 'Actions', label: 'Import from link or file', icon: 'download', run: () => navigate('explore').then(done => done && explore.directImport()) },
+    { group: 'Actions', label: 'Search the library', icon: 'search', shortcut: '/', run: () => navigate('library', { focusSearch: true }) },
+    { group: 'Actions', label: dark ? 'Switch to light theme' : 'Switch to dark theme', icon: dark ? 'sun' : 'moon', run: () => themeButton.click() },
+    { group: 'Actions', label: 'Reconcile destinations', hint: 'Re-check every synced copy', icon: 'sync', run: reconcile },
+    { group: 'Go to', label: 'Library', icon: 'library', run: () => navigate('library') },
+    { group: 'Go to', label: 'Explore community skills', icon: 'explore', run: () => navigate('explore') },
+    { group: 'Go to', label: 'Settings › Connections', icon: 'settings', run: () => navigate('settings', { section: 'Connections' }) },
+    { group: 'Go to', label: 'Settings › Appearance & Startup', icon: 'settings', run: () => navigate('settings', { section: 'Appearance & Startup' }) },
+    { group: 'Go to', label: 'Settings › Diagnostics', icon: 'settings', run: () => navigate('settings', { section: 'Diagnostics' }) }
+  ];
+}
+
+async function reconcile() {
+  const dismiss = notify('Reconciling destinations…', { duration: 60000 });
+  try {
+    const report = (await api.resync()).report ?? {};
+    dismiss();
+    notify('Reconciled: ' + (report.syncedDestinations ?? 0) + ' synced, ' + (report.conflictedDestinations ?? 0) + ' conflicts, ' +
+      (report.missingDestinations ?? 0) + ' missing.', { tone: report.conflictedDestinations || report.failedDestinations ? 'warning' : 'success' });
+    refresh();
+  } catch (error) {
+    dismiss();
+    notify(error.message, { tone: 'error' });
+  }
+}
+
+document.getElementById('palette-button').addEventListener('click', () => openPalette(app, paletteCommands()));
+
 document.addEventListener('keydown', event => {
   if (event.defaultPrevented || document.querySelector('dialog[open]')) return;
   const key = event.key.toLowerCase();
   const editable = event.target.closest?.('input, textarea, select, [contenteditable="true"]');
-  if ((event.ctrlKey || event.metaKey) && key === 'k' || key === '/' && !editable && !event.ctrlKey && !event.metaKey) {
+  if ((event.ctrlKey || event.metaKey) && key === 'k') {
+    event.preventDefault();
+    openPalette(app, paletteCommands());
+  } else if (key === '/' && !editable && !event.ctrlKey && !event.metaKey) {
     event.preventDefault();
     navigate('library', { focusSearch: true });
   } else if ((event.ctrlKey || event.metaKey) && key === 's' && route === 'editor') {
