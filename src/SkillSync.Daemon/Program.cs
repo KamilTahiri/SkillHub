@@ -325,8 +325,9 @@ public static class Program
         {
             OnPrepareResponse = ctx =>
             {
-                ctx.Context.Response.Headers.CacheControl = ctx.Context.Request.Query["v"] == "20261113-v12" &&
-                    Path.GetExtension(ctx.File.Name) is ".js" or ".css" ? "private, max-age=31536000, immutable" : "no-store";
+                // Revalidate every asset with the ETag and Last-Modified headers that static files already send.
+                // A changed file is picked up on the next load without hand-maintained ?v= query strings.
+                ctx.Context.Response.Headers.CacheControl = "no-cache";
             }
         });
 

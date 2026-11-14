@@ -1,7 +1,8 @@
-import { api } from '../api.js?v=20261113-v12';
-import { Latest, PROVIDERS, slugify } from '../state.js?v=20261113-v12';
-import { renderMarkdown } from '../markdown.js?v=20261113-v12';
-import { h, button, field, select, panel, modal, errorText, busy, notify, disclosure, confirmAction } from '../ui.js?v=20261113-v12';
+import { api } from '../api.js';
+import { Latest, PROVIDERS, slugify } from '../state.js';
+import { renderMarkdown } from '../markdown.js';
+import { icon, PROVIDER_NAMES } from '../icons.js';
+import { h, button, field, select, panel, modal, errorText, busy, notify, disclosure, confirmAction } from '../ui.js';
 
 const TOPICS = [['', 'All topics'], ['coding', 'Coding'], ['web', 'Web and design'], ['data', 'Data'],
   ['devops', 'Infrastructure'], ['productivity', 'Productivity'], ['testing', 'Testing and security']];
@@ -254,22 +255,34 @@ export function createExplore(root, app) {
 
   function renderPreview(review) {
     const proposedName = review.name_exists ? slugify(review.slug ?? review.name).slice(0, 59).replace(/-$/, '') + '-copy' : review.slug ?? review.name;
-    const name = h('input', { class: 'input', value: proposedName, maxlength: '64' });
-    const targets = Object.entries(PROVIDERS).filter(([id]) => app.snapshot.providers.some(provider => provider.provider === id && provider.is_installed))
-      .map(([id, label]) => ({ id, label, control: h('input', { type: 'checkbox' }) }));
+    const nameHint = h('small', { class: 'field-help', id: 'import-name-hint', 'aria-live': 'polite' });
+    const name = h('input', { class: 'input', value: proposedName, maxlength: '64', spellcheck: 'false',
+      'aria-describedby': 'import-name-hint', oninput: () => checkName() });
+    const taken = new Set(app.snapshot.skills.filter(skill => !skill.is_catalog_only).map(skill => skill.name));
+    function checkName() {
+      const dest = slugify(name.value);
+      const problem = !dest || dest.length > 64 ? 'Use 1 to 64 letters, numbers, or hyphens.'
+        : taken.has(dest) ? 'A skill named ' + dest + ' already exists. Choose another name.' : '';
+      nameHint.textContent = problem || (dest !== name.value.trim() ? 'Saved as ' + dest : '');
+      nameHint.classList.toggle('error', Boolean(problem));
+      name.setAttribute('aria-invalid', String(Boolean(problem)));
+      return problem ? null : dest;
+    }
+    const targets = Object.keys(PROVIDERS).filter(id => app.snapshot.providers.some(provider => provider.provider === id && provider.is_installed))
+      .map(id => ({ id, label: PROVIDER_NAMES[id], control: h('input', { type: 'checkbox', class: 'deploy-chip-input' }) }));
     const feedback = h('div', { role: 'status' });
-    const options = button('Deploy to…', () => {
-      modal('Import options', [field('Save as', name), targets.length > 0
-        ? h('div', { class: 'checks' }, targets.map(target => h('label', {}, target.control, target.label)))
-        : h('p', { class: 'muted' }, 'No provider folders are detected. The skill will be saved locally.')]);
-    }, 'quiet small', { 'aria-haspopup': 'dialog' });
+    const deploy = h('fieldset', { class: 'deploy-targets' }, h('legend', {}, 'Also deploy to'),
+      targets.length > 0
+        ? h('div', { class: 'deploy-chips' }, targets.map(target => h('label', { class: 'deploy-chip', 'data-provider': target.id },
+          target.control, icon(target.id), h('span', {}, target.label))))
+        : h('p', { class: 'muted' }, 'No AI tools detected. The skill is saved to your library only.'));
 
     const apply = button('+ Add to My Skills', () => {
       if (isApplying) return;
-      const dest = slugify(name.value);
-      if (!dest || dest.length > 64) {
-        feedback.replaceChildren(errorText('Enter a valid name in import options.'));
-        options.focus();
+      const dest = checkName();
+      if (!dest) {
+        feedback.replaceChildren(errorText('Choose a valid, unused name before importing.'));
+        name.focus();
         return;
       }
       busy(apply, async () => {
@@ -320,8 +333,11 @@ export function createExplore(root, app) {
         review.source, review.license && ' · ' + review.license),
       h('p', { class: 'muted' }, files.length + (files.length === 1 ? ' supporting file' : ' supporting files'),
         review.name_exists && ' · Name in use'));
-    const header = h('header', { class: 'preview-header' }, metadata,
-      h('div', { class: 'preview-actions' }, apply, options));
+    const header = h('header', { class: 'preview-header' }, metadata);
+    const footer = h('footer', { class: 'review-footer', 'aria-label': 'Import options' },
+      h('div', { class: 'review-footer-options' }, h('label', { class: 'field' }, h('span', {}, 'Save as'), name, nameHint), deploy),
+      h('div', { class: 'preview-actions' }, h('div', { class: 'preview-feedback' }, feedback), apply));
+    checkName();
     const provenance = h('div', { class: 'preview-provenance' },
       h('p', {}, review.description),
       disclosure('Source and revision', h('p', { class: 'path' }, review.path), h('p', { class: 'path' }, 'Revision ' + review.revision)),
@@ -344,8 +360,7 @@ export function createExplore(root, app) {
       (files.length || review.skipped_files?.length) && disclosure('Supporting files (' + files.length + ')', h('div', { class: 'stack' },
         files.map(path => button(path, () => openFile(path), 'quiet')),
         (review.skipped_files ?? []).map(path => h('p', { class: 'warning' }, 'Excluded: ' + path)))));
-    preview.replaceChildren(h('div', { class: 'import-review' }, header,
-      h('div', { class: 'preview-feedback' }, feedback), documentBody));
+    preview.replaceChildren(h('div', { class: 'import-review' }, header, documentBody, footer));
   }
 
   function directImport() {

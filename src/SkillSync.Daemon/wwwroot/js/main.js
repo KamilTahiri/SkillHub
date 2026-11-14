@@ -1,13 +1,13 @@
-import { api } from './api.js?v=20261113-v12';
-import { Latest, PROVIDERS, deployment, installedProviders, skillKey, tagSlug } from './state.js?v=20261113-v12';
-import { icon } from './icons.js?v=20261113-v12';
-import { button, confirmAction, h, modal, notify } from './ui.js?v=20261113-v12';
-import { createLibrary } from './components/skillList.js?v=20261113-v12';
-import { createReader } from './components/skillReader.js?v=20261113-v12';
-import { createEditor } from './components/skillEditor.js?v=20261113-v12';
-import { createExplore } from './components/explore.js?v=20261113-v12';
-import { showDestinationReview } from './components/destinationReview.js?v=20261113-v12';
-import { createSettings } from './components/statusBar.js?v=20261113-v12';
+import { api } from './api.js';
+import { Latest, PROVIDERS, deployment, installedProviders, skillKey, tagSlug } from './state.js';
+import { icon } from './icons.js';
+import { button, confirmAction, h, modal, notify } from './ui.js';
+import { createLibrary } from './components/skillList.js';
+import { createReader } from './components/skillReader.js';
+import { createEditor } from './components/skillEditor.js';
+import { createExplore } from './components/explore.js';
+import { showDestinationReview } from './components/destinationReview.js';
+import { createSettings } from './components/statusBar.js';
 
 const views = Object.fromEntries(['library', 'reader', 'editor', 'explore', 'settings']
   .map(name => [name, document.getElementById(name + '-screen')]));
@@ -170,12 +170,16 @@ function scheduleRefresh() {
 function renderProviderButton() {
   const providers = installedProviders(snapshot.providers);
   const count = providers.length;
+  const issues = snapshot.skills.filter(skill => skill.source_category !== 'system' &&
+    deployment(skill, providers).issues.length).length;
   const label = loaded ? count + (count === 1 ? ' AI Provider Connected' : ' AI Providers Connected') : 'Checking providers';
   const tooltip = label + (count ? ': ' + providers.map(id => providerNames[id]).join(', ') : '') +
+    (issues ? ' · ' + issues + (issues === 1 ? ' skill needs' : ' skills need') + ' attention' : '') +
     (online ? '' : ' · Reconnecting to SkillHub');
   providerButton.disabled = !loaded;
   providerButton.classList.toggle('offline', !online);
   providerButton.classList.toggle('no-providers', !count);
+  providerButton.classList.toggle('has-issues', online && count > 0 && issues > 0);
   providerButton.setAttribute('aria-label', tooltip);
   providerButton.querySelector('.provider-overview-icons').replaceChildren(...providers.map(icon));
   providerButton.querySelector('.provider-overview-count').textContent = loaded ? count : '–';

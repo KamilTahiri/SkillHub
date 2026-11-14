@@ -106,7 +106,7 @@ async function fixtureServer() {
         if (path.startsWith('Broken')) { await delay(200); return send({ error: 'Upstream unavailable' }, 503); }
         const title = path.split('/')[0];
         return send({ title: title + ' review', revision: title + '-commit', repo: 'fixture/repo', source: 'fixture/repo',
-          path, license: 'MIT', slug: 'fixture', description: 'Skill frontmatter',
+          path, license: 'MIT', slug: 'fixture-import', description: 'Skill frontmatter',
           instructions_markdown: 'Reviewed body\n\n' + 'A long document.\n\n'.repeat(80) + '~~~\n' + 'line\n'.repeat(70) + '~~~',
           supporting_paths: ['references/notes.md'] });
       }
@@ -394,7 +394,7 @@ test('workbench at desktop and docked sizes, with keyboard, themes, Markdown and
       await textButton('+ Add to My Skills');
       await until(() => fixture.applied, 'No import request received');
       assert.equal(fixture.preparing.get('Fast/SKILL.md'), 'Fast-commit');
-      assert.deepEqual(fixture.applied, { route: '/imports/Fast-plan/apply', data: { revision: 'Fast-commit', name: 'fixture', providers: [] } });
+      assert.deepEqual(fixture.applied, { route: '/imports/Fast-plan/apply', data: { revision: 'Fast-commit', name: 'fixture-import', providers: [] } });
       await wait('!document.querySelector("#reader-screen").hidden');
 
       await click('[data-route="settings"]');

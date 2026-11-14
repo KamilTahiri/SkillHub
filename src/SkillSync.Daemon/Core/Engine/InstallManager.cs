@@ -46,6 +46,10 @@ public sealed partial class InstallManager : IDesktopStartup
     private readonly string _userHomeRoot;
     private readonly string _appDataRoot;
     private readonly bool _hasCustomHome;
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<string, byte> _restartPending = new(StringComparer.Ordinal);
+
+    /// <summary>True after SkillHub changed this client's MCP configuration and the user has not confirmed a client restart.</summary>
+    public bool IsRestartPending(string clientId) => _restartPending.ContainsKey(clientId);
 
     public InstallManager(string? customUserHomeRoot = null, string? customAppDataRoot = null)
     {
@@ -208,12 +212,17 @@ public sealed partial class InstallManager : IDesktopStartup
 
     public McpClientConfigTarget ConfigureClient(string id, string action)
     {
-        if (action is not ("connect" or "repair" or "remove"))
+        if (action is not ("connect" or "repair" or "remove" or "acknowledge"))
         {
-            throw new ArgumentException("Choose connect, repair, or remove.");
+            throw new ArgumentException("Choose connect, repair, remove, or acknowledge.");
         }
         var target = DiscoverMcpClientConfigTargets().SingleOrDefault(item => item.ClientId == id)
             ?? throw new KeyNotFoundException("This AI client is unknown.");
+        if (action == "acknowledge")
+        {
+            _restartPending.TryRemove(id, out _);
+            return target;
+        }
         if (!CanConfigure(target))
         {
             throw new KeyNotFoundException("This AI client was not detected.");

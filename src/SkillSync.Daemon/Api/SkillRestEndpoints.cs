@@ -174,6 +174,7 @@ public static class SkillRestEndpoints
                         file_exists = c.ConfigFileExists,
                         is_registered = c.IsSkillHubRegistered,
                         detected = installManager.CanConfigure(c),
+                        restart_required = installManager.IsRestartPending(c.ClientId),
                         error = c.Error
                     })
                 },
@@ -366,7 +367,9 @@ public static class SkillRestEndpoints
         // 5d. Browse or Search Community Skills in GitHub / skills.sh
         api.MapGet("/community/skills", async (string? repo, string? q, SkillImporterService importer, CancellationToken ct) =>
         {
-            var skills = string.IsNullOrWhiteSpace(repo) || repo == "featured/all" && !string.IsNullOrWhiteSpace(q)
+            // A pasted repository or skill link opens that repository whichever source is selected.
+            var skills = string.IsNullOrWhiteSpace(repo) || repo == "featured/all" && !string.IsNullOrWhiteSpace(q) ||
+                SkillImporterService.LooksLikeRepositoryInput(q)
                 ? await importer.SearchCommunitySkillsAsync(q, ct).ConfigureAwait(false)
                 : await importer.BrowseRepositorySkillsAsync(repo, q, ct).ConfigureAwait(false);
             return Results.Ok(new { count = skills.Count, skills });

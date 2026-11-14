@@ -1,8 +1,8 @@
-import { api } from '../api.js?v=20261113-v12';
-import { COLLECTIONS, PROVIDERS, Latest, deployment, installedProviders, matchesFilters, inCollection, skillKey, targetIssues, slugify, tagSlug } from '../state.js?v=20261113-v12';
-import { icon, PROVIDER_NAMES } from '../icons.js?v=20261113-v12';
-import { highlighted } from '../markdown.js?v=20261113-v12';
-import { h, button, field, select, modal, confirmAction, errorText, notify, busy } from '../ui.js?v=20261113-v12';
+import { api } from '../api.js';
+import { COLLECTIONS, PROVIDERS, Latest, deployment, installedProviders, matchesFilters, inCollection, skillKey, targetIssues, slugify, tagSlug } from '../state.js';
+import { icon, PROVIDER_NAMES } from '../icons.js';
+import { highlighted } from '../markdown.js';
+import { h, button, field, select, modal, confirmAction, errorText, notify, busy } from '../ui.js';
 
 const STATUSES = { synced: 'Synced', issue: 'Needs attention', disabled: 'Disabled', pending: 'Pending or undeployed', catalog: 'Catalog' };
 const EMPTY_FILTERS = { tags: [], tagMode: 'all', origin: '', provider: '', status: '' };

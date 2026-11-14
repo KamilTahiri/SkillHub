@@ -1,8 +1,8 @@
-import { api } from '../api.js?v=20261113-v12';
-import { deployment, installedProviders, PROVIDERS, slugify, tagSlug } from '../state.js?v=20261113-v12';
-import { renderMarkdown } from '../markdown.js?v=20261113-v12';
-import { h, button, heading, field, disclosure, errorText, modal, notify } from '../ui.js?v=20261113-v12';
-import { showProviderPreview } from './transpilerPreview.js?v=20261113-v12';
+import { api } from '../api.js';
+import { deployment, installedProviders, PROVIDERS, slugify, tagSlug } from '../state.js';
+import { renderMarkdown } from '../markdown.js';
+import { h, button, heading, field, disclosure, errorText, modal, notify } from '../ui.js';
+import { showProviderPreview } from './transpilerPreview.js';
 
 const blank = () => ({
   title: '', name: '', description: '', when_to_use: '', instructions_markdown: '', tags: [],

@@ -1,12 +1,15 @@
-import { api } from '../api.js?v=20261113-v12';
-import { Latest } from '../state.js?v=20261113-v12';
-import { h, button, heading, panel, field, select, disclosure, confirmAction, errorText, busy, notify } from '../ui.js?v=20261113-v12';
+import { api } from '../api.js';
+import { Latest, deployment, installedProviders } from '../state.js';
+import { icon } from '../icons.js';
+import { h, button, heading, panel, field, select, disclosure, confirmAction, errorText, busy, notify, copy } from '../ui.js';
+
+const CONNECTION_GROUPS = { codex: 'ChatGPT / Codex', gemini: 'Gemini & Antigravity', claude: 'Claude', cursor: 'Cursor' };
+const CLIENT_PROVIDERS = { codex: 'codex', 'gemini-cli': 'gemini', antigravity: 'gemini', 'claude-code': 'claude', 'claude-desktop': 'claude', cursor: 'cursor' };
 
 export function createSettings(root, app) {
   let tab = 'Connections';
   const jobs = new Latest();
   const diagnosticsJob = new Latest();
-  const restartRequired = new Set();
   let themeInput;
   let diagnosticsTab = 'Needs Review';
   let diagnosticsFilter = 'all';
@@ -39,38 +42,99 @@ export function createSettings(root, app) {
 
   function renderConnections(status) {
     const clients = status.install?.mcp_clients ?? [];
-    const providers = { codex: 'codex', 'gemini-cli': 'gemini', antigravity: 'gemini', 'claude-code': 'claude', 'claude-desktop': 'claude', cursor: 'cursor' };
-    const grouped = Object.groupBy(clients, client => providers[client.client_id] ?? 'other');
-    content.replaceChildren(...Object.entries(grouped).map(([group, items]) => h('section', { class: 'settings-group' },
-      h('h2', {}, group === 'gemini' ? 'Gemini and Antigravity' : group === 'codex' ? 'Codex' : group === 'claude' ? 'Claude' : 'Cursor'),
-      items.map(client => {
-        const available = client.detected ?? (client.file_exists || client.parent_exists);
-        const connection = client.error ? 'Needs attention' : restartRequired.has(client.client_id) ? 'Restart required'
-          : client.is_registered ? 'Registered' : available ? 'Detected' : 'Unavailable';
-        const action = client.is_registered ? 'repair' : 'connect';
-        const feedback = h('div', { role: 'status' });
-        const update = button(client.is_registered ? 'Repair' : 'Connect', () => updateClient(client, action, update, feedback), 'small',
-          { disabled: !available && !client.is_registered, 'aria-label': action + ' ' + client.display_name });
-        const remove = client.is_registered && button('Remove', () => updateClient(client, 'remove', remove, feedback), 'small danger');
-        const provider = app.snapshot.providers.find(item => item.provider === group);
-        const folder = client.client_id === 'antigravity' && provider?.provider_root
-          ? provider.provider_root + '/antigravity/skills' : provider?.skills_root;
-        return h('div', { class: 'settings-row stack' }, h('div', { class: 'spread' },
-          h('div', {}, h('h3', {}, client.display_name), h('p', { class: client.error ? 'warning' : 'muted' }, connection)),
-          h('div', { class: 'actions' }, update, remove)),
-          h('details', {}, h('summary', {}, 'Configuration and skill folders'),
-            h('code', { class: 'path' }, client.config_path), folder && h('p', { class: 'path' }, folder)),
-          client.error && errorText(client.error), feedback);
-      }))));
+    const installed = installedProviders(app.snapshot.providers);
+    const skills = app.snapshot.skills.filter(skill => skill.source_category !== 'system').map(skill => deployment(skill, installed));
+    const groups = Object.entries(CONNECTION_GROUPS).map(([id, label]) => {
+      const items = clients.filter(client => CLIENT_PROVIDERS[client.client_id] === id).map(client => ({
+        client, available: Boolean(client.detected ?? (client.file_exists || client.parent_exists))
+      }));
+      const provider = app.snapshot.providers.find(item => item.provider === id);
+      const synced = skills.filter(skill => skill.synced.includes(id)).length;
+      const issues = skills.filter(skill => skill.issues.includes(id)).length;
+      const rank = items.some(item => item.client.is_registered) ? 0
+        : items.some(item => item.available) || provider?.is_installed ? 1 : 2;
+      return { id, label, items, provider, synced, issues, rank };
+    }).filter(group => group.items.length || group.provider)
+      .sort((a, b) => a.rank - b.rank || b.synced - a.synced);
+    const active = groups.filter(group => group.rank < 2);
+    const missing = groups.filter(group => group.rank === 2);
+    content.replaceChildren(
+      active.length ? h('div', { class: 'connection-list' }, active.map(connectionCard))
+        : h('div', { class: 'empty' }, h('h2', {}, 'No AI tools detected'),
+          h('p', { class: 'muted' }, 'Install Codex, Gemini CLI, Antigravity, Claude, or Cursor. SkillHub detects them automatically.')),
+      missing.length > 0 && h('details', { class: 'connections-other' },
+        h('summary', {}, 'Other supported AI tools not installed on this device (' + missing.length + ')'),
+        h('ul', {}, missing.map(group => h('li', { class: 'connection-other-row' },
+          h('span', { class: 'provider-mark', 'data-provider': group.id }, icon(group.id)),
+          h('div', {}, h('strong', {}, group.label),
+            h('p', { class: 'muted' }, 'Install ' + group.label + ' and SkillHub can connect it from here.')))))));
   }
+
+  function groupState(group) {
+    if (group.items.some(item => item.client.error)) return ['Needs attention', 'warn'];
+    if (group.items.some(item => item.client.restart_required)) return ['Restart required', 'warn'];
+    if (group.items.some(item => item.client.is_registered)) return ['Connected', 'ok'];
+    return ['Detected', 'muted'];
+  }
+
+  function connectionCard(group) {
+    const [state, tone] = groupState(group);
+    const summary = [group.synced + (group.synced === 1 ? ' skill synced' : ' skills synced'),
+      group.issues > 0 && group.issues + (group.issues === 1 ? ' needs' : ' need') + ' review'].filter(Boolean).join(' · ');
+    return h('section', { class: 'connection-card', 'data-state': tone, 'aria-label': group.label },
+      h('header', { class: 'connection-head' },
+        h('span', { class: 'provider-mark', 'data-provider': group.id }, icon(group.id)),
+        h('div', { class: 'connection-title' }, h('h2', {}, group.label), h('p', { class: 'muted' }, summary)),
+        h('span', { class: 'status-badge ' + tone }, h('span', { class: 'status-badge-dot', 'aria-hidden': 'true' }), state)),
+      group.items.length > 0 && h('ul', { class: 'connection-clients' }, group.items.map(item => clientRow(group, item))));
+  }
+
+  function clientRow(group, { client, available }) {
+    const feedback = h('div', { role: 'status' });
+    const [state, tone] = client.error ? ['Needs attention', 'warn'] : client.restart_required ? ['Restart required', 'warn']
+      : client.is_registered ? ['Connected', 'ok'] : available ? ['Not connected', 'muted'] : ['Not installed', 'muted'];
+    const action = client.is_registered ? 'repair' : 'connect';
+    const update = button([icon(client.is_registered ? 'wrench' : 'plug'), client.is_registered ? 'Repair' : 'Connect'],
+      () => updateClient(client, action, update, feedback), client.is_registered ? 'small' : 'primary small',
+      { disabled: !available && !client.is_registered, 'aria-label': (client.is_registered ? 'Repair ' : 'Connect ') + client.display_name });
+    const folder = client.client_id === 'antigravity' && group.provider?.provider_root
+      ? group.provider.provider_root + '/antigravity/skills' : group.provider?.skills_root;
+    const menu = h('details', { class: 'action-menu' },
+      h('summary', { class: 'btn small icon-only', 'aria-label': 'More actions for ' + client.display_name, title: 'More actions' }, icon('more')),
+      h('div', { class: 'action-menu-list' },
+        button([icon('copy'), 'Copy config path'], () => { menu.open = false; copy(client.config_path); }, 'quiet small'),
+        folder && button([icon('copy'), 'Copy skills folder'], () => { menu.open = false; copy(folder); }, 'quiet small'),
+        client.is_registered && button([icon('unplug'), 'Disconnect'], () => {
+          menu.open = false;
+          updateClient(client, 'remove', update, feedback);
+        }, 'quiet small danger')));
+    menu.addEventListener('keydown', event => {
+      if (event.key === 'Escape' && menu.open) { event.stopPropagation(); menu.open = false; menu.firstElementChild.focus(); }
+    });
+    menu.addEventListener('focusout', event => { if (!menu.contains(event.relatedTarget)) menu.open = false; });
+    const restart = client.restart_required && !client.error && h('div', { class: 'restart-hint' }, icon('restart'),
+      h('span', {}, 'Restart ' + client.display_name + ' so it loads SkillHub.'),
+      button([icon('check'), 'Done'], event => busy(event.currentTarget, async () => {
+        await api.client(client.client_id, 'acknowledge');
+        await load();
+      }, error => feedback.replaceChildren(errorText(error.message))), 'quiet small', { 'aria-label': 'I restarted ' + client.display_name }));
+    return h('li', { class: 'connection-client' },
+      h('div', { class: 'connection-client-main' },
+        h('div', { class: 'connection-client-name' }, h('strong', {}, client.display_name),
+          h('span', { class: 'status-badge small ' + tone }, h('span', { class: 'status-badge-dot', 'aria-hidden': 'true' }), state)),
+        h('div', { class: 'actions' }, update, menu)),
+      restart, client.error && errorText(client.error), feedback);
+  }
+
   async function updateClient(client, action, control, feedback) {
-    const label = action[0].toUpperCase() + action.slice(1);
-    if (!(await confirmAction(label + ' ' + client.display_name,
-      label + ' SkillHub in this client configuration? An existing file is backed up before a change.', label, action === 'remove'))) return;
+    const label = action === 'remove' ? 'Disconnect' : action[0].toUpperCase() + action.slice(1);
+    const text = action === 'remove'
+      ? 'Remove SkillHub from the ' + client.display_name + ' configuration? Your skills stay in place. The file is backed up first.'
+      : label + ' SkillHub in the ' + client.display_name + ' configuration? An existing file is backed up before a change.';
+    if (!(await confirmAction(label + ' ' + client.display_name, text, label, action === 'remove'))) return;
     busy(control, async () => {
       const result = await api.client(client.client_id, action);
       if (result.error) throw new Error(result.error);
-      restartRequired.add(client.client_id);
       if (tab === 'Connections' && root.isConnected && !root.hidden) await load();
       app.refresh();
     }, error => feedback.replaceChildren(errorText(error.message)));

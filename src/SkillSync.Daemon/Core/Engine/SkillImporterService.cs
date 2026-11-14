@@ -109,20 +109,36 @@ public sealed partial class SkillImporterService
             "Community-curated coding workflows, architecture reviews, and testing rules.")
     ];
 
+    // Keywords match whole words. Keywords longer than three letters also match as a word prefix
+    // ("test" matches "testing"), so short keywords such as "ai" or "ci" no longer hit "email" or "decision".
+    private static readonly (string Topic, string[] Words)[] TopicKeywords =
+    [
+        ("testing", ["test", "tests", "playwright", "cypress", "jest", "vitest", "audit", "security", "auth", "oauth", "auth0", "authentication", "qa", "e2e"]),
+        ("web", ["react", "nextjs", "vue", "svelte", "angular", "frontend", "css", "tailwind", "design", "ui", "ux", "figma", "canva", "browser", "html", "web"]),
+        ("data", ["data", "sql", "postgres", "postgresql", "supabase", "csv", "spreadsheet", "sheets", "xlsx", "analytics", "ai", "ml", "databricks", "lakehouse", "spark", "pandas"]),
+        ("devops", ["docker", "kubernetes", "k8s", "terraform", "cloud", "deploy", "deployment", "aws", "azure", "gcp", "vercel", "cloudflare", "railway", "netlify", "ci", "cd", "linux", "infra", "infrastructure"]),
+        ("productivity", ["docs", "document", "documents", "pdf", "docx", "pptx", "notion", "linear", "jira", "slack", "mail", "email", "gmail", "calendar", "dropbox", "workflow", "task", "tasks", "todo"])
+    ];
+
     public static string InferTopic(string name, string? desc)
     {
-        var text = $"{name} {desc}".ToLowerInvariant();
-        if (text.Contains("test") || text.Contains("playwright") || text.Contains("cypress") || text.Contains("audit") || text.Contains("security") || text.Contains("auth0") || text.Contains("auth") || text.Contains("qa"))
-            return "testing";
-        if (text.Contains("react") || text.Contains("next") || text.Contains("vue") || text.Contains("frontend") || text.Contains("css") || text.Contains("tailwind") || text.Contains("design") || text.Contains("ui") || text.Contains("ux") || text.Contains("figma") || text.Contains("canva") || text.Contains("browser"))
-            return "web";
-        if (text.Contains("data") || text.Contains("sql") || text.Contains("postgres") || text.Contains("supabase") || text.Contains("csv") || text.Contains("sheet") || text.Contains("database") || text.Contains("analytics") || text.Contains("gemini") || text.Contains("ai") || text.Contains("databricks") || text.Contains("lake") || text.Contains("spark"))
-            return "data";
-        if (text.Contains("docker") || text.Contains("cloud") || text.Contains("deploy") || text.Contains("aws") || text.Contains("azure") || text.Contains("gcp") || text.Contains("vercel") || text.Contains("cloudflare") || text.Contains("railway") || text.Contains("netlify") || text.Contains("ci") || text.Contains("cd") || text.Contains("linux") || text.Contains("server") || text.Contains("infra"))
-            return "devops";
-        if (text.Contains("doc") || text.Contains("pdf") || text.Contains("docx") || text.Contains("pptx") || text.Contains("notion") || text.Contains("linear") || text.Contains("jira") || text.Contains("slack") || text.Contains("mail") || text.Contains("gmail") || text.Contains("calendar") || text.Contains("dropbox") || text.Contains("workflow") || text.Contains("task") || text.Contains("todo"))
-            return "productivity";
+        var tokens = Regex.Matches($"{name} {desc}".ToLowerInvariant(), "[a-z0-9]+").Select(match => match.Value).ToArray();
+        foreach (var (topic, words) in TopicKeywords)
+        {
+            if (tokens.Any(token => words.Any(word => word.Length <= 3 ? token == word : token.StartsWith(word, StringComparison.Ordinal))))
+                return topic;
+        }
         return "coding";
+    }
+
+    /// <summary>True when Explore search text names a repository or skill link rather than a keyword.</summary>
+    public static bool LooksLikeRepositoryInput(string? query)
+    {
+        var q = (query ?? string.Empty).Trim();
+        if (q.Length == 0) return false;
+        if (Regex.IsMatch(q, @"\A(?:https?://|github\.com/|skills\.sh/|(?:npx|bunx|pnpm\s+dlx|skills(?:\.sh)?)\s)", RegexOptions.IgnoreCase))
+            return true;
+        return Regex.IsMatch(q, @"\A[A-Za-z0-9-]{1,100}/[A-Za-z0-9_.-]{1,100}(?:[/@][^\s]*)?\z");
     }
 
     public async Task<IReadOnlyList<CommunitySkillSummary>> BrowseRepositorySkillsAsync(
@@ -216,7 +232,8 @@ public sealed partial class SkillImporterService
             return allHighlights;
         }
 
-        var cleaned = NormalizeCliAndSkillsShInput(repoInput, out _);
+        var cleaned = NormalizeCliAndSkillsShInput(repoInput, out var skillFilter);
+        if (string.IsNullOrWhiteSpace(filterQuery)) filterQuery = skillFilter;
         var (owner, repo, gitRef, _) = ParseSelection(new SkillImportSelection(Source: cleaned));
         var fullRepo = $"{owner}/{repo}";
 
@@ -278,7 +295,7 @@ public sealed partial class SkillImporterService
             return await BrowseRepositorySkillsAsync("featured/all", null, ct).ConfigureAwait(false);
         }
 
-        if (q.Contains('/', StringComparison.Ordinal) || q.StartsWith("http", StringComparison.OrdinalIgnoreCase))
+        if (LooksLikeRepositoryInput(q))
         {
             var (owner, repo, gitRef, path) = ParseSelection(new SkillImportSelection(Source: q));
             return await BrowseRepositorySkillsAsync($"https://github.com/{owner}/{repo}/tree/{Uri.EscapeDataString(gitRef)}", path, ct)
@@ -361,7 +378,7 @@ public sealed partial class SkillImporterService
         {
             ("vercel-labs/agent-skills", "react-best-practices", "React & Next.js Best Practices", "skills/react-best-practices/SKILL.md", "React and Next.js performance optimization guidelines from Vercel Engineering."),
             ("vercel-labs/agent-skills", "web-design-guidelines", "Web Design Guidelines", "skills/web-design-guidelines/SKILL.md", "Review UI code for Web Interface Guidelines, accessibility, and modern visual polish."),
-            ("vercel-labs/agent-skills", "claude-3-7-sonnet-composition-patterns", "React Composition Patterns", "skills/composition-patterns/SKILL.md", "Modern component composition patterns and state architecture."),
+            ("vercel-labs/agent-skills", "composition-patterns", "React Composition Patterns", "skills/composition-patterns/SKILL.md", "Modern component composition patterns and state architecture."),
             ("anthropics/skills", "frontend-design", "Frontend Design", "skills/frontend-design/SKILL.md", "Create distinctive, production-grade frontend interfaces with high design quality."),
             ("anthropics/skills", "mcp-builder", "MCP Server Builder", "skills/mcp-builder/SKILL.md", "Guide for creating high-quality Model Context Protocol (MCP) servers in TypeScript or Python."),
             ("anthropics/skills", "webapp-testing", "Web Application Testing", "skills/webapp-testing/SKILL.md", "Toolkit for interacting with and testing local web applications using Playwright."),

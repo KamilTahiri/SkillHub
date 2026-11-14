@@ -16,8 +16,14 @@ body { min-height: 100vh; }
 .icon-button { width: 36px; padding: 5px; }
 .icon-button:hover, .provider-overview:hover { background: var(--raised); }
 .provider-overview { gap: 6px; font-size: .81rem; font-weight: 650; font-variant-numeric: tabular-nums; white-space: nowrap; }
-.provider-overview-dot { flex: none; width: 7px; height: 7px; border-radius: 50%; background: var(--ok); }
-.provider-overview.offline .provider-overview-dot, .provider-overview.no-providers .provider-overview-dot { background: var(--muted); }
+.provider-overview-dot { flex: none; width: 8px; height: 8px; border-radius: 50%; background: var(--live);
+  box-shadow: 0 0 0 0 rgb(var(--live-glow) / .5), 0 0 6px rgb(var(--live-glow) / .55); animation: live-breathe 2.6s ease-in-out infinite; }
+@keyframes live-breathe {
+  0%, 100% { box-shadow: 0 0 0 0 rgb(var(--live-glow) / .5), 0 0 6px rgb(var(--live-glow) / .55); }
+  50% { box-shadow: 0 0 0 5px rgb(var(--live-glow) / 0), 0 0 9px rgb(var(--live-glow) / .35); }
+}
+.provider-overview.has-issues .provider-overview-dot { background: var(--warn); box-shadow: 0 0 6px var(--warn); animation: none; }
+.provider-overview.offline .provider-overview-dot, .provider-overview.no-providers .provider-overview-dot { background: var(--muted); box-shadow: none; animation: none; }
 .provider-overview-icons { display: flex; align-items: center; gap: 4px; }
 .provider-overview.offline .provider-overview-icons { opacity: .65; }
 .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }

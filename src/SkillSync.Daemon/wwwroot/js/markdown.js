@@ -1,4 +1,4 @@
-import { h, copy } from './ui.js?v=20261113-v12';
+import { h, copy } from './ui.js';
 
 export function highlighted(text, query = '') {
   const fragment = document.createDocumentFragment();
