@@ -265,3 +265,4 @@ dialog.palette[open] { display: flex; flex-direction: column; max-height: min(56
 .installs-badge { display: inline-flex; align-items: center; gap: 3px; padding: 0 7px; border-radius: 999px; font-size: .72rem; font-weight: 650;
   line-height: 1.6; color: var(--warn); background: color-mix(in srgb, var(--warn) 13%, transparent); }
 .installs-badge .ui-icon { width: 11px; height: 11px; }
+.file-picker { flex: none; width: auto; max-width: 260px; min-height: 30px; margin: 0 0 4px auto; padding-block: 3px; font: 600 .78rem/1.3 var(--mono); }

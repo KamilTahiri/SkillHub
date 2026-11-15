@@ -27,6 +27,10 @@ public sealed class RepositoryIndexerTests : IDisposable
         ["skills/pdf/forms.md"] = Text("Forms body."),
         ["skills/pdf/LICENSE.txt"] = Text("Apache License"),
         ["skills/pdf/scripts/run.py"] = Text("print('ok')"),
+        ["skills/pdf/rules/async-parallel.md"] = Text("# Parallelize independent awaits"),
+        ["skills/pdf/rules/_sections.md"] = Text("# Sections"),
+        ["skills/pdf/AGENTS.md"] = Text("# Compiled rules"),
+        ["skills/pdf/node_modules/dep/index.js"] = Text("module.exports = 1;"),
         ["skills/pdf/logo.png"] = [0x89, 0x50, 0x4E, 0x47, 0x00, 0x01],
         [".github/instructions/csharp.instructions.md"] = Text("---\napplyTo: '**/*.cs'\ndescription: C# conventions\n---\nUse file-scoped namespaces.\n"),
         ["prompts/review.prompt.md"] = Text("# Review a pull request\n\nCheck **correctness** before style.\n"),
@@ -55,7 +59,8 @@ public sealed class RepositoryIndexerTests : IDisposable
         var skill = Assert.Single(index.Documents, document => document.Kind == "skill");
         Assert.Equal("pdf", skill.Name);
         Assert.Equal("Work with PDF files.", skill.Description);
-        Assert.Equal(["LICENSE.txt", "forms.md", "reference.md", "scripts/run.py"], skill.Files);
+        // Companion files in any subfolder (rules/*.md) belong to the bundle; dependency folders do not.
+        Assert.Equal(["AGENTS.md", "LICENSE.txt", "forms.md", "reference.md", "rules/_sections.md", "rules/async-parallel.md", "scripts/run.py"], skill.Files);
         Assert.Equal(["logo.png"], skill.ExcludedFiles);
 
         Assert.Equal("instructions", Assert.Single(index.Documents, document => document.Path.EndsWith(".instructions.md")).Kind);
@@ -82,6 +87,25 @@ public sealed class RepositoryIndexerTests : IDisposable
         Assert.Equal("Forms body.", await new RepositoryIndexer(new HttpClient(offline), _root)
             .ReadTextAsync(cached, "skills/pdf/forms.md", CancellationToken.None));
         Assert.Empty(offline.Requests);
+    }
+
+    [Fact]
+    public async Task StaleIndexSchemaOnDiskIsRebuilt()
+    {
+        var directory = Path.Combine(_root, "fixture", "repo", Commit);
+        Directory.CreateDirectory(directory);
+        File.WriteAllText(Path.Combine(directory, "index.json"), JsonSerializer.Serialize(new
+        {
+            owner = "fixture", repo = "repo", sha = Commit, mode = "tarball", indexed_at = DateTimeOffset.UtcNow, schema = 2,
+            files = new Dictionary<string, object>(), truncated = false,
+            documents = new[] { new { path = "scripts/run.py", kind = "doc", group = "docs", name = "run", title = "run.py", description = "",
+                files = Array.Empty<string>(), excluded_files = Array.Empty<string>(), has_frontmatter = false } }
+        }));
+        using var github = new Fixture();
+        var index = await new RepositoryIndexer(new HttpClient(github), _root).GetIndexAsync("fixture", "repo", Commit, CancellationToken.None);
+        Assert.Equal(RepositoryIndex.SchemaVersion, index.Schema);
+        Assert.Contains(github.Requests, uri => uri.Host == "codeload.github.com");
+        Assert.DoesNotContain(index.Documents, document => document.Path.EndsWith(".py", StringComparison.Ordinal));
     }
 
     [Fact]
@@ -128,7 +152,7 @@ public sealed class RepositoryIndexerTests : IDisposable
         var browse = await importer.BrowseRepositoryAsync("https://github.com/fixture/repo/tree/feature/x/skills");
         Assert.Equal(Commit, browse.Repository!.Sha);
         var row = Assert.Single(browse.Skills);
-        Assert.Equal(4, row.FileCount);
+        Assert.Equal(7, row.FileCount);
 
         var copilot = await importer.PreviewCommunitySkillAsync("fixture/repo", ".github/instructions/csharp.instructions.md", Commit);
         Assert.Equal("instructions", copilot.Kind);
@@ -144,6 +168,9 @@ public sealed class RepositoryIndexerTests : IDisposable
         var directory = Path.Combine(_root, ".skillhub", "skills", saved.Name);
         Assert.Equal("Reference body.", File.ReadAllText(Path.Combine(directory, "reference.md")));
         Assert.Equal("print('ok')", File.ReadAllText(Path.Combine(directory, "scripts", "run.py")));
+        Assert.Equal("# Parallelize independent awaits", File.ReadAllText(Path.Combine(directory, "rules", "async-parallel.md")));
+        Assert.Equal("# Compiled rules", engine.GetSkill(saved.Name)!.SupportingFiles["AGENTS.md"]);
+        Assert.False(File.Exists(Path.Combine(directory, "node_modules", "dep", "index.js")));
         Assert.Equal("Forms body.", engine.GetSkill(saved.Name)!.SupportingFiles["forms.md"]);
     }
 

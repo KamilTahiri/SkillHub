@@ -1,6 +1,6 @@
 
 [CmdletBinding()]
-param([string]$Compiler = $env:SKILLHUB_ISCC)
+param([string]$Compiler = $env:SKILLHUB_ISCC, [switch]$PurgeCache)
 
 $ErrorActionPreference = 'Stop'
 $installed = Join-Path $env:LOCALAPPDATA 'SkillHub'
@@ -12,6 +12,12 @@ $running = Get-Process -Name SkillHub -ErrorAction SilentlyContinue
 if ($running) {
     $running | Stop-Process -Force
     $running | Wait-Process -Timeout 15 -ErrorAction SilentlyContinue
+}
+
+# -PurgeCache also deletes SkillHub's GitHub index cache; indexes are rebuilt from GitHub on next use.
+if ($PurgeCache) {
+    $githubCache = Join-Path $env:USERPROFILE '.skillhub\cache\github'
+    if (Test-Path -LiteralPath $githubCache) { Remove-Item -LiteralPath $githubCache -Recurse -Force }
 }
 
 # Clear only WebView2's HTTP and script caches. Local storage (unsaved drafts) and preferences stay.
@@ -45,7 +51,7 @@ foreach ($file in Get-ChildItem -LiteralPath $source -File -Recurse) {
 
 $exe = Join-Path $installed 'SkillHub.exe'
 Start-Process -FilePath $exe -WorkingDirectory $installed
-$deadline = [DateTime]::UtcNow.AddSeconds(15)
+$deadline = [DateTime]::UtcNow.AddSeconds(45)
 do {
     $window = Get-Process -Name SkillHub -ErrorAction SilentlyContinue |
         Where-Object { $_.Path -eq $exe -and $_.MainWindowHandle -ne 0 -and $_.Responding } |

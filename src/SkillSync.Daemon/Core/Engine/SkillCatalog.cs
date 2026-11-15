@@ -88,9 +88,17 @@ internal sealed class SkillCatalog(ProviderDiscoveryService discovery)
         model.CatalogId = descriptor.Id;
         model.SourcePath = descriptor.SkillMdPath.Replace('\\', '/');
         model.Tags = model.Tags.Union(descriptor.SuggestedTags, StringComparer.OrdinalIgnoreCase).ToList();
-        if (includeContents)
+        if (includeContents && Path.GetFileName(descriptor.SkillMdPath).Equals("SKILL.md", StringComparison.OrdinalIgnoreCase))
         {
-            model.SupportingFiles = SkillStorage.ReadBundle(Path.GetDirectoryName(descriptor.SkillMdPath)!);
+            try
+            {
+                model.SupportingFiles = SkillStorage.ReadBundle(Path.GetDirectoryName(descriptor.SkillMdPath)!);
+            }
+            catch (InvalidDataException)
+            {
+                // A plugin folder that is too large to treat as one bundle still shows its SKILL.md.
+                model.SupportingFiles = new(SkillPaths.Comparer);
+            }
         }
         else
         {

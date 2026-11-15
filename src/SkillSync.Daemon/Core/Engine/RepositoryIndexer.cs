@@ -44,7 +44,8 @@ public sealed record RepositoryIndex(
     [property: JsonPropertyName("license_path")] string? LicensePath,
     [property: JsonPropertyName("truncated")] bool Truncated)
 {
-    public const int SchemaVersion = 2;
+    // Bump whenever classification or bundling changes so cached indexes on disk are rebuilt.
+    public const int SchemaVersion = 3;
     [JsonPropertyName("schema")] public int Schema { get; init; } = SchemaVersion;
 }
 
@@ -55,11 +56,11 @@ public sealed record RepositoryIndex(
 /// </summary>
 public sealed class RepositoryIndexer
 {
-    public const int MaxTextFileBytes = 256 * 1024;
+    public const int MaxTextFileBytes = SkillStorage.MaxFileBytes;
     private const long MaxTarballBytes = 256L * 1024 * 1024;
     private const long MaxTextBytes = 80L * 1024 * 1024;
     private const int MaxEntries = 20_000;
-    private const int MaxBundleFiles = 128;
+    private const int MaxBundleFiles = SkillStorage.MaxBundleFiles;
     private const int MaxFallbackMetadataReads = 80;
     private const int MaxCachedCommits = 40;
     private static readonly JsonSerializerOptions Json = new() { WriteIndented = false };

@@ -17,30 +17,46 @@ public static class SkillPaths
 
     public static bool IsSupportingFolder(string folder) => SupportingFolders.Contains(folder, StringComparer.OrdinalIgnoreCase);
 
-    private static readonly HashSet<string> RootSiblingExtensions = new(StringComparer.OrdinalIgnoreCase)
+    // Binary formats never belong in a text bundle. Everything else is checked for UTF-8 text when it is read.
+    private static readonly HashSet<string> BinaryExtensions = new(StringComparer.OrdinalIgnoreCase)
     {
-        ".md", ".mdc", ".markdown", ".txt", ".json", ".yaml", ".yml", ".toml", ".csv", ".xml", ".html", ".css",
-        ".js", ".mjs", ".cjs", ".ts", ".py", ".sh", ".ps1", ".sql"
+        ".png", ".jpg", ".jpeg", ".gif", ".webp", ".ico", ".bmp", ".tif", ".tiff", ".pdf", ".zip", ".gz", ".tgz", ".tar", ".7z", ".rar",
+        ".exe", ".dll", ".so", ".dylib", ".bin", ".woff", ".woff2", ".ttf", ".otf", ".eot", ".mp3", ".mp4", ".mov", ".wav", ".ogg",
+        ".webm", ".jar", ".class", ".pyc", ".docx", ".xlsx", ".pptx", ".psd", ".sqlite", ".db", ".wasm"
     };
 
-    private static readonly HashSet<string> RootSiblingNames = new(StringComparer.OrdinalIgnoreCase) { "LICENSE", "NOTICE", "COPYING" };
+    // Dependency and cache folders are never part of a skill even when they sit inside its directory.
+    private static readonly HashSet<string> ExcludedFolders = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "node_modules", "__pycache__", "venv", ".venv", "site-packages"
+    };
 
     /// <summary>
-    /// True for a text file that sits next to SKILL.md, such as <c>reference.md</c>, <c>forms.md</c> or <c>LICENSE.txt</c>.
-    /// Hidden files, SKILL.md itself and non-text formats are excluded.
+    /// True for a file that belongs to a skill bundle: any safe relative path inside the skill folder, at any depth
+    /// (<c>reference.md</c>, <c>rules/async-parallel.md</c>, <c>scripts/run.py</c>), except SKILL.md itself, hidden files and
+    /// folders, dependency folders and binary formats.
     /// </summary>
-    public static bool IsRootSiblingFile(string name) =>
-        !string.IsNullOrEmpty(name) && !name.StartsWith('.') && !name.Equals("SKILL.md", StringComparison.OrdinalIgnoreCase) &&
-        !name.Contains('/') && !name.Contains('\\') &&
-        (RootSiblingExtensions.Contains(Path.GetExtension(name)) || RootSiblingNames.Contains(name));
+    public static bool IsBundleFile(string relative)
+    {
+        if (string.IsNullOrWhiteSpace(relative)) return false;
+        string normalized;
+        try { normalized = NormalizeRelative(relative); }
+        catch (ArgumentException) { return false; }
+        var segments = normalized.Split('/');
+        if (segments.Length == 1 && segments[0].Equals("SKILL.md", StringComparison.OrdinalIgnoreCase)) return false;
+        if (segments.Any(segment => segment.StartsWith('.')) || segments[..^1].Any(ExcludedFolders.Contains)) return false;
+        return !BinaryExtensions.Contains(Path.GetExtension(segments[^1]));
+    }
+
+    /// <summary>Kept for callers that only consider files directly beside SKILL.md.</summary>
+    public static bool IsRootSiblingFile(string name) => !name.Contains('/') && !name.Contains('\\') && IsBundleFile(name);
 
     public static string SupportingPath(string input)
     {
         var normalized = NormalizeRelative(input);
-        var separator = normalized.IndexOf('/');
-        if (separator < 0 ? !IsRootSiblingFile(normalized) : !IsSupportingFolder(normalized[..separator]))
+        if (!IsBundleFile(normalized))
         {
-            throw new ArgumentException($"Supporting file '{input}' must be a text file next to SKILL.md or inside a supported bundle folder.");
+            throw new ArgumentException($"Supporting file '{input}' must be a non-hidden text file inside the skill folder.");
         }
 
         return normalized;

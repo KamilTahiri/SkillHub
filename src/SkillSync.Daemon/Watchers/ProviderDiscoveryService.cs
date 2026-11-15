@@ -632,11 +632,16 @@ public sealed class ProviderDiscoveryService
                     return Observed(provider, segments[^2], path, null);
                 }
 
-                // A text file beside SKILL.md (reference.md, forms.md, LICENSE.txt) belongs to that bundle.
-                if (flatExtension is null && segments.Length >= 2 && SkillPaths.IsRootSiblingFile(segments[^1]))
+                // Any other file in a skill folder (reference.md, rules/async-parallel.md) belongs to the nearest SKILL.md.
+                if (flatExtension is null && segments.Length >= 2)
                 {
-                    var primary = SkillPaths.Resolve(root, string.Join('/', segments.SkipLast(1).Append("SKILL.md")));
-                    if (File.Exists(primary)) return Observed(provider, segments[^2], primary, segments[^1]);
+                    for (var depth = segments.Length - 1; depth >= 1; depth--)
+                    {
+                        var primary = SkillPaths.Resolve(root, string.Join('/', segments.Take(depth).Append("SKILL.md")));
+                        var relative = string.Join('/', segments.Skip(depth));
+                        if (File.Exists(primary) && SkillPaths.IsBundleFile(relative))
+                            return Observed(provider, segments[depth - 1], primary, relative);
+                    }
                 }
             }
 

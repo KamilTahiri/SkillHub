@@ -542,9 +542,11 @@ export function createExplore(root, app) {
       }
     }
     let activeTab = '';
+    let picker;
     function selectTab(path) {
       activeTab = path;
-      for (const tab of tabs?.children ?? []) tab.setAttribute('aria-selected', String(tab.dataset.path === path));
+      for (const tab of tabs?.querySelectorAll('.file-tab') ?? []) tab.setAttribute('aria-selected', String(tab.dataset.path === path));
+      if (picker) picker.value = path;
       documentBody.scrollTop = 0;
       if (path) showFile(path); else showMain();
     }
@@ -556,10 +558,20 @@ export function createExplore(root, app) {
     if (tabs) {
       const tab = (path, label) => h('button', { type: 'button', role: 'tab', class: 'file-tab', 'data-path': path,
         'aria-selected': String(path === ''), title: label, onclick: () => selectTab(path) }, label);
-      tabs.append(tab('', review.path.split('/').at(-1) || 'SKILL.md'), ...files.map(path => tab(path, path)));
+      const main = tab('', review.path.split('/').at(-1) || 'SKILL.md');
+      if (files.length <= 8) tabs.append(main, ...files.map(path => tab(path, path)));
+      else {
+        // Large bundles (for example 70 rules/*.md files) get a grouped picker instead of an endless tab strip.
+        const folders = Map.groupBy(files, path => path.includes('/') ? path.slice(0, path.lastIndexOf('/')) : '');
+        picker = h('select', { class: 'select file-picker', 'aria-label': 'Open a bundle file', onchange: event => selectTab(event.target.value) },
+          h('option', { value: '' }, 'Browse ' + files.length + ' bundle files…'),
+          [...folders.entries()].sort(([a], [b]) => a.localeCompare(b)).map(([folder, paths]) => h('optgroup', { label: (folder || 'Skill folder') + ' (' + paths.length + ')' },
+            paths.map(path => h('option', { value: path }, path.slice(folder ? folder.length + 1 : 0))))));
+        tabs.append(main, ...files.filter(path => !path.includes('/')).slice(0, 4).map(path => tab(path, path)), picker);
+      }
       tabs.addEventListener('keydown', event => {
-        if (!['ArrowLeft', 'ArrowRight'].includes(event.key)) return;
-        const list = [...tabs.children];
+        if (!['ArrowLeft', 'ArrowRight'].includes(event.key) || event.target === picker) return;
+        const list = [...tabs.querySelectorAll('.file-tab')];
         const index = list.indexOf(document.activeElement);
         const next = list[(index + (event.key === 'ArrowRight' ? 1 : -1) + list.length) % list.length];
         next?.focus();

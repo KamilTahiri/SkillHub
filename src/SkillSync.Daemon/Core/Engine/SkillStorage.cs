@@ -17,9 +17,9 @@ internal sealed record SkillDiskSnapshot(string? Markdown, Dictionary<string, st
 internal sealed class SkillStorage(ProviderDiscoveryService discovery)
 {
     internal const int MaxMarkdownBytes = 2 * 1024 * 1024;
-    private const int MaxFileBytes = 256 * 1024;
-    private const int MaxBundleBytes = 8 * 1024 * 1024;
-    private const int MaxBundleFiles = 512;
+    internal const int MaxFileBytes = 1024 * 1024;
+    private const int MaxBundleBytes = 24 * 1024 * 1024;
+    internal const int MaxBundleFiles = 512;
     private static readonly UTF8Encoding Utf8 = new(false, true);
     internal static readonly JsonSerializerOptions JsonOptions = new() { WriteIndented = false };
 
@@ -123,21 +123,13 @@ internal sealed class SkillStorage(ProviderDiscoveryService discovery)
             ? ReadBundle(Path.GetDirectoryName(primary)!) : new(SkillPaths.Comparer));
     }
 
-    /// <summary>Root-level sibling files next to SKILL.md, then each supported bundle folder.</summary>
+    /// <summary>Every bundle file inside a skill folder, at any depth (see <see cref="SkillPaths.IsBundleFile"/>).</summary>
     public static IEnumerable<IEnumerable<string>> EnumerateBundleFileGroups(string directory)
     {
-        if (Directory.Exists(directory))
-        {
-            yield return Directory.EnumerateFiles(directory)
-                .Where(file => SkillPaths.IsRootSiblingFile(Path.GetFileName(file)) &&
-                    (File.GetAttributes(file) & FileAttributes.ReparsePoint) == 0)
-                .Order(StringComparer.Ordinal).ToArray();
-        }
-        foreach (var folder in SkillPaths.SupportingFolders)
-        {
-            var root = SkillPaths.Resolve(directory, folder);
-            if (Directory.Exists(root)) yield return EnumerateSafeFiles(root);
-        }
+        if (!Directory.Exists(directory)) yield break;
+        yield return EnumerateSafeFiles(directory)
+            .Where(file => SkillPaths.IsBundleFile(Path.GetRelativePath(directory, file).Replace('\\', '/')))
+            .Order(StringComparer.Ordinal).ToArray();
     }
 
     public static Dictionary<string, string> ReadBundle(string directory)
