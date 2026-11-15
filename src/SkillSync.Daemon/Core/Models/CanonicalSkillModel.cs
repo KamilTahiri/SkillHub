@@ -189,7 +189,11 @@ public sealed class CanonicalSkillModel
                     Enabled = Targets.Cursor.Enabled,
                     Globs = [.. Targets.Cursor.Globs],
                     AlwaysApply = Targets.Cursor.AlwaysApply
-                }
+                },
+                Copilot = new SimpleTargetConfig { Enabled = Targets.Copilot.Enabled },
+                Windsurf = new SimpleTargetConfig { Enabled = Targets.Windsurf.Enabled },
+                Cline = new SimpleTargetConfig { Enabled = Targets.Cline.Enabled },
+                RooCode = new SimpleTargetConfig { Enabled = Targets.RooCode.Enabled }
             },
             Passthrough = includeContents ? CopyMetadata(Passthrough) : new(StringComparer.Ordinal),
             InstructionsMarkdown = includeContents ? InstructionsMarkdown : string.Empty,
@@ -215,6 +219,10 @@ public sealed class CanonicalSkillModel
         ProviderType.Gemini => Targets.Gemini.Enabled,
         ProviderType.Codex => Targets.Codex.Enabled,
         ProviderType.Cursor => Targets.Cursor.Enabled,
+        ProviderType.Copilot => Targets.Copilot.Enabled,
+        ProviderType.Windsurf => Targets.Windsurf.Enabled,
+        ProviderType.Cline => Targets.Cline.Enabled,
+        ProviderType.RooCode => Targets.RooCode.Enabled,
         _ => true
     };
 
@@ -233,6 +241,18 @@ public sealed class CanonicalSkillModel
                 break;
             case ProviderType.Cursor:
                 Targets.Cursor.Enabled = enabled;
+                break;
+            case ProviderType.Copilot:
+                Targets.Copilot.Enabled = enabled;
+                break;
+            case ProviderType.Windsurf:
+                Targets.Windsurf.Enabled = enabled;
+                break;
+            case ProviderType.Cline:
+                Targets.Cline.Enabled = enabled;
+                break;
+            case ProviderType.RooCode:
+                Targets.RooCode.Enabled = enabled;
                 break;
         }
     }
@@ -255,6 +275,31 @@ public sealed class SkillTargetsConfig
     [YamlMember(Alias = "cursor")]
     [JsonPropertyName("cursor")]
     public CursorTargetConfig Cursor { get; set; } = new();
+
+    // Copilot and Windsurf load skills on demand, so they are on by default. Cline and Roo Code load every rule into
+    // every conversation, so skills reach them only when the user turns them on.
+    [YamlMember(Alias = "copilot")]
+    [JsonPropertyName("copilot")]
+    public SimpleTargetConfig Copilot { get; set; } = new() { Enabled = true };
+
+    [YamlMember(Alias = "windsurf")]
+    [JsonPropertyName("windsurf")]
+    public SimpleTargetConfig Windsurf { get; set; } = new() { Enabled = true };
+
+    [YamlMember(Alias = "cline")]
+    [JsonPropertyName("cline")]
+    public SimpleTargetConfig Cline { get; set; } = new() { Enabled = false };
+
+    [YamlMember(Alias = "roocode")]
+    [JsonPropertyName("roocode")]
+    public SimpleTargetConfig RooCode { get; set; } = new() { Enabled = false };
+}
+
+public sealed class SimpleTargetConfig
+{
+    [YamlMember(Alias = "enabled")]
+    [JsonPropertyName("enabled")]
+    public bool Enabled { get; set; }
 }
 
 public sealed class ClaudeTargetConfig

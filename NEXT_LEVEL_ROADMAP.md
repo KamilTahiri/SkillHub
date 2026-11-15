@@ -14,7 +14,10 @@
 | A · Quick wins | Done (`fdaf1f9`) | Live status dot, Connections cards, inline deploy chips, importer input fixes, ETag caching |
 | B · Repository Indexer & Explore v2 | Done | `RepositoryIndexer` (codeload tarball, SHA-keyed cache in `~/.skillhub/cache/github`, ETag refs, Trees API fallback), slash branches, all Markdown formats classified, root-level sibling files in bundles, repo card, kind tabs, bundle file tabs, pinned sources, multi-select import, non-blocking search |
 | C · Design System v2 | Done | Surface and elevation tokens, `polish.css`, button press/hover/loading states, Library glyph rows with hover actions, sort and density, Ctrl+K command palette, toast stack, Markdown task lists/strikethrough/code highlighting/outline, external links via the desktop host, Mica title bar |
-| D · Flagship features | Not started | |
+| Follow-up fixes | Done | Official provider marks, evidence-based Claude detection, palette Escape, Explore ranking, skills.sh integration |
+| Blocker 0 | Done | Bundles keep every safe text file at any depth (`rules/*.md`, `AGENTS.md`); index schema v3; live-verified in the real window |
+| Wave 1 | Done | CSS folded into base/layout/components with a duplicate-selector test; files over 800 lines split; Editor 2.0 (split view, toolbar, budget meters, Provider output, Doctor); Copy skill prompt; per-skill import wording; M1 script review; N1 Skill Doctor (UI and `lint_skill`); M2 revision history with diff and restore; M3 upstream update inbox; M5 Copilot, Windsurf, Cline and Roo Code; N2 MCP prompts and resources |
+| D · Flagship features | Partly done | Remaining: workspaces (M4), onboarding (M6), packs and deep links (N3), hotkey panel (N5), profiles (N6) |
 | E · Launch polish | Not started | |
 
 Live-verified indexing: `anthropics/skills` keeps `FORMS.md`, `REFERENCE.md` and `LICENSE.txt` with the pdf skill. `github/awesome-copilot` (113 MB archive) indexes 481 skills, 197 instructions and 231 agents.

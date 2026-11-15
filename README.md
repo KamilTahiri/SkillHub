@@ -5,6 +5,15 @@
 - **Google Gemini CLI & Antigravity** (`~/.gemini/skills/<name>/SKILL.md` & `~/.gemini/antigravity/skills/<name>/SKILL.md`)
 - **ChatGPT / OpenAI Codex** (`~/.codex/skills/<name>/SKILL.md` & `~/.agents/skills/<name>/SKILL.md`)
 - **Cursor** (`~/.cursor/rules/<name>.mdc`)
+- **GitHub Copilot** (`~/.copilot/skills/<name>/SKILL.md`) and **Windsurf** (`~/.codeium/windsurf/skills/<name>/SKILL.md`)
+- **Cline** (`~/Documents/Cline/Rules/<name>.md`) and **Roo Code** (`~/.roo/rules/<name>.md`), opt-in per skill because these tools load every rule into every chat
+
+A skill is `SKILL.md` plus every text file in its folder (for example `rules/*.md`, `references/`, `scripts/`).
+Every save is kept in revision history (`~/.skillhub/history/`, 30 per skill) with diff and restore. Skill Doctor
+checks provider rules, broken bundle links, overlapping triggers, leaked secrets and risky scripts. Explore indexes
+GitHub repositories and the skills.sh directory, reviews scripts before import, and reports upstream updates for
+imported skills. The MCP server also exposes every skill as a prompt (`/skillhub:<name>`) and a resource
+(`skillhub://skills/<name>`).
 
 ---
 

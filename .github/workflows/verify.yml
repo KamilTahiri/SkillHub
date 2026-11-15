@@ -28,7 +28,7 @@ jobs:
           node-version: 22
       - run: dotnet build SkillSync.sln -c Release -warnaserror
       - run: dotnet test SkillSync.sln -c Release --no-build
-      - run: node --test tests/SkillSync.Frontend/workbench.test.mjs
+      - run: node --test tests/SkillSync.Frontend/
       - name: Set up the pinned installer compiler
         shell: pwsh
         run: |

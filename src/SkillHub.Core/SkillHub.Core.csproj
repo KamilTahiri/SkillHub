@@ -6,7 +6,7 @@
   </PropertyGroup>
   <ItemGroup>
     <Compile Include="..\SkillSync.Daemon\Core\**\*.cs"
-             Exclude="..\SkillSync.Daemon\Core\Engine\InstallManager.cs;..\SkillSync.Daemon\Core\Engine\ConfigFileEditor.cs;..\SkillSync.Daemon\Core\Engine\JsonMcpConfigEditor.cs;..\SkillSync.Daemon\Core\Engine\TomlMcpConfigEditor.cs"
+             Exclude="..\SkillSync.Daemon\Core\Engine\InstallManager*.cs;..\SkillSync.Daemon\Core\Engine\ConfigFileEditor.cs;..\SkillSync.Daemon\Core\Engine\JsonMcpConfigEditor.cs;..\SkillSync.Daemon\Core\Engine\TomlMcpConfigEditor.cs"
              LinkBase="Core" />
     <Compile Include="..\SkillSync.Daemon\Watchers\ProviderDiscoveryService.cs" Link="ProviderDiscoveryService.cs" />
     <InternalsVisibleTo Include="SkillHub" />

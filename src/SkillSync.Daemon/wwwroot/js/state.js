@@ -16,7 +16,10 @@ export class Latest {
   }
 }
 
-export const PROVIDERS = { codex: 'Codex', gemini: 'Gemini and Antigravity', claude: 'Claude', cursor: 'Cursor' };
+export const PROVIDERS = { codex: 'Codex', gemini: 'Gemini and Antigravity', claude: 'Claude', cursor: 'Cursor',
+  copilot: 'GitHub Copilot', windsurf: 'Windsurf', cline: 'Cline', roocode: 'Roo Code' };
+// Cline and Roo Code load every rule into every conversation, so skills reach them only when turned on per skill.
+export const OPT_IN_PROVIDERS = new Set(['cline', 'roocode']);
 export const COLLECTIONS = { user: 'My Skills', synced: 'Active & Synced', template: 'Built-in & Templates', system: 'System' };
 export const skillKey = skill => skill.is_catalog_only ? skill.catalog_id ?? skill.name : skill.name;
 
@@ -43,9 +46,11 @@ export function installedProviders(providers) {
   return Object.keys(PROVIDERS).filter(id => providers.some(provider => provider.provider === id && provider.is_installed));
 }
 
+export const isTargetEnabled = (skill, id) => skill.targets?.[id]?.enabled ?? !OPT_IN_PROVIDERS.has(id);
+
 export function targetIssues(skill, installed) {
   return (skill.destinations ?? []).filter(target => installed.includes(target.provider) &&
-    skill.targets?.[target.provider]?.enabled !== false && ['error', 'conflict', 'missing'].includes(target.state))
+    isTargetEnabled(skill, target.provider) && ['error', 'conflict', 'missing'].includes(target.state))
     .map(target => ({ ...target, label: target.provider === 'gemini'
       ? (/[\\/]antigravity[\\/]/i.test(target.path) ? 'Antigravity' : 'Gemini') : PROVIDERS[target.provider] }));
 }
@@ -54,7 +59,7 @@ export function deployment(skill, installed) {
   const synced = [];
   const issues = [];
   if (skill.is_catalog_only) return { key: 'catalog', label: 'Catalog · not synced', synced, issues };
-  const enabled = installed.filter(id => skill.targets?.[id]?.enabled !== false);
+  const enabled = installed.filter(id => isTargetEnabled(skill, id));
   const targets = (skill.destinations ?? []).filter(target => enabled.includes(target.provider));
   for (const id of enabled) {
     const destinations = targets.filter(target => target.provider === id);

@@ -9,6 +9,10 @@ public enum ProviderType
     Claude = 1,
     Gemini = 2,
     Codex = 3,
-    Cursor = 4
+    Cursor = 4,
+    Copilot = 5,
+    Windsurf = 6,
+    Cline = 7,
+    RooCode = 8
 }
 

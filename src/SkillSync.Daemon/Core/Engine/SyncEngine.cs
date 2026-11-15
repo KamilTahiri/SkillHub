@@ -13,6 +13,7 @@ public sealed partial class SyncEngine : IAsyncDisposable
     private readonly ProviderDiscoveryService _discovery;
     private readonly SkillStorage _storage;
     private readonly SkillCatalog _catalog;
+    private readonly SkillHistory _history;
     private readonly SyncLedger _ledger;
     private readonly Channel<Func<Task>> _commands = Channel.CreateBounded<Func<Task>>(
         new BoundedChannelOptions(128) { SingleReader = true, FullMode = BoundedChannelFullMode.Wait });
@@ -29,7 +30,11 @@ public sealed partial class SyncEngine : IAsyncDisposable
         [ProviderType.Claude] = new ClaudeTranspiler(),
         [ProviderType.Gemini] = new GeminiTranspiler(),
         [ProviderType.Codex] = new CodexTranspiler(),
-        [ProviderType.Cursor] = new CursorMdcTranspiler()
+        [ProviderType.Cursor] = new CursorMdcTranspiler(),
+        [ProviderType.Copilot] = new AgentSkillTranspiler(ProviderType.Copilot),
+        [ProviderType.Windsurf] = new AgentSkillTranspiler(ProviderType.Windsurf),
+        [ProviderType.Cline] = new PlainRuleTranspiler(ProviderType.Cline),
+        [ProviderType.RooCode] = new PlainRuleTranspiler(ProviderType.RooCode)
     };
 
     public SyncEngine(ProviderDiscoveryService discovery)
@@ -37,6 +42,7 @@ public sealed partial class SyncEngine : IAsyncDisposable
         _discovery = discovery;
         _storage = new SkillStorage(discovery);
         _catalog = new SkillCatalog(discovery);
+        _history = new SkillHistory(Path.Combine(discovery.SkillHubRoot, "history"));
         _discovery.EnsureStorage();
         _storeLock = new FileStream(SkillPaths.Resolve(_discovery.SkillHubRoot, ".writer.lock"),
             FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.None);

@@ -18,7 +18,8 @@ public sealed record SkillImportSelection(
 public sealed record SkillImportPlan(Guid PlanId, string Revision, string Source, string? Repository,
     string Path, string License, string Name, string Title, string Description, string InstructionsMarkdown,
     IReadOnlyDictionary<string, string> SupportingFiles, IReadOnlyList<string> SkippedFiles, bool NameExists, DateTimeOffset ExpiresAt,
-    string? ExistingName = null);
+    string? ExistingName = null,
+    IReadOnlyList<ScriptFinding>? Scripts = null);
 
 public sealed record SkillImportApplyRequest(string Revision, string? Name, IReadOnlyList<string>? Providers);
 public sealed class CommunitySourceException(string message, int statusCode) : InvalidOperationException(message)
@@ -72,23 +73,12 @@ public sealed partial class SkillImporterService
             var index = await _indexer.GetIndexAsync(owner, repo, sha, ct).ConfigureAwait(false);
             var document = SelectDocument(index, selection.Path ?? hint);
             path = document.Path;
-            var raw = await _indexer.ReadTextAsync(index, document.Path, ct).ConfigureAwait(false);
-            model = ParseMarkdownToSkillModel(raw, SkillDocumentClassifier.FallbackName(repo, document.Path), $"GitHub ({repository})");
-            license = License(index, document, raw);
-            var prefix = RepositoryIndexer.SkillDirectoryPrefix(document.Path);
-            skipped.AddRange(document.ExcludedFiles.Select(file => $"{file} · binary, too large, or outside a supported folder"));
-            foreach (var relative in document.Files)
-            {
-                try
-                {
-                    model.SupportingFiles.Add(SkillPaths.SupportingPath(relative),
-                        await _indexer.ReadTextAsync(index, prefix + relative, ct).ConfigureAwait(false));
-                }
-                catch (InvalidDataException exception)
-                {
-                    skipped.Add($"{relative} · {exception.Message}");
-                }
-            }
+            var upstream = await ReadUpstreamSkillAsync(index, document, ct).ConfigureAwait(false);
+            model = upstream.Model;
+            license = upstream.License;
+            skipped.AddRange(upstream.Skipped);
+            // Fingerprint of the upstream content, so the update inbox can tell upstream changes from local edits.
+            model.Passthrough["import_hash"] = upstream.Hash;
             source = repository;
         }
 
@@ -99,7 +89,8 @@ public sealed partial class SkillImporterService
             model.GetEffectiveTitle(), model.Description, model.InstructionsMarkdown,
             new Dictionary<string, string>(model.SupportingFiles), skipped.ToArray(),
             ImportNameExists(model.Name),
-            DateTimeOffset.UtcNow.AddMinutes(15), existingName);
+            DateTimeOffset.UtcNow.AddMinutes(15), existingName,
+            SkillDoctor.InspectScripts(model.SupportingFiles.ToDictionary(pair => pair.Key, pair => (string?)pair.Value), model.InstructionsMarkdown));
         lock (_plansLock)
         {
             foreach (var id in _plans.Where(pair => !pair.Value.Applying && pair.Value.Plan.ExpiresAt < DateTimeOffset.UtcNow).Select(pair => pair.Key).ToArray())
@@ -140,6 +131,7 @@ public sealed partial class SkillImporterService
             model.Passthrough["import_revision"] = pending.Plan.Revision;
             model.Passthrough["import_path"] = pending.Plan.Path;
             model.Passthrough["import_license"] = pending.Plan.License;
+            model.Passthrough["import_content_hash"] = ContentFingerprint(model);
             if (model.CatalogId is not null)
             {
                 model.Passthrough["import_catalog_id"] = model.CatalogId;
@@ -147,7 +139,8 @@ public sealed partial class SkillImporterService
             model.CatalogId = null;
             model.Name = request.Name ?? model.Name;
             var enabled = (request.Providers ?? []).ToHashSet(StringComparer.OrdinalIgnoreCase);
-            var available = new[] { ProviderType.Codex, ProviderType.Gemini, ProviderType.Claude, ProviderType.Cursor };
+            var available = new[] { ProviderType.Codex, ProviderType.Gemini, ProviderType.Claude, ProviderType.Cursor,
+                ProviderType.Copilot, ProviderType.Windsurf, ProviderType.Cline, ProviderType.RooCode };
             if (enabled.Any(provider => !available.Any(value => value.ToString().Equals(provider, StringComparison.OrdinalIgnoreCase))))
             {
                 throw new ArgumentException("The import contains an unknown provider.");

@@ -118,6 +118,13 @@ public static class ContentHasher
         };
 
         var jsonBytes = JsonSerializer.SerializeToUtf8Bytes(canonicalProjection);
+        // Targets added later only affect the hash when they differ from their defaults, so existing skills keep their hashes.
+        var extra = new List<string>();
+        if (!model.Targets.Copilot.Enabled) extra.Add("copilot=off");
+        if (!model.Targets.Windsurf.Enabled) extra.Add("windsurf=off");
+        if (model.Targets.Cline.Enabled) extra.Add("cline=on");
+        if (model.Targets.RooCode.Enabled) extra.Add("roocode=on");
+        if (extra.Count > 0) jsonBytes = [.. jsonBytes, .. System.Text.Encoding.UTF8.GetBytes("|" + string.Join(',', extra))];
         var hash = SHA256.HashData(jsonBytes);
         return Convert.ToHexString(hash).ToLowerInvariant();
     }

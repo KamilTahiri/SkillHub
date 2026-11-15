@@ -1,23 +1,25 @@
 import { api } from '../api.js';
-import { deployment, installedProviders, PROVIDERS, slugify, tagSlug } from '../state.js';
-import { renderMarkdown } from '../markdown.js';
+import { deployment, installedProviders, PROVIDERS, OPT_IN_PROVIDERS, isTargetEnabled, slugify, tagSlug } from '../state.js';
 import { h, button, heading, field, disclosure, errorText, modal, notify } from '../ui.js';
 import { showProviderPreview } from './transpilerPreview.js';
+import { createEditorWorkspace } from './editorWorkspace.js';
 
 const blank = () => ({
   title: '', name: '', description: '', when_to_use: '', instructions_markdown: '', tags: [],
   targets: Object.fromEntries(Object.keys(PROVIDERS).map(name => [name, { enabled: false }])), supporting_files: {}
 });
-const supported = new Set(['scripts', 'resources', 'references', 'examples', 'assets', 'agents']);
+const binary = /\.(png|jpe?g|gif|webp|ico|bmp|tiff?|pdf|zip|gz|tgz|tar|7z|rar|exe|dll|so|dylib|bin|woff2?|ttf|otf|eot|mp3|mp4|mov|wav|ogg|webm|jar|class|pyc|docx|xlsx|pptx|psd|sqlite|db|wasm)$/i;
+const excludedFolders = new Set(['node_modules', '__pycache__', 'venv', 'site-packages']);
 const windowsDevice = /^(?:con|prn|aux|nul|conin\$|conout\$|com[0-9¹²³]|lpt[0-9¹²³])$/i;
 
 function validatePath(value) {
   const path = value.trim().replaceAll('\\', '/');
   const parts = path.split('/');
-  if (parts.length < 2 || !supported.has(parts[0].toLowerCase()) ||
-    parts.some(part => !part || part.length > 255 || /[. ]$/.test(part) ||
+  // Mirrors SkillPaths.IsBundleFile: any safe relative text file inside the skill folder, except SKILL.md and hidden paths.
+  if (!path || path.toLowerCase() === 'skill.md' || binary.test(path) ||
+    parts.some(part => !part || part.startsWith('.') || excludedFolders.has(part.toLowerCase()) || part.length > 255 || /[. ]$/.test(part) ||
       /[<>:"|?*\u0000-\u001f]/.test(part) || windowsDevice.test(part.split('.')[0].trimEnd()))) {
-    throw new Error('Use a safe relative file path under a supported bundle folder.');
+    throw new Error('Use a safe relative path to a text file inside the skill folder, such as references/guide.md.');
   }
   return path;
 }
@@ -65,7 +67,7 @@ export function createEditor(root, app) {
     const suggestionList = h('datalist', { id: 'editor-tag-suggestions' },
       snapshot.tags.map(tag => h('option', { value: tag.tag })));
     const deploy = Object.fromEntries(Object.entries(PROVIDERS).map(([key, label]) => [key, {
-      label, control: h('input', { type: 'checkbox', checked: baseline.targets?.[key]?.enabled !== false })
+      label, control: h('input', { type: 'checkbox', checked: isTargetEnabled(baseline, key) })
     }]));
     const tooling = h('input', { class: 'input', value: (baseline.targets?.claude?.allowed_tools ?? []).join(', ') });
     const globs = h('input', { class: 'input', value: (baseline.targets?.cursor?.globs ?? []).join(', ') });
@@ -126,7 +128,8 @@ export function createEditor(root, app) {
       h('div', { class: 'stack' }, h('div', { class: 'spread' }, h('h3', {}, 'Deployment'), preview),
         h('fieldset', {}, h('legend', {}, 'Providers'),
         h('div', { class: 'checks' }, Object.entries(deploy).map(([key, item]) => h('label', {}, item.control,
-          item.label + (snapshot.providers.some(provider => provider.provider === key && provider.is_installed) ? '' : ' · not detected'))))),
+          item.label + (snapshot.providers.some(provider => provider.provider === key && provider.is_installed) ? '' : ' · not detected') +
+          (OPT_IN_PROVIDERS.has(key) ? ' · loads every rule in every chat' : ''))))),
         field('Codex concise summary', concise), field('Claude allowed tools', tooling, 'Separate tool names with commas.'),
         field('Cursor file globs', globs, 'Separate glob patterns with commas.'), h('label', { class: 'actions' }, always, 'Always apply Cursor rule')));
     const fileSection = disclosure('Supporting files', files, button('Add file', () => {
@@ -138,16 +141,6 @@ export function createEditor(root, app) {
     const saveButton = h('button', { type: 'submit', class: 'btn primary' }, 'Save skill');
     const cancel = button('Cancel', () => app.cancelEditor(returnKey));
     const draftStatus = h('span', { class: 'muted', role: 'status' });
-    const markdownPreview = h('article', { class: 'markdown', hidden: true, 'aria-label': 'Markdown preview' });
-    const write = button('Write', () => showMarkdown(false), 'quiet small', { 'aria-pressed': 'true' });
-    const previewMarkdown = button('Preview', () => showMarkdown(true), 'quiet small', { 'aria-pressed': 'false' });
-    function showMarkdown(show) {
-      instructions.hidden = show;
-      markdownPreview.hidden = !show;
-      write.setAttribute('aria-pressed', String(!show));
-      previewMarkdown.setAttribute('aria-pressed', String(show));
-      if (show) markdownPreview.replaceChildren(renderMarkdown(instructions.value, { title: formTitle.value }));
-    }
     const titleError = h('small', { class: 'error', role: 'status' });
     function checkTitle() {
       const slug = baseline.revision ? baseline.name : slugify(formTitle.value);
@@ -163,12 +156,13 @@ export function createEditor(root, app) {
       scope.textContent = targets.length ? 'Deploy to ' + targets.map(id => PROVIDERS[id]).join(', ') : 'Save to My Skills only';
     }
     updateScope();
+    const workspace = createEditorWorkspace({ instructions, description: summary, trigger, title: formTitle, snapshot,
+      getDraft: () => readDraft(false) });
     const headingRow = h('div', { class: 'editor-actions stack' },
       h('div', { class: 'spread' }, field('Title', formTitle), h('div', { class: 'actions' }, saveButton, cancel)),
       titleError, h('div', { class: 'spread' }, scope, draftStatus));
     form.append(headingRow, feedback, h('div', { class: 'columns' }, field('Description', summary), field('When to use', trigger)),
-      h('div', { class: 'spread' }, h('h2', {}, 'Instructions'), h('div', { class: 'actions' }, write, previewMarkdown)),
-      h('div', { class: 'field' }, instructions, markdownPreview), field('Tags', tags, 'Separate tags with commas.'),
+      h('h2', { class: 'editor-section-title' }, 'Instructions'), workspace.element, field('Tags', tags, 'Separate tags with commas.'),
       suggestionList, deploymentSection, fileSection);
     instructions.setAttribute('aria-label', 'Instructions');
     const list = text => text.split(',').map(item => item.trim()).filter(Boolean);

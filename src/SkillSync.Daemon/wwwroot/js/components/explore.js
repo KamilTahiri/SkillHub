@@ -12,6 +12,15 @@ const KIND_LABELS = { skill: 'Skill', command: 'Command', prompt: 'Prompt', rule
 
 const compactNumber = value => new Intl.NumberFormat(undefined, { notation: 'compact', maximumFractionDigits: 1 }).format(value);
 
+/** Markdown files render with their YAML frontmatter folded into a small block; other files show as code. */
+function renderFile(path, text, openFile) {
+  if (!/\.(md|mdc|markdown)$/i.test(path)) return [h('pre', { class: 'file-code', tabindex: '0' }, text)];
+  const match = /^---\r?\n([\s\S]*?)\r?\n---\r?\n?/.exec(text);
+  const body = match ? text.slice(match[0].length) : text;
+  return [match && h('details', { class: 'frontmatter' }, h('summary', {}, 'Frontmatter'), h('pre', {}, match[1])),
+    h('article', { class: 'markdown' }, renderMarkdown(body, { openFile }))];
+}
+
 export function createExplore(root, app) {
   const listJob = new Latest();
   const previewJob = new Latest();
@@ -453,7 +462,7 @@ export function createExplore(root, app) {
     const deploy = deployChips(() => { capability.hidden = !(files.length && deploy.selected().includes('cursor')); });
     const feedback = h('div', { role: 'status' });
 
-    const apply = button('+ Add to My Skills', () => {
+    const apply = button('+ Add this skill', () => {
       if (isApplying) return;
       const dest = checkName();
       if (!dest) {
@@ -476,6 +485,14 @@ export function createExplore(root, app) {
             if (source) {
               feedback.append(button('Refresh preview', () => openPreview(source, source, true), 'quiet small'));
             }
+            return;
+          }
+          const planScripts = importPlan.scripts ?? scripts;
+          if (planScripts.length && !await confirmAction('Import a skill that contains scripts?',
+            'Agents may run these when they use the skill: ' + planScripts.map(script => script.path +
+              (script.concerns.length ? ' (' + script.concerns.join(', ') + ')' : '')).join(' · ') + '. Import only if you trust ' +
+              (review.repo ?? 'this source') + '.', 'I reviewed them, import', planScripts.some(script => script.concerns.length))) {
+            feedback.textContent = '';
             return;
           }
           if (importPlan.skipped_files?.length && !await confirmAction('Import available files?',
@@ -509,11 +526,24 @@ export function createExplore(root, app) {
         review.source, review.license && ' · ' + review.license),
       h('p', { class: 'muted' }, files.length + (files.length === 1 ? ' supporting file' : ' supporting files'),
         excluded.length > 0 && ' · ' + excluded.length + ' excluded', review.name_exists && ' · Name in use'));
-    const header = h('header', { class: 'preview-header' }, metadata);
+    // Script review: executable files and shell instructions are listed before anything is imported.
+    const scripts = review.scripts ?? [];
+    const risky = scripts.filter(script => script.concerns.length);
+    const scriptReview = scripts.length > 0 && h('div', { class: 'script-review', 'data-risk': String(risky.length > 0) },
+      icon('info'),
+      h('div', {}, h('strong', {}, risky.length ? 'Review scripts before importing' : 'Contains executable content'),
+        h('p', {}, scripts.length + (scripts.length === 1 ? ' item' : ' items') + ' an agent may run' +
+          (risky.length ? ' · ' + risky.length + ' with risky patterns' : '') + '. Open each one below.'),
+        h('ul', {}, scripts.map(script => h('li', {},
+          button(script.path, () => script.path === 'SKILL.md' ? selectTab('') : openFile(script.path), 'quiet small script-link'),
+          h('span', { class: 'muted' }, ' ' + script.language),
+          script.concerns.length > 0 && h('span', { class: 'warning' }, ' · ' + script.concerns.join(', ')))))));
+    const header = h('header', { class: 'preview-header' }, metadata, scriptReview);
     const footer = h('footer', { class: 'review-footer', 'aria-label': 'Import options' },
       h('div', { class: 'review-footer-options' }, h('label', { class: 'field' }, h('span', {}, 'Save as'), name, nameHint), deploy.node),
       capability,
-      h('div', { class: 'preview-actions' }, h('div', { class: 'preview-feedback' }, feedback), apply));
+      h('div', { class: 'preview-actions' }, h('div', { class: 'preview-feedback' }, feedback,
+        h('span', { class: 'muted per-skill-note' }, 'Imports only this skill. Tick skills in the list to add several at once.')), apply));
     checkName();
     const provenance = h('div', { class: 'preview-provenance' },
       review.description && h('p', {}, review.description),
@@ -534,9 +564,7 @@ export function createExplore(root, app) {
         const text = fileText.get(path) ?? review.supporting_files?.[path] ?? (await api.previewFile(review, path, request.signal)).text;
         fileText.set(path, text);
         if (activeTab !== path) return;
-        documentBody.replaceChildren(h('p', { class: 'file-path path' }, path), /\.(md|mdc|markdown)$/i.test(path)
-          ? h('article', { class: 'markdown' }, renderMarkdown(text, { openFile }))
-          : h('pre', { class: 'file-code', tabindex: '0' }, text));
+        documentBody.replaceChildren(h('p', { class: 'file-path path' }, path), ...renderFile(path, text, openFile));
       } catch (error) {
         if (activeTab === path) documentBody.replaceChildren(errorText(error.message));
       }

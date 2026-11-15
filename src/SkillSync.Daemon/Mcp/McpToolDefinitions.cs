@@ -458,6 +458,18 @@ public static class McpToolDefinitions
                 }
               },
               {
+                "name": "lint_skill",
+                "description": "Runs Skill Doctor on a SkillHub skill: provider frontmatter rules, description and token budgets, broken links to bundle files, triggers that overlap other skills, leaked secrets and risky scripts. Returns a score with findings to fix.",
+                "inputSchema": {
+                  "type": "object",
+                  "properties": {
+                    "name": { "type": "string", "description": "The skill name (slug)." }
+                  },
+                  "required": ["name"],
+                  "additionalProperties": false
+                }
+              },
+              {
                 "name": "get_sync_status",
                 "description": "Returns the current status of SkillHub, including installed AI providers, skill directory paths, synced skill counts, and recent synchronization events.",
                 "inputSchema": {

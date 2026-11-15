@@ -1,8 +1,10 @@
 import { api } from '../api.js';
-import { deployment, installedProviders, destinationLabel, targetIssues, PROVIDERS, skillKey, tagSlug } from '../state.js';
+import { deployment, installedProviders, destinationLabel, targetIssues, PROVIDERS, skillKey, tagSlug, isTargetEnabled } from '../state.js';
 import { renderMarkdown, outline } from '../markdown.js';
 import { h, button, heading, panel, disclosure, copy, download, busy, notify, modal, confirmAction, field, errorText } from '../ui.js';
 import { showProviderPreview } from './transpilerPreview.js';
+import { copySkillPrompt, doctorPanel, historySection, updateBanner } from './skillInsights.js';
+import { icon } from '../icons.js';
 
 export function createReader(root, app) {
   let modelKey;
@@ -27,7 +29,7 @@ export function createReader(root, app) {
     const id = skillKey(skill);
     const identity = JSON.stringify([id, skill.revision, skill.title, skill.description, skill.when_to_use,
       skill.tags, skill.targets, skill.destinations, skill.is_catalog_only, query, snapshot.providers,
-      skill.is_catalog_only ? skill.instructions_markdown : undefined]);
+      skill.is_catalog_only ? skill.instructions_markdown : undefined, app.updates?.get(skill.name)?.latest_revision]);
     if (identity === lastRender) return;
     const sameSkill = modelKey === id;
     const scroll = window.scrollY;
@@ -47,7 +49,9 @@ export function createReader(root, app) {
       : skill.is_catalog_only ? button('Clone to My Skills', () => app.edit(detail, { clone: true }), 'primary')
       : button('Edit skill', () => app.edit(detail), 'primary');
     const actions = button('Actions', () => showActions(detail, snapshot, readOnly), '', { 'data-focus-key': 'actions' });
-    const title = heading(skill.title || skill.name, h('div', { class: 'actions' }, primary, actions),
+    const copyPrompt = button([icon('copy'), 'Copy skill prompt'], event => busy(event.currentTarget, () => copySkillPrompt(app, skillKey(skill))), '',
+      { 'data-focus-key': 'copy-prompt', title: 'Copy the instructions as a prompt for any chat' });
+    const title = heading(skill.title || skill.name, h('div', { class: 'actions' }, primary, copyPrompt, actions),
       h('p', { class: 'result-count' }, skill.origin_provider || 'Personal', ' · ',
         h('span', { class: 'muted' }, sync.key === 'issue' ? 'Managed skill' : sync.label)));
 
@@ -68,7 +72,8 @@ export function createReader(root, app) {
       Files: () => Object.keys(files).length ? h('div', { class: 'stack' },
         Object.keys(files).sort().map(path => button(path, () => openFile(path), 'quiet')))
         : h('p', { class: 'muted' }, 'This skill has no supporting files.'),
-      Destinations: () => destinations(skill, snapshot, changes, readOnly)
+      Destinations: () => destinations(skill, snapshot, changes, readOnly),
+      ...(skill.is_catalog_only ? {} : { History: () => historySection(app, detail) })
     };
     function showSection() {
       for (const tab of tabs.children) tab.setAttribute('aria-pressed', String(tab.dataset.section === activeSection));
@@ -94,11 +99,12 @@ export function createReader(root, app) {
           target?.focus({ preventScroll: true });
         } }, item.text)))));
     const inspector = h('details', { class: 'reader-inspector' }, h('summary', {}, 'Skill details'),
-      h('div', { class: 'stack' }, tags, contents, source));
+      h('div', { class: 'stack' }, tags, !skill.is_catalog_only && doctorPanel(skill), contents, source));
     inspector.open = !narrow.matches || narrowDetailsOpen;
     inspector.addEventListener('toggle', () => { if (narrow.matches) narrowDetailsOpen = inspector.open; });
     const section = h('div', { class: 'stack' }, h('div', { class: 'actions' }, button('← Library', () => app.navigate('library'), 'quiet')),
       title,
+      updateBanner(app, skill),
       issues.length > 0 && h('div', { class: 'issue-banner stack' }, issues.map(issue => h('div', { class: 'spread' },
         h('p', {}, issue.label + (issue.state === 'missing' ? ' copy is missing.' : ' needs review.')),
         button('Review ' + issue.label, () => app.review(skill.name, issue), 'small', { 'data-focus-key': 'review-' + issue.path })))),
@@ -169,7 +175,7 @@ function destinations(skill, snapshot, change, readOnly) {
   if (skill.is_catalog_only) return h('p', { class: 'muted' }, 'Read-only catalog entry.');
   const rows = Object.entries(PROVIDERS).map(([key, label]) => {
     const targets = (skill.destinations ?? []).filter(item => item.provider === key);
-    const enabled = skill.targets?.[key]?.enabled !== false;
+    const enabled = isTargetEnabled(skill, key);
     const provider = snapshot.providers.find(item => item.provider === key);
     const actions = [];
     if (!readOnly && provider?.is_installed) {

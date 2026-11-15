@@ -301,6 +301,15 @@ public sealed partial class SyncEngine
             throw;
         }
         _guards[(slug, path)] = (ProviderType.Canonical, ContentHasher.ComputeRawFileHash(markdown));
+        try
+        {
+            _history.Record(slug, entry.Revision, markdown, model.SupportingFiles);
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+        {
+            // History is a convenience; a failure to record it never blocks a successful write.
+            PublishActivity(slug, "history", "error", $"Could not save revision history: {exception.Message}");
+        }
         PublishSnapshot(model, entry);
     }
 

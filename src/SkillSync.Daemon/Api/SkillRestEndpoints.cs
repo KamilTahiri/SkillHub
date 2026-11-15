@@ -502,6 +502,8 @@ public static class SkillRestEndpoints
             return Results.Ok(new { transpiled_previews = previews, effective_paths = engine.PreviewDestinationPaths(draft) });
         });
 
+        api.MapSkillInsightEndpoints();
+
         // 10. Force Full Resync
         api.MapPost("/resync", async (
             MultiRootFileWatcher watcher,

@@ -117,6 +117,12 @@ public sealed class CanonicalTranspiler : ISkillTranspiler
                 merged.Targets.Gemini.Enabled = parsed.Targets.Gemini.Enabled;
             if (fields.TryGetValue("codex", out var codex) && codex.ContainsKey("enabled"))
                 merged.Targets.Codex.Enabled = parsed.Targets.Codex.Enabled;
+            foreach (var (key, target) in new[] { ("copilot", merged.Targets.Copilot), ("windsurf", merged.Targets.Windsurf),
+                         ("cline", merged.Targets.Cline), ("roocode", merged.Targets.RooCode) })
+            {
+                if (fields.TryGetValue(key, out var field) && field.TryGetValue("enabled", out var value))
+                    target.Enabled = value is bool flag ? flag : bool.TryParse(value?.ToString(), out var parsedFlag) && parsedFlag;
+            }
             if (fields.TryGetValue("cursor", out var cursor))
             {
                 if (cursor.ContainsKey("enabled")) merged.Targets.Cursor.Enabled = parsed.Targets.Cursor.Enabled;

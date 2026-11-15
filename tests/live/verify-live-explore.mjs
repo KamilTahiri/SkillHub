@@ -66,6 +66,25 @@ try {
   check(files.includes('AGENTS.md'), 'AGENTS.md included');
   check(!skipped.some(item => /^rules\/|^AGENTS\.md/.test(item)), 'no rules/ or AGENTS.md file is reported as not imported');
   check((plan.supporting_files ?? {})['rules/async-parallel.md']?.length > 0, 'rules/async-parallel.md has readable content');
+
+  // 3. Script review on a bundle that ships Python scripts (anthropics/skills pdf).
+  const pdf = await tool('prepare_skill_import', { repo: 'anthropics/skills', path: 'skills/pdf/SKILL.md' });
+  const scripts = pdf.scripts ?? [];
+  console.log(`pdf scripts flagged: ${scripts.length} → ${scripts.slice(0, 4).map(script => script.path + (script.concerns.length ? ' [' + script.concerns.join(', ') + ']' : '')).join(', ')}`);
+  check(scripts.some(script => script.path.endsWith('.py')), 'Python scripts are listed for review before import');
+
+  // 4. MCP prompts, resources and Skill Doctor on the live library (read-only).
+  const prompts = (await rpc('prompts/list', {})).prompts ?? [];
+  check(prompts.length > 0, `prompts/list exposes ${prompts.length} skills as prompts`);
+  if (prompts.length) {
+    const first = prompts[0].name;
+    const got = await rpc('prompts/get', { name: first, arguments: { task: 'live check' } });
+    check(got.messages?.[0]?.content?.text?.length > 50, `prompts/get returns the instructions of ${first}`);
+    const read = await rpc('resources/read', { uri: 'skillhub://skills/' + first });
+    check(read.contents?.[0]?.text?.includes('name:'), `resources/read returns the SKILL.md of ${first}`);
+    const lint = await tool('lint_skill', { name: first });
+    check(typeof lint.score === 'number', `lint_skill scores ${first}: ${lint.score} with ${lint.findings.length} findings`);
+  }
 } catch (error) {
   failures.push(error.message);
   console.error(error);

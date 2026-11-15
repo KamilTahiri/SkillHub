@@ -33,6 +33,7 @@ let snapshot = { skills: [], tags: [], providers: [] };
 let lastEvent = 0;
 
 const app = {
+  updates: new Map(),
   get snapshot() { return snapshot; },
   refresh,
   navigate,
@@ -142,13 +143,30 @@ async function openEditor(data, clone) {
   activate('editor');
 }
 
+// Upstream update inbox for imported skills: checked at startup and every 30 minutes (ETag-revalidated on GitHub).
+let updatesChecked = 0;
+async function checkUpdates(force = false) {
+  if (!force && Date.now() - updatesChecked < 30 * 60_000) return;
+  updatesChecked = Date.now();
+  try {
+    const { updates } = await api.updates(force);
+    app.updates = new Map(updates.map(update => [update.name, update]));
+    library.update(snapshot);
+    if (route === 'reader') await loadDetail();
+  } catch { /* Offline or rate limited: the next check retries. */ }
+}
+setInterval(() => checkUpdates(), 10 * 60_000);
+app.checkUpdates = checkUpdates;
+
 async function refresh() {
   const job = snapshotJob.begin();
   try {
     const [skills, tags, providers] = await Promise.all([api.skills('', job.signal), api.tags(job.signal), api.providers(job.signal)]);
     if (!job.current()) return;
     snapshot = { skills, tags, providers };
+    const firstLoad = !loaded;
     loaded = true;
+    if (firstLoad) setTimeout(() => checkUpdates(), 4000);
     renderProviderButton();
     library.update(snapshot);
     if (route === 'reader') await loadDetail();

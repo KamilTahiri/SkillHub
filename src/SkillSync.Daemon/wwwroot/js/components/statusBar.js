@@ -3,7 +3,10 @@ import { Latest, deployment, installedProviders } from '../state.js';
 import { icon } from '../icons.js';
 import { h, button, heading, panel, field, select, disclosure, confirmAction, errorText, busy, notify, copy } from '../ui.js';
 
-const CONNECTION_GROUPS = { codex: 'ChatGPT / Codex', gemini: 'Gemini & Antigravity', claude: 'Claude', cursor: 'Cursor' };
+const CONNECTION_GROUPS = { codex: 'ChatGPT / Codex', gemini: 'Gemini & Antigravity', claude: 'Claude', cursor: 'Cursor',
+  copilot: 'GitHub Copilot', windsurf: 'Windsurf', cline: 'Cline', roocode: 'Roo Code' };
+// SkillHub syncs skills to these tools but does not write their MCP settings yet.
+const FOLDER_ONLY = new Set(['copilot', 'windsurf', 'cline', 'roocode']);
 const CLIENT_PROVIDERS = { codex: 'codex', 'gemini-cli': 'gemini', antigravity: 'gemini', 'claude-code': 'claude', 'claude-desktop': 'claude', cursor: 'cursor' };
 
 export function createSettings(root, app) {
@@ -93,7 +96,8 @@ export function createSettings(root, app) {
         group.issues > 0 && h('span', { class: 'warning' }, ' · ' + group.issues + (group.issues === 1 ? ' needs' : ' need') + ' review')));
     const mcpLine = h('li', { class: 'capability', 'data-state': registered.length ? 'ok' : 'muted' }, icon('plug'),
       h('span', {}, h('strong', {}, 'SkillHub tools (MCP)'), ' ',
-        registered.length ? 'Connected in ' + registered.join(' and ')
+        FOLDER_ONLY.has(group.id) ? 'Add SkillHub to this tool’s MCP settings yourself for now (command: SkillHub.exe mcp-stdio).'
+        : registered.length ? 'Connected in ' + registered.join(' and ')
           : 'Not connected. Connect below so ' + group.label.split(' ')[0] + ' can create and update skills through SkillHub.'));
     return h('section', { class: 'connection-card', 'data-state': tone, 'aria-label': group.label },
       h('header', { class: 'connection-head' },

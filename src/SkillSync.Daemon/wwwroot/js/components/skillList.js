@@ -3,6 +3,7 @@ import { COLLECTIONS, PROVIDERS, Latest, deployment, installedProviders, matches
 import { icon, PROVIDER_NAMES } from '../icons.js';
 import { highlighted } from '../markdown.js';
 import { h, button, field, select, modal, confirmAction, errorText, notify, busy, copy } from '../ui.js';
+import { copySkillPrompt, reviewUpdate } from './skillInsights.js';
 
 const STATUSES = { synced: 'Synced', issue: 'Needs attention', disabled: 'Disabled', pending: 'Pending or undeployed', catalog: 'Catalog' };
 const EMPTY_FILTERS = { tags: [], tagMode: 'all', origin: '', provider: '', status: '' };
@@ -342,21 +343,26 @@ export function createLibrary(root, app) {
         const menu = h('details', { class: 'action-menu row-menu' },
           h('summary', { class: 'btn small icon-only', 'aria-label': 'More actions for ' + (skill.title || skill.name), title: 'More actions' }, icon('more')),
           h('div', { class: 'action-menu-list' },
-            button([icon('copy'), 'Copy instructions'], event => { menu.open = false; detailThen(event.currentTarget, detail => copy(detail.skill.instructions_markdown)); }, 'quiet small'),
+            button([icon('copy'), 'Copy instructions only'], event => { menu.open = false; detailThen(event.currentTarget, detail => copy(detail.skill.instructions_markdown)); }, 'quiet small'),
             button([icon('copy'), 'Copy name'], () => { menu.open = false; copy(skill.name); }, 'quiet small'),
             issues[0] && button([icon('sync'), 'Review ' + issues[0].label], () => { menu.open = false; app.review(skill.name, issues[0]); }, 'quiet small')));
         menu.addEventListener('focusout', event => { if (!menu.contains(event.relatedTarget)) menu.open = false; });
         menu.addEventListener('keydown', event => {
           if (event.key === 'Escape' && menu.open) { event.stopPropagation(); menu.open = false; menu.firstElementChild.focus(); }
         });
+        const update = app.updates?.get(skill.name);
         const quick = h('div', { class: 'row-actions' },
+          button([icon('copy')], event => busy(event.currentTarget, () => copySkillPrompt(app, key)), 'small icon-only',
+            { 'aria-label': 'Copy skill prompt for ' + (skill.title || skill.name), title: 'Copy skill prompt' }),
           button([icon('open')], () => { selectedKey = key; savedScroll = window.scrollY; app.read(key); }, 'small icon-only',
             { 'aria-label': 'Open ' + (skill.title || skill.name), title: 'Open' }),
           !readOnly && button([icon('edit')], event => detailThen(event.currentTarget, detail => app.edit(detail, { clone: skill.is_catalog_only })),
             'small icon-only', { 'aria-label': (skill.is_catalog_only ? 'Clone ' : 'Edit ') + (skill.title || skill.name),
               title: skill.is_catalog_only ? 'Clone to My Skills' : 'Edit' }),
           menu);
-        return h('li', { class: 'result-row library-row' }, row, h('div', { class: 'library-row-status' }, providers, exceptions), quick);
+        const updateBadge = update && button([icon('sync'), 'Update'], () => reviewUpdate(app, skill), 'small update-badge',
+          { title: update.repo + ' has a newer version', 'aria-label': 'Review the upstream update for ' + (skill.title || skill.name) });
+        return h('li', { class: 'result-row library-row' }, row, h('div', { class: 'library-row-status' }, updateBadge, providers, exceptions), quick);
       }));
       results.replaceChildren(list);
       if (visible.length > limit) results.append(button('Show more skills', () => {

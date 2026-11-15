@@ -17,7 +17,7 @@
     <PackageReference Include="Microsoft.Web.WebView2" Version="1.0.2903.40" />
     <ProjectReference Include="..\SkillHub.Core\SkillHub.Core.csproj" />
     <Compile Remove="Core\**\*.cs;Watchers\ProviderDiscoveryService.cs" />
-    <Compile Include="Core\Engine\InstallManager.cs;Core\Engine\ConfigFileEditor.cs;Core\Engine\JsonMcpConfigEditor.cs;Core\Engine\TomlMcpConfigEditor.cs" />
+    <Compile Include="Core\Engine\InstallManager*.cs;Core\Engine\ConfigFileEditor.cs;Core\Engine\JsonMcpConfigEditor.cs;Core\Engine\TomlMcpConfigEditor.cs" />
   </ItemGroup>
 
   <ItemGroup>

@@ -263,7 +263,7 @@ test('workbench at desktop and docked sizes, with keyboard, themes, Markdown and
       assert.equal(await evaluate('document.querySelectorAll("#provider-overview svg").length'), 2);
       await click('#provider-overview');
       await wait('document.querySelector("dialog[open]")?.getAttribute("aria-modal") === "true"');
-      assert.equal(await evaluate('document.querySelectorAll(".provider-overview-row").length'), 4);
+      assert.equal(await evaluate('document.querySelectorAll(".provider-overview-row").length'), 8);
       await key('Escape');
       await wait('!document.querySelector("dialog[open]")');
       await click('#quick-theme');
@@ -329,7 +329,11 @@ test('workbench at desktop and docked sizes, with keyboard, themes, Markdown and
       await wait('document.querySelector("dialog[open] input") === document.activeElement');
       await key('Escape');
       await wait('!document.querySelector("dialog[open]")');
+      assert.ok(await evaluate('[...document.querySelectorAll("#reader-screen button")].some(b => b.textContent.includes("Copy skill prompt"))'));
       await textButton('Edit skill');
+      // Editor 2.0: write pane with toolbar and budget meters beside the live preview.
+      await wait('document.querySelector(".editor-workspace .editor-toolbar") && document.querySelectorAll(".budget-meter").length === 3');
+      await wait('document.querySelector(".editor-side .markdown")?.textContent.length > 0');
       await evaluate('const titleField = document.querySelector("#editor-screen label input"); titleField.value = "Edited"; titleField.dispatchEvent(new Event("input", { bubbles: true }));');
       // Ctrl+K opens the command palette; leaving the dirty editor from it still goes through the discard guard.
       await key('k', 2, 'KeyK');
@@ -419,7 +423,7 @@ test('workbench at desktop and docked sizes, with keyboard, themes, Markdown and
       await wait('document.querySelector(".import-document")?.textContent.includes("The pinned supporting file.")');
       await click('.file-tab[data-path=""]');
       await wait('document.querySelector(".import-document")?.textContent.includes("Reviewed body")');
-      await textButton('+ Add to My Skills');
+      await textButton('+ Add this skill');
       await until(() => fixture.applied, 'No import request received');
       assert.equal(fixture.preparing.get('Fast/SKILL.md'), 'Fast-commit');
       assert.deepEqual(fixture.applied, { route: '/imports/Fast-plan/apply', data: { revision: 'Fast-commit', name: 'fixture-import', providers: [] } });

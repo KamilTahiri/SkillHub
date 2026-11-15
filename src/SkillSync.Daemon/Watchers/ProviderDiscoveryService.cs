@@ -109,7 +109,36 @@ public sealed class ProviderDiscoveryService
                 "Cursor",
                 Path.Combine(_userHomeRoot, ".cursor"),
                 Path.Combine(_userHomeRoot, ".cursor", "rules"),
-                "~/.cursor/rules/<name>.mdc")
+                "~/.cursor/rules/<name>.mdc"),
+            BuildInfo(
+                ProviderType.Copilot,
+                "GitHub Copilot",
+                Path.Combine(_userHomeRoot, ".copilot"),
+                Path.Combine(_userHomeRoot, ".copilot", "skills"),
+                "~/.copilot/skills/<name>/SKILL.md",
+                forceInstalled: HasExtension("github.copilot")),
+            BuildInfo(
+                ProviderType.Windsurf,
+                "Windsurf",
+                Path.Combine(_userHomeRoot, ".codeium", "windsurf"),
+                Path.Combine(_userHomeRoot, ".codeium", "windsurf", "skills"),
+                "~/.codeium/windsurf/skills/<name>/SKILL.md",
+                folderImpliesInstall: false,
+                forceInstalled: Directory.Exists(Path.Combine(_userHomeRoot, ".codeium", "windsurf"))),
+            BuildInfo(
+                ProviderType.Cline,
+                "Cline",
+                Path.Combine(_userHomeRoot, "Documents", "Cline"),
+                ClineRulesRoot,
+                "~/Documents/Cline/Rules/<name>.md",
+                forceInstalled: HasExtension("saoudrizwan.claude-dev")),
+            BuildInfo(
+                ProviderType.RooCode,
+                "Roo Code",
+                Path.Combine(_userHomeRoot, ".roo"),
+                Path.Combine(_userHomeRoot, ".roo", "rules"),
+                "~/.roo/rules/<name>.md",
+                forceInstalled: HasExtension("rooveterinaryinc.roo-cline"))
         };
 
         return providers;
@@ -499,6 +528,33 @@ public sealed class ProviderDiscoveryService
         ];
     }
 
+    private string ClineRulesRoot => Path.Combine(_userHomeRoot, "Documents", "Cline", "Rules");
+
+    /// <summary>File extension for providers that store one flat file per skill instead of a skill folder.</summary>
+    public static string? FlatExtension(ProviderType provider) => provider switch
+    {
+        ProviderType.Cursor => ".mdc",
+        ProviderType.Cline or ProviderType.RooCode => ".md",
+        _ => null
+    };
+
+    /// <summary>True when a VS Code-family editor has an extension whose folder name starts with the given id.</summary>
+    private bool HasExtension(string id)
+    {
+        foreach (var editor in new[] { ".vscode", ".vscode-insiders", ".cursor", ".windsurf" })
+        {
+            var root = Path.Combine(_userHomeRoot, editor, "extensions");
+            try
+            {
+                if (Directory.Exists(root) && Directory.EnumerateDirectories(root, id + "*").Any()) return true;
+            }
+            catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+            {
+            }
+        }
+        return false;
+    }
+
     public ProviderDirectoryInfo GetProviderInfo(ProviderType provider)
     {
         return DiscoverProviders().First(p => p.Provider == provider);
@@ -525,14 +581,14 @@ public sealed class ProviderDiscoveryService
         var cleanSlug = NormalizeSlug(skillSlug);
         var info = GetProviderInfo(provider);
 
-        return provider == ProviderType.Cursor
-            ? Path.Combine(info.SkillsRootDirectory, $"{cleanSlug}.mdc")
+        return FlatExtension(provider) is { } extension
+            ? Path.Combine(info.SkillsRootDirectory, cleanSlug + extension)
             : Path.Combine(info.SkillsRootDirectory, cleanSlug, "SKILL.md");
     }
 
     public string? GetSkillDirectoryPath(ProviderType provider, string skillSlug)
     {
-        if (provider == ProviderType.Cursor)
+        if (FlatExtension(provider) is not null)
         {
             return null;
         }
@@ -581,7 +637,11 @@ public sealed class ProviderDiscoveryService
         (ProviderType.Codex, Path.Combine(_userHomeRoot, ".codex", "skills")),
         (ProviderType.Codex, Path.Combine(_userHomeRoot, ".agents", "skills")),
         (ProviderType.Cursor, Path.Combine(_userHomeRoot, ".cursor", "skills")),
-        (ProviderType.Cursor, Path.Combine(_userHomeRoot, ".cursor", "rules"))
+        (ProviderType.Cursor, Path.Combine(_userHomeRoot, ".cursor", "rules")),
+        (ProviderType.Copilot, Path.Combine(_userHomeRoot, ".copilot", "skills")),
+        (ProviderType.Windsurf, Path.Combine(_userHomeRoot, ".codeium", "windsurf", "skills")),
+        (ProviderType.Cline, ClineRulesRoot),
+        (ProviderType.RooCode, Path.Combine(_userHomeRoot, ".roo", "rules"))
     ];
 
     public bool TryResolveSkillFromFilePath(string fullPath, out ProviderType provider, out string skillSlug)
@@ -613,8 +673,8 @@ public sealed class ProviderDiscoveryService
                 return null;
             }
 
-            var flatExtension = root.EndsWith($"{Path.DirectorySeparatorChar}rules", StringComparison.OrdinalIgnoreCase)
-                ? ".mdc"
+            var flatExtension = provider is ProviderType.Cline or ProviderType.RooCode ? ".md"
+                : root.EndsWith($"{Path.DirectorySeparatorChar}rules", StringComparison.OrdinalIgnoreCase) ? ".mdc"
                 : root.EndsWith($"{Path.DirectorySeparatorChar}commands", StringComparison.OrdinalIgnoreCase) ? ".md" : null;
             if (flatExtension != ".mdc")
             {
