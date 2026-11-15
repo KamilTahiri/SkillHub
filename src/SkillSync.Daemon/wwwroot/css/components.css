@@ -16,6 +16,9 @@
 }
 .btn.small { min-height: 29px; padding: 3px 8px; }
 .input::placeholder, textarea::placeholder { color: var(--muted); }
+/* Long placeholders end in an ellipsis instead of being cut mid-letter. */
+input[type="search"], .search-field input, .palette-input { text-overflow: ellipsis; white-space: nowrap; overflow: hidden; }
+input[type="search"]::placeholder, .search-field input::placeholder { text-overflow: ellipsis; white-space: nowrap; overflow: hidden; }
 .field { display: grid; gap: 5px; min-width: 0; }
 .field > span:first-child { font-weight: 600; }
 .field-help, .muted { color: var(--muted); }
@@ -1892,3 +1895,18 @@ dialog.onboarding { width: min(640px, calc(100vw - 32px)); padding: 0; }
 .onboarding-prompts li { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 8px; align-items: center; padding: 8px 10px; border-radius: 10px; background: var(--raised); }
 .onboarding-prompts code { white-space: normal; font-size: .85rem; }
 .onboarding-foot { display: flex; justify-content: flex-end; gap: 8px; padding: 12px 20px 18px; border-top: 1px solid var(--line); }
+
+/* Connections: where Claude reads skills. */
+.claude-skills-note {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 10px;
+  margin: 0 16px 12px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--surface-2);
+  font-size: .88rem;
+}
+.claude-skills-note ul { margin: 0; padding-left: 18px; display: grid; gap: 4px; }
+.claude-skills-note > .ui-icon { color: var(--accent); margin-top: 2px; }

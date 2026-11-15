@@ -69,6 +69,7 @@ export const api = {
   restoreConflict: (id, revision) => request('/diagnostics/conflicts/restore', { method: 'POST', data: { id, revision } }),
   conflictPreview: id => request('/diagnostics/conflicts/preview?id=' + encodeURIComponent(id)),
   openFolder: path => request('/diagnostics/folders/open', { method: 'POST', data: { path } }),
+  restartClaude: () => request('/mcp-clients/claude-desktop/restart-apply', { method: 'POST' }),
   onboarding: completed => request('/preferences/onboarding', { method: 'PATCH', data: { enabled: completed } }),
   workspaces: signal => request('/workspaces', { signal }),
   addWorkspace: (path, name) => request('/workspaces', { method: 'POST', data: { path, name } }),

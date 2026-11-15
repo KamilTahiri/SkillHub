@@ -275,6 +275,36 @@ test('workbench at desktop and docked sizes, with keyboard, themes, Markdown and
         .catch(error => { throw new Error(error.message + '\\n' + page.pageErrors.join('\\n')); });
       assert.ok(await evaluate('document.documentElement.scrollWidth <= innerWidth'));
       assert.ok(await evaluate('document.querySelector(".result-button").getBoundingClientRect().top < innerHeight'));
+      // Header at every width: tools stay inside the window, the brand never touches the tabs, the tabs never touch the tools.
+      for (const width of [460, 540, 640, 720, 768, 850, 900, 1024, 1280, 1440]) {
+        await size(width, 800, 1);
+        await wait('innerWidth === ' + width);
+        const expectedPlaceholder = width <= 720 ? 'Search skills… (/)' : 'Search skills, tags, and instructions';
+        await wait('document.querySelector("#library-search").placeholder === ' + JSON.stringify(expectedPlaceholder), 'placeholder at ' + width);
+        const header = await evaluate(`(() => {
+          const rect = selector => document.querySelector(selector).getBoundingClientRect();
+          const brand = rect('.brand'), nav = rect('#primary-nav'), tools = rect('.app-tools');
+          const theme = rect('#quick-theme'), pill = rect('#provider-overview');
+          const search = document.querySelector('#library-search');
+          return {
+            themeInside: theme.left >= 0 && theme.right <= innerWidth && theme.width > 0,
+            pillInside: pill.left >= 0 && pill.right <= innerWidth && pill.width > 0,
+            brandBeforeNav: brand.right <= nav.left,
+            navBeforeTools: nav.right <= tools.left,
+            noPageOverflow: document.documentElement.scrollWidth <= innerWidth,
+            navNotClipped: document.querySelector('#primary-nav').scrollWidth <= document.querySelector('#primary-nav').clientWidth + 1,
+            brandLabel: getComputedStyle(document.querySelector('.brand-label')).clipPath !== 'none',
+            placeholder: search.placeholder,
+            ellipsis: getComputedStyle(search).textOverflow
+          };
+        })()`);
+        const compact = width <= 720;
+        assert.deepEqual(header, { themeInside: true, pillInside: true, brandBeforeNav: true, navBeforeTools: true, noPageOverflow: true, navNotClipped: true,
+          brandLabel: compact, placeholder: compact ? 'Search skills… (/)' : 'Search skills, tags, and instructions', ellipsis: 'ellipsis' },
+          'header at ' + width + 'px');
+      }
+      await size(480, 600, 1.5);
+      await wait('innerWidth === 480');
       await verifyContrast(evaluate);
       assert.match(await evaluate('document.querySelector(".library-row").textContent'), /Disabled/);
       assert.match(await evaluate('document.querySelector(".result-button").textContent'), /\+[1-9]/);

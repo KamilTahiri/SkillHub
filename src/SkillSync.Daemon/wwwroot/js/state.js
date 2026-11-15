@@ -52,7 +52,8 @@ export function targetIssues(skill, installed) {
   return (skill.destinations ?? []).filter(target => installed.includes(target.provider) &&
     isTargetEnabled(skill, target.provider) && ['error', 'conflict', 'missing'].includes(target.state))
     .map(target => ({ ...target, label: target.provider === 'gemini'
-      ? (/[\\/]antigravity[\\/]/i.test(target.path) ? 'Antigravity' : 'Gemini') : PROVIDERS[target.provider] }));
+      ? (/[\\/]\.gemini[\\/]config[\\/]skills[\\/]/i.test(target.path) ? 'Antigravity IDE'
+        : /[\\/]antigravity[\\/]/i.test(target.path) ? 'Antigravity' : 'Gemini') : PROVIDERS[target.provider] }));
 }
 
 export function deployment(skill, installed) {

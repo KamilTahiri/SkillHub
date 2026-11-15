@@ -49,16 +49,16 @@ AI tools now share one idea, the `SKILL.md` skill folder, but each keeps its own
 |---|---|---|---|---|---|
 | ChatGPT / OpenAI Codex | `~/.codex/skills`, `~/.agents/skills` | `SKILL.md` folder | Yes | Automatic (`~/.codex/config.toml`) | `.agents/skills` |
 | Gemini CLI | `~/.gemini/skills` | `SKILL.md` folder | Yes | Automatic (`~/.gemini/settings.json`) | `.gemini/skills` |
-| Google Antigravity | `~/.gemini/antigravity/skills` | `SKILL.md` folder | Yes | Automatic (`mcp_config.json`) | `.gemini/skills` |
+| Google Antigravity IDE & CLI | `~/.gemini/config/skills` (global customizations), plus `~/.gemini/antigravity/skills` for older builds | `SKILL.md` folder | Yes | Automatic (`~/.gemini/config/mcp_config.json`) | `.gemini/skills` |
 | Claude Code | `~/.claude/skills`, `~/.claude/commands` | `SKILL.md` folder | Yes | Automatic (`~/.claude.json`) | `.claude/skills` |
-| Claude Desktop | Built-in Anthropic skills are listed read-only | n/a | n/a | Automatic, including the Microsoft Store app's data folder | n/a |
+| Claude Desktop | Code tab: `~/.claude/skills`. Chat Skills screen: your claude.ai account (upload ZIPs from Connections) | `SKILL.md` folder | Code tab only | Automatic, including the Microsoft Store app; *Restart Claude to apply* closes and reopens Claude so it keeps the entry | n/a |
 | Cursor | `~/.cursor/rules` | `.mdc` rule | Yes | Automatic (`~/.cursor/mcp.json`) | `.cursor/rules` |
 | GitHub Copilot | `~/.copilot/skills` | `SKILL.md` folder | Yes | Add `SkillHub.exe mcp-stdio` yourself | `.github/instructions` (opt-in) |
 | Windsurf | `~/.codeium/windsurf/skills` | `SKILL.md` folder | Yes | Add `SkillHub.exe mcp-stdio` yourself | n/a |
 | Cline | `~/Documents/Cline/Rules` | `.md` rule | Opt-in per skill | Add `SkillHub.exe mcp-stdio` yourself | n/a |
 | Roo Code | `~/.roo/rules` | `.md` rule | Opt-in per skill | Add `SkillHub.exe mcp-stdio` yourself | n/a |
 
-Cline and Roo Code load every rule into every conversation, so skills reach them only when you turn them on. Claude Desktop's chat app manages its own uploaded skills in your claude.ai account; SkillHub connects its MCP server and shows Anthropic's built-in skills so you can copy them to other tools.
+Cline and Roo Code load every rule into every conversation, so skills reach them only when you turn them on. Claude Desktop's chat **Skills** screen lists skills saved in your claude.ai account: the app downloads them into a cache and removes anything else from it, so they cannot be synced from disk. SkillHub shows this in Connections, prepares upload-ready ZIPs, connects the MCP server, and lists Anthropic's built-in skills so you can copy them to other tools.
 
 ## Quick start
 

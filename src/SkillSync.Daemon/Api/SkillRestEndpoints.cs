@@ -133,6 +133,10 @@ public static class SkillRestEndpoints
             }
         }
 
+        api.MapPost("/mcp-clients/claude-desktop/restart-apply", async (HttpContext context, CancellationToken ct) =>
+            context.RequestServices.GetService<ClaudeDesktopController>() is { } claude
+                ? Results.Json(await claude.RestartAndApplyAsync(ct).ConfigureAwait(false), WebJsonOptions)
+                : Results.NotFound(new { error = "Claude Desktop control is not available." }));
         api.MapPost("/mcp-clients/{id}", (string id, ClientConfigurationRequest request, InstallManager install) =>
             Results.Json(install.ConfigureClient(id, request.Action), WebJsonOptions));
         api.MapGet("/readiness", (MultiRootFileWatcher watcher) =>
@@ -243,6 +247,9 @@ public static class SkillRestEndpoints
                         detected = installManager.CanConfigure(c),
                         restart_required = installManager.IsRestartPending(c.ClientId),
                         install_evidence = installManager.DescribeInstall(c.ClientId),
+                        // Claude Desktop rewrites its config while it runs, so the UI offers "Restart Claude to apply".
+                        app_running = c.ClientId == "claude-desktop" &&
+                            context.RequestServices.GetService<ClaudeDesktopController>() is { IsRunning: true },
                         error = c.Error
                     })
                 },
@@ -351,14 +358,17 @@ public static class SkillRestEndpoints
             });
         });
 
-        api.MapGet("/skills/{name}/bundle", async (string name, SyncEngine engine, CancellationToken ct) =>
+        api.MapGet("/skills/{name}/bundle", async (string name, string? format, SyncEngine engine, CancellationToken ct) =>
         {
             var skill = engine.GetSkill(name) ?? throw new KeyNotFoundException("Skill not found.");
+            // format=claude: the upload format of Claude's Skills screen (a <name>/ folder whose SKILL.md uses Claude frontmatter).
+            var claude = string.Equals(format, "claude", StringComparison.OrdinalIgnoreCase);
+            var prefix = claude ? ProviderDiscoveryService.NormalizeSlug(skill.Name) + "/" : string.Empty;
             using var buffer = new MemoryStream();
             using (var archive = new ZipArchive(buffer, ZipArchiveMode.Create, leaveOpen: true))
             {
-                var files = new Dictionary<string, string> { ["SKILL.md"] = engine.PreviewAllTranspilations(skill)["canonical"] };
-                foreach (var (path, content) in skill.SupportingFiles) files.Add(SkillPaths.SupportingPath(path), content);
+                var files = new Dictionary<string, string> { [prefix + "SKILL.md"] = engine.PreviewAllTranspilations(skill)[claude ? "claude" : "canonical"] };
+                foreach (var (path, content) in skill.SupportingFiles) files.Add(prefix + SkillPaths.SupportingPath(path), content);
                 foreach (var (path, content) in files)
                 {
                     await using var writer = new StreamWriter(archive.CreateEntry(path).Open());

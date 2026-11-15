@@ -320,7 +320,13 @@ public sealed class ProviderDiscoveryService
             {
                 foreach (var dir in EnumerateCatalogDirectories(agBuiltin))
                 {
-                    TryAddSkillFile(Path.Combine(dir, "SKILL.md"), "template", "Antigravity Built-in");
+                    // Each install can ship its own version of a built-in; say which one this copy came from.
+                    TryAddSkillFile(Path.Combine(dir, "SKILL.md"), "template", agFolder switch
+                    {
+                        "antigravity-cli" => "Antigravity CLI Built-in",
+                        "antigravity-ide" => "Antigravity IDE Built-in",
+                        _ => "Antigravity Built-in"
+                    });
                 }
             }
             catch
@@ -424,9 +430,23 @@ public sealed class ProviderDiscoveryService
             }
         }
 
-        return results.GroupBy(item => item.Id, StringComparer.Ordinal)
+        var unique = results.GroupBy(item => item.Id, StringComparer.Ordinal)
             .Select(group => group.OrderByDescending(item => item.CacheVersion)
-                .ThenBy(item => item.SkillMdPath, SkillPaths.Comparer).First()).ToArray();
+                .ThenBy(item => item.SkillMdPath, SkillPaths.Comparer).First()).ToList();
+        // The same built-in often ships in several installs (Antigravity's antigravity, antigravity-cli and antigravity-ide
+        // folders). Identical copies from one origin are listed once; the first one found keeps its id, so a template that
+        // was already activated stays linked.
+        var order = results.Select((item, index) => (item.Id, index)).GroupBy(pair => pair.Id).ToDictionary(group => group.Key, group => group.Min(pair => pair.index));
+        return unique.OrderBy(item => order[item.Id])
+            .GroupBy(item => (Family: item.OriginProvider.StartsWith("Antigravity", StringComparison.Ordinal) ? "Antigravity" : item.OriginProvider,
+                item.Slug, Hash: SkillFileHash(item.SkillMdPath)))
+            .Select(group => group.First()).ToArray();
+    }
+
+    private static string SkillFileHash(string path)
+    {
+        try { return Core.Parsing.ContentHasher.ComputeRawFileHash(File.ReadAllBytes(path)); }
+        catch (Exception error) when (error is IOException or UnauthorizedAccessException) { return path; }
     }
 
     private static IEnumerable<string> EnumerateCatalogDirectories(string root)
@@ -690,19 +710,34 @@ public sealed class ProviderDiscoveryService
     }
 
     /// <summary>
-    /// Additional secondary path for Antigravity IDE (~/.gemini/antigravity/skills/&lt;name&gt;/SKILL.md)
+    /// Additional secondary path for Antigravity (~/.gemini/antigravity/skills/&lt;name&gt;/SKILL.md)
     /// when ~/.gemini/antigravity exists on the host machine.
     /// </summary>
-    public string? GetAntigravityMirrorSkillDirectory(string skillSlug)
-    {
-        var antigravityRoot = Path.Combine(_userHomeRoot, ".gemini", "antigravity");
-        if (!Directory.Exists(antigravityRoot))
-        {
-            return null;
-        }
+    public string? GetAntigravityMirrorSkillDirectory(string skillSlug) => GetAntigravityMirrorSkillDirectories(skillSlug).FirstOrDefault();
 
+    /// <summary>Antigravity's global customization root. The IDE and current CLI read skills and MCP servers only from here.</summary>
+    public string AntigravityGlobalConfigRoot => Path.Combine(_userHomeRoot, ".gemini", "config");
+
+    /// <summary>
+    /// Every Antigravity skill folder a Gemini-enabled skill is mirrored into: the legacy <c>~/.gemini/antigravity/skills</c>
+    /// and the global customization root <c>~/.gemini/config/skills</c>, which Antigravity IDE reads (its docs:
+    /// "Global Configuration: ~/.gemini/config/"). Each is used only when Antigravity left its folder on this machine.
+    /// </summary>
+    public IReadOnlyList<string> GetAntigravityMirrorSkillDirectories(string skillSlug)
+    {
         var cleanSlug = NormalizeSlug(skillSlug);
-        return Path.Combine(antigravityRoot, "skills", cleanSlug);
+        var gemini = Path.Combine(_userHomeRoot, ".gemini");
+        var result = new List<string>();
+        if (Directory.Exists(Path.Combine(gemini, "antigravity")))
+        {
+            result.Add(Path.Combine(gemini, "antigravity", "skills", cleanSlug));
+        }
+        if (Directory.Exists(AntigravityGlobalConfigRoot) || Directory.Exists(Path.Combine(gemini, "antigravity-ide")) ||
+            Directory.Exists(Path.Combine(gemini, "antigravity-cli")))
+        {
+            result.Add(Path.Combine(AntigravityGlobalConfigRoot, "skills", cleanSlug));
+        }
+        return result;
     }
 
     public IReadOnlyList<(ProviderType Provider, string Root)> GetObservableRoots() =>
@@ -712,6 +747,7 @@ public sealed class ProviderDiscoveryService
         (ProviderType.Claude, Path.Combine(_userHomeRoot, ".claude", "commands")),
         (ProviderType.Gemini, Path.Combine(_userHomeRoot, ".gemini", "skills")),
         (ProviderType.Gemini, Path.Combine(_userHomeRoot, ".gemini", "antigravity", "skills")),
+        (ProviderType.Gemini, Path.Combine(_userHomeRoot, ".gemini", "config", "skills")),
         (ProviderType.Codex, Path.Combine(_userHomeRoot, ".codex", "skills")),
         (ProviderType.Codex, Path.Combine(_userHomeRoot, ".agents", "skills")),
         (ProviderType.Cursor, Path.Combine(_userHomeRoot, ".cursor", "skills")),

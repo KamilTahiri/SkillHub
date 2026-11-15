@@ -1,7 +1,7 @@
 import { api } from '../api.js';
 import { Latest, deployment, installedProviders } from '../state.js';
 import { icon } from '../icons.js';
-import { h, button, heading, panel, field, select, disclosure, confirmAction, errorText, busy, notify, copy, fill, modal, relativeTime as when } from '../ui.js';
+import { h, button, heading, panel, field, select, disclosure, confirmAction, errorText, busy, notify, copy, fill, modal, download, relativeTime as when } from '../ui.js';
 import { renderDiff } from '../diff.js';
 import { exportPack, exportPicker } from './skillPacks.js';
 
@@ -27,7 +27,7 @@ const ACTIVITY = {
   error: { label: 'Problem', icon: 'close', tone: 'warn' },
   default: { label: 'Activity', icon: 'info', tone: 'muted' }
 };
-const CLIENT_PROVIDERS = { codex: 'codex', 'gemini-cli': 'gemini', antigravity: 'gemini', 'claude-code': 'claude', 'claude-desktop': 'claude', cursor: 'cursor' };
+const CLIENT_PROVIDERS = { codex: 'codex', 'gemini-cli': 'gemini', antigravity: 'gemini', 'antigravity-ide': 'gemini', 'claude-code': 'claude', 'claude-desktop': 'claude', cursor: 'cursor' };
 
 export function createSettings(root, app) {
   let tab = 'Connections';
@@ -125,7 +125,31 @@ export function createSettings(root, app) {
         h('div', { class: 'connection-title' }, h('h2', {}, group.label), evidence && h('p', { class: 'muted' }, evidence)),
         h('span', { class: 'status-badge ' + tone }, h('span', { class: 'status-badge-dot', 'aria-hidden': 'true' }), state)),
       h('ul', { class: 'capabilities' }, skillsLine, mcpLine),
+      group.id === 'claude' && claudeSkillsNote(),
       group.items.length > 0 && h('ul', { class: 'connection-clients' }, group.items.map(item => clientRow(group, item))));
+  }
+
+  // Claude Desktop's Skills screen lists skills saved in the claude.ai account. The app downloads them into a cache folder
+  // and deletes anything else it finds there, so SkillHub cannot add skills to that screen from disk.
+  function claudeSkillsNote() {
+    const skills = app.snapshot.skills.filter(skill => skill.source_category === 'user' && !skill.is_catalog_only);
+    const feedback = h('div', { role: 'status' });
+    const zips = button([icon('download'), 'Download ZIPs for Claude upload'], () => busy(zips, async () => {
+      for (const skill of skills) {
+        const response = await fetch('/api/v1/skills/' + encodeURIComponent(skill.name) + '/bundle?format=claude');
+        if (!response.ok) throw new Error('Could not prepare ' + skill.name + '.');
+        download(skill.name + '.zip', await response.blob(), 'application/zip');
+        await new Promise(resolve => setTimeout(resolve, 250));
+      }
+      feedback.replaceChildren(h('p', { class: 'muted' }, 'Saved ' + skills.length + ' ZIP files to Downloads. In Claude Desktop open Settings › Capabilities › Skills › Upload skill and choose each file.'));
+    }, error => feedback.replaceChildren(errorText(error.message))), 'small', { disabled: !skills.length });
+    return h('div', { class: 'claude-skills-note' }, icon('info'),
+      h('div', { class: 'stack' },
+        h('strong', {}, 'Where Claude reads your skills'),
+        h('ul', {},
+          h('li', {}, h('strong', {}, 'Claude Code and the Code tab in Claude Desktop'), ' load ~/.claude/skills, which SkillHub keeps in sync.'),
+          h('li', {}, h('strong', {}, 'The Skills screen in Claude Desktop chat'), ' shows skills saved in your claude.ai account. Claude downloads those into its own cache and removes anything else from it, so they cannot be synced from disk. Upload a skill there once to use it in chat.')),
+        h('div', { class: 'actions wrap' }, zips), feedback));
   }
 
   function clientRow(group, { client, available }) {
@@ -138,7 +162,9 @@ export function createSettings(root, app) {
       { disabled: !available && !client.is_registered, title: client.is_registered ? REAPPLY_HINT : 'Add SkillHub to this tool’s MCP config file.',
         'aria-label': (client.is_registered ? 'Re-apply SkillHub connection for ' : 'Connect ') + client.display_name });
     const folder = client.client_id === 'antigravity' && group.provider?.provider_root
-      ? group.provider.provider_root + '/antigravity/skills' : group.provider?.skills_root;
+      ? group.provider.provider_root + '/antigravity/skills'
+      : client.client_id === 'antigravity-ide' && group.provider?.provider_root
+        ? group.provider.provider_root + '/config/skills' : group.provider?.skills_root;
     const menu = h('details', { class: 'action-menu' },
       h('summary', { class: 'btn small icon-only', 'aria-label': 'More actions for ' + client.display_name, title: 'More actions' }, icon('more')),
       h('div', { class: 'action-menu-list' },
@@ -158,13 +184,30 @@ export function createSettings(root, app) {
         await api.client(client.client_id, 'acknowledge');
         await load();
       }, error => feedback.replaceChildren(errorText(error.message))), 'quiet small', { 'aria-label': 'I restarted ' + client.display_name }));
+    // Claude Desktop rewrites its config while it runs; applying the change needs Claude closed first.
+    const claudeRestart = client.client_id === 'claude-desktop' && client.app_running && (!client.is_registered || client.restart_required) &&
+      button([icon('restart'), 'Restart Claude to apply'], async event => {
+        const control = event.currentTarget;
+        if (!await confirmAction('Restart Claude Desktop',
+          'SkillHub will close Claude Desktop, add its MCP connection while Claude is closed, check it, and start Claude again. Your chats are saved in your account. Continue?',
+          'Restart Claude', false)) return;
+        busy(control, async () => {
+          const result = await api.restartClaude();
+          if (result.error) throw new Error(result.error);
+          notify(result.registered ? 'SkillHub is connected to Claude Desktop' + (result.relaunched ? ' and Claude is starting again.' : '.') : 'Claude restarted, but the connection was not saved.',
+            { tone: result.registered ? 'success' : 'warning' });
+          await load();
+        }, error => feedback.replaceChildren(errorText(error.message)));
+      }, 'primary small', { title: 'Close Claude, write the MCP setting, and start Claude again' });
+    const runningHint = client.client_id === 'claude-desktop' && client.app_running && !client.is_registered &&
+      h('p', { class: 'field-help' }, 'Claude Desktop is running. It overwrites its config when it saves, so connect with “Restart Claude to apply”.');
     return h('li', { class: 'connection-client' },
       h('div', { class: 'connection-client-main' },
         h('div', { class: 'connection-client-name' }, h('strong', {}, client.display_name),
           h('span', { class: 'status-badge small ' + tone }, h('span', { class: 'status-badge-dot', 'aria-hidden': 'true' }), state),
           client.is_registered && h('small', { class: 'field-help' }, REAPPLY_HINT)),
-        h('div', { class: 'actions' }, update, menu)),
-      restart, client.error && errorText(client.error), feedback);
+        h('div', { class: 'actions' }, claudeRestart, claudeRestart && !client.is_registered ? null : update, menu)),
+      runningHint, claudeRestart ? null : restart, client.error && errorText(client.error), feedback);
   }
 
   async function updateClient(client, action, control, feedback) {

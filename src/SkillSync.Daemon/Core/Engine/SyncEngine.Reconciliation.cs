@@ -196,9 +196,12 @@ public sealed partial class SyncEngine
             {
                 Add(info.Provider, _discovery.GetSkillPrimaryFilePath(info.Provider, slug));
             }
-            if (info.Provider == ProviderType.Gemini && _discovery.GetAntigravityMirrorSkillDirectory(slug) is { } mirror)
+            if (info.Provider == ProviderType.Gemini)
             {
-                Add(info.Provider, Path.Combine(mirror, "SKILL.md"));
+                foreach (var mirror in _discovery.GetAntigravityMirrorSkillDirectories(slug))
+                {
+                    Add(info.Provider, Path.Combine(mirror, "SKILL.md"));
+                }
             }
         }
 

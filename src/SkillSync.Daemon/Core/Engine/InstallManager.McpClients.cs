@@ -38,8 +38,10 @@ public sealed partial class InstallManager
         // 3. Gemini CLI (~/.gemini/settings.json)
         candidates.Add(("gemini-cli", "Google Gemini CLI", Path.Combine(_userHomeRoot, ".gemini", "settings.json"), false));
 
-        // 4. Google Antigravity IDE (~/.gemini/antigravity/mcp_config.json)
-        candidates.Add(("antigravity", "Google Antigravity", Path.Combine(_userHomeRoot, ".gemini", "antigravity", "mcp_config.json"), false));
+        // 4. Google Antigravity. The IDE and current CLI read global MCP servers from ~/.gemini/config/mcp_config.json;
+        //    older builds read ~/.gemini/antigravity/mcp_config.json, which stays supported.
+        candidates.Add(("antigravity-ide", "Antigravity IDE & CLI", Path.Combine(_userHomeRoot, ".gemini", "config", "mcp_config.json"), false));
+        candidates.Add(("antigravity", "Google Antigravity (older builds)", Path.Combine(_userHomeRoot, ".gemini", "antigravity", "mcp_config.json"), false));
 
         // 5. Cursor IDE (~/.cursor/mcp.json)
         candidates.Add(("cursor", "Cursor", Path.Combine(_userHomeRoot, ".cursor", "mcp.json"), false));

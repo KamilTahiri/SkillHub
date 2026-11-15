@@ -13,7 +13,10 @@ body { min-height: 100vh; }
   font-size: 1.05rem;
   font-weight: 700;
   letter-spacing: -.025em;
+  flex: none;
+  white-space: nowrap;
 }
+.brand-label { white-space: nowrap; }
 .brand-mark {
   position: relative;
   width: 21px;
@@ -35,7 +38,17 @@ body { min-height: 100vh; }
 }
 .brand-mark::before { top: 4px; background: var(--accent-text); }
 .brand-mark::after { top: 8px; border-top-color: transparent; border-left-color: transparent; }
-.app-bar nav { display: flex; gap: 4px; align-self: stretch; }
+/* The nav is the only part of the bar that may shrink: it scrolls sideways instead of pushing the tools off-screen. */
+.app-bar nav {
+  display: flex;
+  gap: 4px;
+  align-self: stretch;
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: none;
+}
 .app-bar nav button[aria-current="page"] { color: var(--text); border-bottom-color: var(--accent); }
 .app-bar nav button:hover { background: var(--raised); }
 .app-tools {
@@ -43,6 +56,7 @@ body { min-height: 100vh; }
   display: flex;
   align-items: center;
   gap: 8px;
+  flex: none;
 }
 .ui-icon { width: 17px; height: 17px; flex: none; }
 .icon-button, .provider-overview {
@@ -236,6 +250,21 @@ body { min-height: 100vh; }
 @media (max-width: 860px) {
   .palette-trigger-label, .palette-trigger kbd { display: none; }
   .palette-trigger { padding: 5px 9px; }
+  .app-bar nav button { padding: 0 9px; }
+}
+/* Compact header: only the prism remains of the brand so it can never collide with the tabs. */
+@media (max-width: 720px) {
+  .brand-label { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+  .app-bar { gap: 10px; }
+}
+/* Below 700px the tabs show icons only (their names stay available to screen readers and as tooltips). */
+@media (max-width: 700px) {
+  .app-bar nav button > span { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }
+  .app-bar nav button { padding: 0 10px; }
+}
+@media (max-width: 560px) {
+  .provider-overview-icons { display: none; }
+  .app-tools { gap: 4px; }
 }
 .screen:not([hidden]) { animation: screen-in 200ms var(--ease); }
 #library-screen[data-density="compact"] .library-row .result-button { padding-block: 5px; grid-template-columns: 26px minmax(0, 1fr); }

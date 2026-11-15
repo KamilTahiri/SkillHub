@@ -17,7 +17,9 @@ public sealed partial class SyncEngine
         SkillDiskSnapshot Intended, Dictionary<string, string> RawFiles, DestinationReview Review);
 
     private static string DestinationLabel(string provider, string path) =>
-        provider == "gemini" && path.Split('/', '\\').Contains("antigravity", StringComparer.OrdinalIgnoreCase)
+        provider == "gemini" && path.Replace('\\', '/').Contains("/.gemini/config/skills/", StringComparison.OrdinalIgnoreCase)
+            ? "Antigravity IDE"
+            : provider == "gemini" && path.Split('/', '\\').Contains("antigravity", StringComparer.OrdinalIgnoreCase)
             ? "Antigravity" : provider switch { "gemini" => "Gemini", "codex" => "Codex", "claude" => "Claude", _ => "Cursor" };
 
     private static DestinationIssue Issue(CanonicalSkillModel model, TargetFileLedger target) =>

@@ -95,6 +95,15 @@ export function autoLoadMore(container, total, shown, append, list, noun = 'resu
   return sentinel;
 }
 
+/** Uses a shorter placeholder on compact windows so it never reads as cut off. */
+export function responsivePlaceholder(input, full, compact, query = '(max-width: 720px)') {
+  const media = matchMedia(query);
+  const apply = () => { input.placeholder = media.matches ? compact : full; };
+  media.addEventListener('change', apply);
+  apply();
+  return input;
+}
+
 export const button = (label, run, kind = '', extra = {}) =>
   h('button', { type: 'button', class: ('btn ' + kind).trim(), onclick: run, ...extra }, label);
 export const field = (label, control, hint) => h('label', { class: 'field' }, h('span', {}, label), control, hint && h('small', { class: 'field-help' }, hint));

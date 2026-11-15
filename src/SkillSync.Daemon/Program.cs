@@ -309,6 +309,8 @@ public static class Program
         builder.Services.AddSingleton<SkillImporterService>();
         builder.Services.AddSingleton<WorkspaceService>();
         builder.Services.AddSingleton<SkillPackService>();
+        builder.Services.AddSingleton<IClaudeDesktopProcesses, WindowsClaudeDesktopProcesses>();
+        builder.Services.AddSingleton<ClaudeDesktopController>();
         builder.Services.AddSingleton<McpJsonRpcHandler>();
         builder.Services.AddSingleton(sp =>
             new MultiRootFileWatcher(

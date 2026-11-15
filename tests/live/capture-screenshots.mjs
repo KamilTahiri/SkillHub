@@ -3,9 +3,9 @@
 // The Windows user name is replaced with "you" in visible text so screenshots carry no personal paths.
 //
 //   node tests/live/capture-screenshots.mjs [output folder]
-import { mkdir, writeFile } from 'node:fs/promises';
+import { mkdir, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
-import { userInfo } from 'node:os';
+import { tmpdir, userInfo } from 'node:os';
 
 const out = process.argv[2] ?? join(process.cwd(), 'docs', 'screenshots');
 const port = process.env.SKILLHUB_DEBUG_PORT ?? '9333';
@@ -96,10 +96,30 @@ try {
   await delay(500);
   await shot('connections');
 
-  // 5. Projects and 6. the welcome guide.
-  await click('[data-route=projects]');
-  await until('document.querySelector("#projects-screen .workspace-detail, #projects-screen .workspaces-empty")', 'projects');
-  await shot('projects');
+  // 5. Projects: a temporary demo project, shown at a clean path and removed (with the files it wrote) afterwards.
+  const demo = join(tmpdir(), 'skillhub-screenshot', 'acme-web-app');
+  await mkdir(demo, { recursive: true });
+  const demoId = await evaluate(`(async () => {
+    const { api } = await import('/js/api.js');
+    const created = await api.addWorkspace(${JSON.stringify(demo)}, 'acme-web-app');
+    const skills = (await api.skills()).filter(skill => skill.source_category === 'user').slice(0, 2).map(skill => skill.name);
+    const creator = (await api.skills()).find(skill => skill.is_catalog_only && skill.name === 'skill-creator');
+    await api.updateWorkspace(created.id, { skills: creator ? [...skills, creator.catalog_id] : skills, targets: ['claude', 'codex', 'gemini', 'cursor'] });
+    return created.id;
+  })()`);
+  try {
+    await click('[data-route=projects]');
+    await until(`document.querySelector('#projects-screen [data-workspace="${demoId}"]')`, 'projects');
+    await evaluate(`document.querySelector('#projects-screen [data-workspace="${demoId}"]').click()`);
+    await until('document.querySelector("#projects-screen .workspace-detail h2")?.textContent === "acme-web-app"', 'demo project');
+    await evaluate(`(() => { const path = document.querySelector('.workspace-detail .path'); path.firstChild.textContent = '~/Projects/acme-web-app'; })()`);
+    await shot('projects');
+  } finally {
+    await evaluate(`import('/js/api.js').then(({ api }) => api.removeWorkspace(${JSON.stringify(demoId)}, true))`);
+    await rm(join(tmpdir(), 'skillhub-screenshot'), { recursive: true, force: true });
+  }
+
+  // 6. The welcome guide.
   await click('[data-route=settings]');
   await textButton('Appearance & Startup');
   await until('[...document.querySelectorAll("#settings-screen button")].some(b => b.textContent === "Run Welcome Guide")', 'settings');

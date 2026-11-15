@@ -2,7 +2,7 @@ import { api } from '../api.js';
 import { COLLECTIONS, PROVIDERS, Latest, deployment, installedProviders, matchesFilters, inCollection, skillKey, targetIssues, slugify, tagSlug } from '../state.js';
 import { icon, PROVIDER_NAMES } from '../icons.js';
 import { highlighted } from '../markdown.js';
-import { h, button, field, select, modal, confirmAction, errorText, notify, busy, copy, bundleBadge, autoLoadMore } from '../ui.js';
+import { h, button, field, select, modal, confirmAction, errorText, notify, busy, copy, bundleBadge, autoLoadMore, responsivePlaceholder } from '../ui.js';
 import { copySkillPrompt, reviewUpdate } from './skillInsights.js';
 
 const STATUSES = { synced: 'Synced', issue: 'Needs attention', disabled: 'Disabled', pending: 'Pending or undeployed', catalog: 'Catalog' };
@@ -30,6 +30,7 @@ export function createLibrary(root, app) {
   const count = h('p', { class: 'sr-only', role: 'status' });
   const search = h('input', { type: 'search', id: 'library-search', class: 'input', 'aria-label': 'Search skills',
     placeholder: 'Search skills, tags, and instructions', oninput: () => scheduleSearch() });
+  responsivePlaceholder(search, 'Search skills, tags, and instructions', 'Search skills… (/)');
   const filtersButton = button([icon('filters'), 'Tags & filters'], toggleFilters, '', {
     id: 'library-filters-toggle', 'aria-expanded': 'false', 'aria-controls': 'library-filters'
   });

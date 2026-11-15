@@ -3,7 +3,7 @@ import { reviewPack } from './skillPacks.js';
 import { Latest, PROVIDERS, slugify } from '../state.js';
 import { renderMarkdown } from '../markdown.js';
 import { icon, PROVIDER_NAMES } from '../icons.js';
-import { h, button, field, select, panel, modal, errorText, busy, notify, disclosure, confirmAction, fill, bundleBadge, autoLoadMore } from '../ui.js';
+import { h, button, field, select, panel, modal, errorText, busy, notify, disclosure, confirmAction, fill, bundleBadge, autoLoadMore, responsivePlaceholder } from '../ui.js';
 
 const TOPICS = [['', 'All topics'], ['coding', 'Coding'], ['web', 'Web and design'], ['data', 'Data'],
   ['devops', 'Infrastructure'], ['productivity', 'Productivity'], ['testing', 'Testing and security']];
@@ -69,6 +69,7 @@ export function createExplore(root, app) {
       results.setAttribute('aria-busy', 'true');
       timer = setTimeout(load, 200);
     } });
+  responsivePlaceholder(search, 'Find skills, or paste owner/repo or a GitHub link', 'Search or paste a repo…');
   const results = h('div', { class: 'explore-results', tabindex: '0', role: 'region', 'aria-label': 'Explore results' });
   const batchBar = h('div', { class: 'batch-bar', hidden: true, role: 'region', 'aria-label': 'Selected skills' });
   const resultsColumn = h('div', { class: 'explore-results-column' }, results, batchBar);

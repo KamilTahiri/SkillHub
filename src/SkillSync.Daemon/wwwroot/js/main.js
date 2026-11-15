@@ -20,7 +20,7 @@ const providerNames = { ...PROVIDERS, codex: 'ChatGPT / Codex', gemini: 'Gemini 
 const providerButton = document.getElementById('provider-overview');
 const themeButton = document.getElementById('quick-theme');
 let online = false;
-for (const tab of nav.querySelectorAll('button')) tab.prepend(icon(tab.dataset.route));
+for (const tab of nav.querySelectorAll('button')) { tab.prepend(icon(tab.dataset.route)); tab.title = tab.textContent.trim(); }
 const snapshotJob = new Latest();
 const detailJob = new Latest();
 const systemTheme = matchMedia('(prefers-color-scheme: dark)');
