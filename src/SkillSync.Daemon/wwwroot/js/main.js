@@ -9,8 +9,10 @@ import { createExplore } from './components/explore.js';
 import { showDestinationReview } from './components/destinationReview.js';
 import { createSettings } from './components/statusBar.js';
 import { openPalette } from './components/palette.js';
+import { createWorkspaces } from './components/workspaces.js';
+import { showOnboarding } from './components/onboarding.js';
 
-const views = Object.fromEntries(['library', 'reader', 'editor', 'explore', 'settings']
+const views = Object.fromEntries(['library', 'reader', 'editor', 'explore', 'projects', 'settings']
   .map(name => [name, document.getElementById(name + '-screen')]));
 const nav = document.getElementById('primary-nav');
 const status = document.getElementById('connection-status');
@@ -30,6 +32,8 @@ let refreshTimer;
 let guardPending = false;
 let loaded = false;
 let snapshot = { skills: [], tags: [], providers: [] };
+let resolveFirstSnapshot;
+const firstSnapshot = new Promise(resolve => { resolveFirstSnapshot = resolve; });
 let lastEvent = 0;
 
 const app = {
@@ -48,13 +52,16 @@ const app = {
   get theme() { return theme; },
   review: (skill, target) => showDestinationReview(app, skill, target),
   refreshDiagnostics: () => { if (route === 'settings') settings.refreshDiagnostics(); },
-  exploreCatalog: () => navigate('explore', { catalog: true })
+  exploreCatalog: () => navigate('explore', { catalog: true }),
+  showOnboarding: () => showOnboarding(app),
+  directImport: () => explore.directImport()
 };
 const library = createLibrary(views.library, app);
 const reader = createReader(views.reader, app);
 const editor = createEditor(views.editor, app);
 const explore = createExplore(views.explore, app);
 const settings = createSettings(views.settings, app);
+const workspaces = createWorkspaces(views.projects, app);
 
 async function canLeave() {
   if (guardPending || (route === 'editor' && editor.isSaving) || (route === 'explore' && explore.isApplying)) return false;
@@ -71,6 +78,7 @@ function activate(next, focus = true) {
   if (route !== next) {
     if (route === 'explore') explore.leave();
     if (route === 'settings') settings.leave();
+    if (route === 'projects') workspaces.leave();
     if (route === 'reader') detailJob.cancel();
   }
   route = next;
@@ -95,6 +103,7 @@ async function navigate(next, { focusSearch = false, catalog = false, section } 
   }
   if (next === 'settings') settings.show(section);
   if (next === 'explore') explore.show(catalog);
+  if (next === 'projects') workspaces.show();
   return true;
 }
 
@@ -166,6 +175,7 @@ async function refresh() {
     snapshot = { skills, tags, providers };
     const firstLoad = !loaded;
     loaded = true;
+    if (firstLoad) resolveFirstSnapshot();
     if (firstLoad) setTimeout(() => checkUpdates(), 4000);
     renderProviderButton();
     library.update(snapshot);
@@ -275,9 +285,13 @@ function paletteCommands() {
     { group: 'Actions', label: 'Import from link or file', icon: 'download', run: () => navigate('explore').then(done => done && explore.directImport()) },
     { group: 'Actions', label: 'Search the library', icon: 'search', shortcut: '/', run: () => navigate('library', { focusSearch: true }) },
     { group: 'Actions', label: dark ? 'Switch to light theme' : 'Switch to dark theme', icon: dark ? 'sun' : 'moon', run: () => themeButton.click() },
-    { group: 'Actions', label: 'Reconcile destinations', hint: 'Re-check every synced copy', icon: 'sync', run: reconcile },
+    { group: 'Actions', label: 'Verify & Sync All Folders', hint: 'Check every AI tool folder and repair missing copies', icon: 'sync', run: reconcile },
+    { group: 'Actions', label: 'Backup All My Skills', hint: 'Download a .skillpack.zip', icon: 'download', run: () => import('./components/skillPacks.js').then(module => module.exportPack([])).catch(error => notify(error.message, { tone: 'error' })) },
+    { group: 'Actions', label: 'Add a project workspace', icon: 'plus', run: () => navigate('projects').then(done => done && workspaces.addProject()) },
+    { group: 'Actions', label: 'Run Welcome Guide', icon: 'info', run: () => showOnboarding(app) },
     { group: 'Go to', label: 'Library', icon: 'library', run: () => navigate('library') },
     { group: 'Go to', label: 'Explore community skills', icon: 'explore', run: () => navigate('explore') },
+    { group: 'Go to', label: 'Projects', icon: 'projects', run: () => navigate('projects') },
     { group: 'Go to', label: 'Settings › Connections', icon: 'settings', run: () => navigate('settings', { section: 'Connections' }) },
     { group: 'Go to', label: 'Settings › Appearance & Startup', icon: 'settings', run: () => navigate('settings', { section: 'Appearance & Startup' }) },
     { group: 'Go to', label: 'Settings › Diagnostics', icon: 'settings', run: () => navigate('settings', { section: 'Diagnostics' }) }
@@ -285,11 +299,11 @@ function paletteCommands() {
 }
 
 async function reconcile() {
-  const dismiss = notify('Reconciling destinations…', { duration: 60000 });
+  const dismiss = notify('Checking every AI tool folder…', { duration: 60000 });
   try {
     const report = (await api.resync()).report ?? {};
     dismiss();
-    notify('Reconciled: ' + (report.syncedDestinations ?? 0) + ' synced, ' + (report.conflictedDestinations ?? 0) + ' conflicts, ' +
+    notify('Verified: ' + (report.syncedDestinations ?? 0) + ' synced, ' + (report.conflictedDestinations ?? 0) + ' conflicts, ' +
       (report.missingDestinations ?? 0) + ' missing.', { tone: report.conflictedDestinations || report.failedDestinations ? 'warning' : 'success' });
     refresh();
   } catch (error) {
@@ -356,13 +370,17 @@ themeButton.addEventListener('click', async () => {
   finally { themeButton.disabled = false; }
 });
 applyTheme('system');
-api.preferences().then(data => { if (!themeWrites) applyTheme(confirmedTheme = data.theme); }).catch(() => {}).finally(() => { themeButton.disabled = false; });
+api.preferences().then(data => {
+  if (!themeWrites) applyTheme(confirmedTheme = data.theme);
+  // First launch: the welcome sheet waits for the library so its counts are real.
+  if (data.onboarding_completed === false) firstSnapshot.then(() => showOnboarding(app));
+}).catch(() => {}).finally(() => { themeButton.disabled = false; });
 migrateTags().finally(() => {
   refresh();
   startEvents();
 });
 const initialRoute = location.hash.slice(1);
-if (initialRoute === 'explore' || initialRoute === 'settings') navigate(initialRoute);
+if (['explore', 'settings', 'projects'].includes(initialRoute)) navigate(initialRoute);
 if (initialRoute.startsWith('skill/')) {
   try { read(decodeURIComponent(initialRoute.slice(6))); } catch { navigate('library'); }
 }

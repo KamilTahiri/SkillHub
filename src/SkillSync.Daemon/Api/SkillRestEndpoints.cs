@@ -53,8 +53,42 @@ public static class SkillRestEndpoints
         api.MapGet("/preferences", ([FromServices] DesktopPreferencesStore preferences, IDesktopStartup startup) =>
         {
             var settings = preferences.Read();
-            return Results.Ok(new { theme = settings.Theme, close_to_tray = settings.CloseToTray, auto_start = startup.IsRegistered });
+            return Results.Ok(new { theme = settings.Theme, close_to_tray = settings.CloseToTray, auto_start = startup.IsRegistered,
+                onboarding_completed = settings.OnboardingCompleted });
         });
+        api.MapPatch("/preferences/onboarding", (BooleanPreferenceRequest request, [FromServices] DesktopPreferencesStore preferences) =>
+            Results.Ok(new { enabled = preferences.SetOnboardingCompleted(RequireEnabled(request)).OnboardingCompleted }));
+
+        // Project workspaces: per-project skill sets projected into the project's own AI folders.
+        api.MapGet("/workspaces", (WorkspaceService workspaces) => Results.Json(new
+        {
+            workspaces = workspaces.List(),
+            targets = WorkspaceTargets.All.Select(target => new { id = target, label = WorkspaceTargets.Label(target) })
+        }, WebJsonOptions));
+        api.MapPost("/workspaces", async (WorkspaceCreateRequest request, WorkspaceService workspaces, CancellationToken ct) =>
+            Results.Json(await workspaces.RegisterAsync(request.Path, request.Name, ct).ConfigureAwait(false), WebJsonOptions));
+        api.MapPut("/workspaces/{id}", async (string id, WorkspaceUpdateRequest request, WorkspaceService workspaces, CancellationToken ct) =>
+            Results.Json(await workspaces.UpdateAsync(id, request.Skills, request.Targets, request.Name, ct).ConfigureAwait(false), WebJsonOptions));
+        api.MapPost("/workspaces/{id}/sync", async (string id, WorkspaceService workspaces, CancellationToken ct) =>
+            Results.Json(await workspaces.SyncAsync(id, ct).ConfigureAwait(false), WebJsonOptions));
+        api.MapDelete("/workspaces/{id}", async (string id, bool? remove_files, WorkspaceService workspaces, CancellationToken ct) =>
+            Results.Json(new { kept = await workspaces.RemoveAsync(id, remove_files ?? false, ct).ConfigureAwait(false) }, WebJsonOptions));
+
+        // Skill packs (.skillpack.zip): export one, several or all personal skills; import after a review.
+        api.MapPost("/skillpacks/export", (SkillPackExportRequest request, SkillPackService packs) =>
+        {
+            var names = request.Names?.Where(name => !string.IsNullOrWhiteSpace(name)).ToArray();
+            return Results.File(packs.Export(names), "application/zip", SkillPackService.SuggestFileName(names));
+        });
+        api.MapPost("/skillpacks/preview", (SkillPackUploadRequest request, SkillPackService packs) =>
+        {
+            byte[] bytes;
+            try { bytes = Convert.FromBase64String(request.Data ?? string.Empty); }
+            catch (FormatException) { throw new ArgumentException("The pack could not be read. Choose the file again."); }
+            return Results.Json(packs.Preview(bytes, request.FileName), WebJsonOptions);
+        });
+        api.MapPost("/skillpacks/{id}/apply", async (string id, SkillPackApplyRequest request, SkillPackService packs, CancellationToken ct) =>
+            Results.Json(await packs.ApplyAsync(id, request, ct).ConfigureAwait(false), WebJsonOptions));
         api.MapPatch("/preferences/theme", (ThemeRequest request, [FromServices] DesktopPreferencesStore preferences) =>
             Results.Ok(new { theme = preferences.SetTheme(request.Theme).Theme }));
 
@@ -632,6 +666,10 @@ public sealed record ProviderToggleRequest(bool Enabled);
 public sealed record ClientConfigurationRequest(string Action);
 public sealed record ConflictRecoveryRequest(string Id, string Revision);
 public sealed record FolderOpenRequest(string Path);
+public sealed record WorkspaceCreateRequest(string Path, string? Name);
+public sealed record WorkspaceUpdateRequest(IReadOnlyList<string>? Skills, IReadOnlyList<string>? Targets, string? Name);
+public sealed record SkillPackExportRequest(IReadOnlyList<string>? Names);
+public sealed record SkillPackUploadRequest([property: System.Text.Json.Serialization.JsonPropertyName("file_name")] string? FileName, string? Data);
 public sealed record TagRenameRequest(
     [property: System.Text.Json.Serialization.JsonPropertyName("old_tag")] string OldTag,
     [property: System.Text.Json.Serialization.JsonPropertyName("new_tag")] string NewTag);

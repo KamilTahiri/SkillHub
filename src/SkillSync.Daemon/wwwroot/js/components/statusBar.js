@@ -3,6 +3,7 @@ import { Latest, deployment, installedProviders } from '../state.js';
 import { icon } from '../icons.js';
 import { h, button, heading, panel, field, select, disclosure, confirmAction, errorText, busy, notify, copy, fill, modal, relativeTime as when } from '../ui.js';
 import { renderDiff } from '../diff.js';
+import { exportPack, exportPicker } from './skillPacks.js';
 
 const REAPPLY_HINT = 'Re-applies SkillHub’s MCP connection in this tool’s config file if an update overwrote it.';
 const CONNECTION_GROUPS = { codex: 'ChatGPT / Codex', gemini: 'Gemini & Antigravity', claude: 'Claude', cursor: 'Cursor',
@@ -196,6 +197,8 @@ export function createSettings(root, app) {
       }
     });
     themeInput = theme;
+    const backup = button([icon('download'), 'Backup All My Skills'], () => busy(backup, () => exportPack([]),
+      error => notify(error.message, { tone: 'error' })), 'primary');
     function toggle(label, name, value) {
       const status = h('span', { class: 'muted', role: 'status' });
       const control = h('input', { type: 'checkbox', checked: value, onchange: () => busy(control, async () => {
@@ -213,7 +216,16 @@ export function createSettings(root, app) {
       h('div', { class: 'settings-row spread' }, field('Theme', theme), feedback)),
       h('section', { class: 'settings-group' }, h('h2', {}, 'Startup and window behavior'),
         toggle('Start SkillHub when I sign in', 'startup', data.auto_start),
-        toggle('Keep SkillHub running in the tray', 'tray', data.close_to_tray)));
+        toggle('Keep SkillHub running in the tray', 'tray', data.close_to_tray)),
+      h('section', { class: 'settings-group' }, h('h2', {}, 'Backup & skill packs'),
+        h('p', { class: 'muted' }, 'A .skillpack.zip holds each SKILL.md, every companion file and a manifest. Import one from Explore › Import from link or file.'),
+        h('div', { class: 'actions wrap' },
+          backup,
+          button('Export selected skills…', () => exportPicker(app)),
+          button('Import a skill pack…', () => app.navigate('explore').then(done => done && app.directImport?.())))),
+      h('section', { class: 'settings-group' }, h('h2', {}, 'Welcome guide'),
+        h('div', { class: 'settings-row spread' }, h('p', { class: 'muted' }, 'See which AI tools SkillHub found, what is in your library, and how to use it from chat.'),
+          button('Run Welcome Guide', () => app.showOnboarding()))));
   }
 
   function renderDiagnostics(data) {

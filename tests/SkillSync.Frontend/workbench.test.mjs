@@ -44,7 +44,7 @@ const item = name => ({ slug: name.toLowerCase(), title: name, description: name
 async function fixtureServer() {
   let releaseSlow;
   const slowPreview = new Promise(resolve => { releaseSlow = resolve; });
-  const fixture = { releaseSlow, slowFinished: false, theme: 'dark', tray: true, startup: true, reviewed: null, applied: null, preparing: new Map(), prefetched: new Map(), events: null, reads: 0 };
+  const fixture = { onboarded: true, workspaces: [], workspaceUpdate: null, packUpload: null, packApply: null, releaseSlow, slowFinished: false, theme: 'dark', tray: true, startup: true, reviewed: null, applied: null, preparing: new Map(), prefetched: new Map(), events: null, reads: 0 };
   const server = createServer(async (req, res) => {
     const url = new URL(req.url, 'http://localhost');
     const send = (value, status = 200) => {
@@ -99,8 +99,32 @@ async function fixtureServer() {
       }
       if (route === '/preferences') {
         if (req.method === 'PUT') fixture.theme = data.theme;
-        return send({ theme: fixture.theme, close_to_tray: fixture.tray, auto_start: fixture.startup });
+        return send({ theme: fixture.theme, close_to_tray: fixture.tray, auto_start: fixture.startup, onboarding_completed: fixture.onboarded });
       }
+      if (route === '/preferences/onboarding') { fixture.onboarded = data.enabled; return send({ enabled: data.enabled }); }
+      if (route === '/workspaces' && req.method === 'GET') return send({ workspaces: fixture.workspaces,
+        targets: ['claude', 'codex', 'gemini', 'cursor', 'copilot'].map(id => ({ id, label: id + ' folder' })) });
+      if (route === '/workspaces' && req.method === 'POST') {
+        const created = { id: 'ws1', name: data.name ?? data.path.split('/').at(-1), path: data.path, exists: true, skills: [],
+          targets: ['claude', 'codex', 'gemini', 'cursor'], file_count: 0, last_synced_at: null, issues: [], missing_skills: [] };
+        fixture.workspaces.push(created);
+        return send(created);
+      }
+      if (route === '/workspaces/ws1' && req.method === 'PUT') {
+        const current = fixture.workspaces[0];
+        Object.assign(current, { skills: data.skills, targets: data.targets, file_count: data.skills.length * data.targets.length,
+          last_synced_at: '2026-11-15T10:00:00Z' });
+        fixture.workspaceUpdate = data;
+        return send(current);
+      }
+      if (route === '/skillpacks/preview') {
+        fixture.packUpload = data;
+        return send({ pack_id: 'pack1', file_name: data.file_name, created_by: 'SkillHub 1.3.0', created_at: '2026-11-15T10:00:00Z', skipped: [],
+          skills: [{ name: 'fixture', title: 'Fixture', description: 'From a pack', files: ['scripts/run.sh'], name_exists: true,
+            same_as_existing: false, suggested_name: 'fixture-2', instructions_markdown: 'Pack body',
+            scripts: [{ path: 'scripts/run.sh', language: 'shell', concerns: ['downloads and runs code'] }], providers: [] }] });
+      }
+      if (route === '/skillpacks/pack1/apply') { fixture.packApply = data; return send({ imported: ['fixture-2'], replaced: [], skipped: [] }); }
       if (route === '/community/repos') return send({ repositories: [{ repo: 'featured/all', title: 'Featured' }] });
       if (route === '/community/skills') return send({ skills: ['Slow', 'Fast', 'Broken',
         ...Array.from({ length: 70 }, (_, index) => 'Skill ' + index)].map(item),
@@ -260,7 +284,7 @@ test('workbench at desktop and docked sizes, with keyboard, themes, Markdown and
       await assertNoSerializedElements();
       assert.equal(await evaluate('document.querySelectorAll(".collections button").length'), 4);
       assert.ok(await evaluate('[...document.querySelectorAll(".collections button")].every(tab => tab.getBoundingClientRect().width > 0)'));
-      assert.equal(await evaluate('document.querySelectorAll("[data-route] svg").length'), 3);
+      assert.equal(await evaluate('document.querySelectorAll("[data-route] svg").length'), 4);
       assert.equal(await evaluate('document.querySelector("#provider-overview .provider-overview-count").textContent'), '2');
       assert.match(await evaluate('document.querySelector("#provider-overview").title'), /2 AI Providers Connected: ChatGPT \/ Codex, Gemini & Antigravity/);
       assert.deepEqual(await evaluate('[...document.querySelectorAll(".collection-count")].map(tab => tab.textContent)'), ['3', '2', '1', '1']);
@@ -481,6 +505,58 @@ test('workbench at desktop and docked sizes, with keyboard, themes, Markdown and
       await wait('!document.querySelector("#settings-screen").textContent.includes("Applied a projection")');
       assert.equal(fixture.startup, true);
       assert.equal(fixture.tray, true);
+
+      // Welcome guide: three steps, opened from Settings, marks onboarding done when closed.
+      fixture.onboarded = false;
+      await textButton('Appearance & Startup');
+      await wait('[...document.querySelectorAll("#settings-screen button")].some(b => b.textContent.includes("Backup All My Skills"))');
+      await textButton('Run Welcome Guide');
+      await wait('document.querySelector("dialog.onboarding[open]")?.textContent.includes("Your AI tools")');
+      assert.match(await evaluate('document.querySelector(".onboarding-body").textContent'), /SkillHub found 2 AI tools/);
+      await click('.onboarding-foot .primary');
+      await wait('document.querySelector(".onboarding-stats")');
+      assert.match(await evaluate('document.querySelector(".onboarding-stats").textContent'), /personal skills/);
+      await click('.onboarding-foot .primary');
+      await wait('document.querySelectorAll(".onboarding-prompts li").length === 3');
+      assert.match(await evaluate('document.querySelector(".onboarding-prompts").textContent'), /Use SkillHub to find or create a skill for/);
+      await click('.onboarding-foot .primary');
+      await wait('!document.querySelector("dialog.onboarding")');
+      await until(() => fixture.onboarded === true, 'Onboarding was not marked complete');
+
+      // Projects: add a folder, choose skills and targets, save.
+      await click('[data-route="projects"]');
+      await wait('document.querySelector("#projects-screen .workspaces-empty")');
+      await textButton('Add your first project');
+      await wait('document.querySelector("dialog[open] input")');
+      await evaluate('const projectPath = document.querySelector("dialog[open] input"); projectPath.value = "C:/code/demo-app"; projectPath.dispatchEvent(new Event("input"));');
+      await evaluate('[...document.querySelectorAll("dialog[open] button")].find(b => b.textContent === "Add project").click()');
+      await wait('document.querySelector(".workspace-detail h2")?.textContent === "demo-app"');
+      assert.equal(await evaluate('document.querySelector(".workspace-foot .primary").disabled'), true);
+      await click('.workspace-skill input[data-skill="fixture"]');
+      await click('.workspace-targets input[data-target="copilot"]');
+      await click('.workspace-foot .primary');
+      await until(() => fixture.workspaceUpdate, 'Workspace update was not sent');
+      assert.deepEqual(fixture.workspaceUpdate, { skills: ['fixture'], targets: ['claude', 'codex', 'gemini', 'cursor', 'copilot'] });
+      await wait('document.querySelector(".workspace-detail")?.textContent.includes("5 files written")');
+
+      // Skill pack import: the review lists conflicts and scripts before anything is applied.
+      await click('[data-route="explore"]');
+      await wait('document.querySelector("#explore-screen .result-button")');
+      await evaluate(`(async () => {
+        const { reviewPack } = await import('/js/components/skillPacks.js');
+        const file = new File([new Uint8Array([80, 75, 3, 4])], 'team.skillpack.zip', { type: 'application/zip' });
+        await reviewPack(file, { refresh: async () => {}, read: () => {} });
+      })()`);
+      await wait('document.querySelector("dialog[open] .pack-skill")');
+      assert.equal(fixture.packUpload.file_name, 'team.skillpack.zip');
+      assert.match(await evaluate('document.querySelector("dialog[open] .pack-skill").textContent'), /Name in use: fixture[\s\S]*risky patterns/);
+      assert.equal(await evaluate('document.querySelector("dialog[open] .pack-rename input").value'), 'fixture-2');
+      await evaluate('[...document.querySelectorAll("dialog[open] button")].find(b => b.textContent === "Import selected skills").click()');
+      await until(() => fixture.packApply, 'Pack import was not applied');
+      assert.deepEqual(fixture.packApply, { choices: [{ name: 'fixture', action: 'import', new_name: 'fixture-2' }], keep_sync_settings: false });
+      await wait('!document.querySelector("dialog[open]")');
+      await click('[data-route="settings"]');
+      await textButton('Diagnostics');
 
       await delay(250);
       await size(1280, 820, 1.25);

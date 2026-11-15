@@ -77,6 +77,26 @@ public sealed partial class SyncEngine : IAsyncDisposable
     public IReadOnlyCollection<SyncActivityNotification> GetRecentActivity() => _recentActivity.ToArray();
     public event Action<SyncActivityNotification>? ActivityPublished;
 
+    /// <summary>Raised with a skill's slug after its canonical content changed or it was deleted.</summary>
+    public event Action<string>? SkillChanged;
+
+    private void RaiseSkillChanged(string slug)
+    {
+        foreach (var listener in SkillChanged?.GetInvocationList().Cast<Action<string>>() ?? [])
+        {
+            try { listener(slug); }
+            catch (Exception exception) when (exception is not OutOfMemoryException) { }
+        }
+    }
+
+    /// <summary>Reads a canonical SKILL.md (as SkillHub writes it) into a model without storing it.</summary>
+    public CanonicalSkillModel ParseCanonicalText(string slug, string markdown) =>
+        _transpilers[ProviderType.Canonical].MergeInbound(slug, markdown, null);
+
+    /// <summary>The exact file a provider receives for this skill, as written by its transpiler.</summary>
+    public string RenderForProvider(ProviderType provider, CanonicalSkillModel model) =>
+        _transpilers[provider].TranspileOutbound(model, null);
+
     private async Task ProcessQueueAsync()
     {
         await foreach (var command in _commands.Reader.ReadAllAsync().ConfigureAwait(false))
@@ -379,6 +399,7 @@ public sealed partial class SyncEngine : IAsyncDisposable
             entry.DeletedAt = DateTimeOffset.UtcNow;
             await PersistAsync().ConfigureAwait(false);
             await FinishDeleteAsync(slug, entry).ConfigureAwait(false);
+            RaiseSkillChanged(slug);
             PublishActivity(slug, originator, "deleted", $"Moved '{slug}' to SkillHub trash and withdrew its owned projections.");
             return true;
         }, ct);

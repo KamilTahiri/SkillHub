@@ -46,6 +46,8 @@ public sealed class LocalContractTests : IAsyncLifetime
         builder.Services.AddSingleton<DesktopPreferencesStore>();
         builder.Services.AddSingleton<SkillHubWindowController>();
         builder.Services.AddSingleton<MultiRootFileWatcher>();
+        builder.Services.AddSingleton<WorkspaceService>();
+        builder.Services.AddSingleton<SkillPackService>();
         _app = builder.Build();
         _app.Use(_access.InvokeAsync);
         _app.MapSkillRestApi();

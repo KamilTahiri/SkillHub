@@ -5,6 +5,7 @@ import { h, button, heading, panel, disclosure, copy, download, busy, notify, mo
 import { showProviderPreview } from './transpilerPreview.js';
 import { copySkillPrompt, doctorPanel, historySection, updateBanner } from './skillInsights.js';
 import { icon } from '../icons.js';
+import { exportPack } from './skillPacks.js';
 
 export function createReader(root, app) {
   let modelKey;
@@ -149,7 +150,9 @@ export function createReader(root, app) {
     content.append(button('Preview provider output', () => {
       dialog.close(); showProviderPreview(skill, { saved: detail, providers: snapshot.providers });
     }), button('Export Markdown', () => download(skill.name + '.SKILL.md', detail.transpiled_previews?.canonical ?? skill.instructions_markdown, 'text/markdown')),
-    button('Export skill bundle', event => busy(event.currentTarget, async () => {
+    button([icon('download'), 'Export Skill Pack (.skillpack.zip)'], event => busy(event.currentTarget, () => exportPack([skill.name])),
+      '', { title: 'SKILL.md, every companion file and a manifest, ready to import on any PC' }),
+    button('Download skill folder (.zip)', event => busy(event.currentTarget, async () => {
       const response = await fetch('/api/v1/skills/' + encodeURIComponent(key) + '/bundle');
       if (!response.ok) throw new Error('Could not export this skill bundle.');
       download(skill.name + '.zip', await response.blob(), 'application/zip');

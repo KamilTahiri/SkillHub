@@ -1,4 +1,5 @@
 import { api } from '../api.js';
+import { reviewPack } from './skillPacks.js';
 import { Latest, PROVIDERS, slugify } from '../state.js';
 import { renderMarkdown } from '../markdown.js';
 import { icon, PROVIDER_NAMES } from '../icons.js';
@@ -628,12 +629,18 @@ export function createExplore(root, app) {
   function directImport() {
     if (isApplying) return;
     const input = h('input', { class: 'input', type: 'text', placeholder: 'GitHub or skills.sh link', autofocus: true });
-    const file = h('input', { class: 'input', type: 'file', accept: '.md,.mdc,text/markdown,text/plain' });
+    const file = h('input', { class: 'input', type: 'file', accept: '.md,.mdc,.zip,text/markdown,text/plain,application/zip' });
     const feedback = h('div', { role: 'status' });
     const review = button('Review skill', () => busy(review, async () => {
       const selectedFile = file.files[0];
       let selection;
-      if (selectedFile && input.value.trim()) throw new Error('Choose either a link or a Markdown file.');
+      if (selectedFile && input.value.trim()) throw new Error('Choose either a link or a file.');
+      if (selectedFile && /\.zip$/i.test(selectedFile.name)) {
+        // A .skillpack.zip gets its own review: every skill, conflicts and scripts before anything is written.
+        await reviewPack(selectedFile, app);
+        dialog.close();
+        return;
+      }
       if (selectedFile) {
         if (selectedFile.size > 2 * 1024 * 1024) throw new Error('Choose a file smaller than 2 MB.');
         selection = { file_name: selectedFile.name, raw_markdown: await selectedFile.text() };
@@ -643,7 +650,8 @@ export function createExplore(root, app) {
       dialog.close();
       openPreview(selection);
     }, error => feedback.replaceChildren(errorText(error.message))), 'primary');
-    const dialog = modal('Import from link or file', [field('Link', input), field('Markdown file', file), feedback], review);
+    const dialog = modal('Import from link or file', [field('Link', input),
+      field('Markdown file or skill pack', file, 'A SKILL.md, .mdc or .md file, or a .skillpack.zip exported from SkillHub.'), feedback], review);
   }
 
   resetPreview();

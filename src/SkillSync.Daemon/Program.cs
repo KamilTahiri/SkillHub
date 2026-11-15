@@ -307,6 +307,8 @@ public static class Program
         builder.Services.AddSingleton<SyncEngine>();
         builder.Services.AddSingleton<DesktopPreferencesStore>();
         builder.Services.AddSingleton<SkillImporterService>();
+        builder.Services.AddSingleton<WorkspaceService>();
+        builder.Services.AddSingleton<SkillPackService>();
         builder.Services.AddSingleton<McpJsonRpcHandler>();
         builder.Services.AddSingleton(sp =>
             new MultiRootFileWatcher(
@@ -318,6 +320,8 @@ public static class Program
 
         var access = new LocalHttpAccess(Environment.GetEnvironmentVariable("SKILLHUB_HTTP_MCP_TOKEN"));
         var app = builder.Build();
+        // Created up front so project workspaces follow library edits from the first change.
+        _ = app.Services.GetRequiredService<WorkspaceService>();
 
         app.Use(access.InvokeAsync);
         app.UseDefaultFiles();

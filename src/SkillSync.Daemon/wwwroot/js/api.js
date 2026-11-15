@@ -68,5 +68,25 @@ export const api = {
   conflict: (id, revision) => request('/diagnostics/conflicts/recover', { method: 'POST', data: { id, revision } }),
   restoreConflict: (id, revision) => request('/diagnostics/conflicts/restore', { method: 'POST', data: { id, revision } }),
   conflictPreview: id => request('/diagnostics/conflicts/preview?id=' + encodeURIComponent(id)),
-  openFolder: path => request('/diagnostics/folders/open', { method: 'POST', data: { path } })
+  openFolder: path => request('/diagnostics/folders/open', { method: 'POST', data: { path } }),
+  onboarding: completed => request('/preferences/onboarding', { method: 'PATCH', data: { enabled: completed } }),
+  workspaces: signal => request('/workspaces', { signal }),
+  addWorkspace: (path, name) => request('/workspaces', { method: 'POST', data: { path, name } }),
+  updateWorkspace: (id, data) => request('/workspaces/' + encode(id), { method: 'PUT', data }),
+  syncWorkspace: id => request('/workspaces/' + encode(id) + '/sync', { method: 'POST' }),
+  removeWorkspace: (id, removeFiles) => request('/workspaces/' + encode(id) + '?remove_files=' + Boolean(removeFiles), { method: 'DELETE' }),
+  previewPack: (fileName, data) => request('/skillpacks/preview', { method: 'POST', data: { file_name: fileName, data } }),
+  applyPack: (id, choices, keepSyncSettings) => request('/skillpacks/' + encode(id) + '/apply', { method: 'POST', data: { choices, keep_sync_settings: keepSyncSettings } }),
+  async exportPack(names) {
+    const response = await fetch('/api/v1/skillpacks/export', { method: 'POST', cache: 'no-store',
+      headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ names }) });
+    if (!response.ok) {
+      let detail;
+      try { detail = await response.json(); } catch { /* No JSON body. */ }
+      throw new ApiError(detail?.error ?? 'Could not export the skill pack.', response.status);
+    }
+    const disposition = response.headers.get('Content-Disposition') ?? '';
+    const name = /filename\*?=(?:UTF-8'')?"?([^";]+)"?/i.exec(disposition)?.[1] ?? 'skills.skillpack.zip';
+    return { name: decodeURIComponent(name), blob: await response.blob() };
+  }
 };

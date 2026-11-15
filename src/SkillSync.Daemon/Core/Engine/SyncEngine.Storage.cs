@@ -323,7 +323,9 @@ public sealed partial class SyncEngine
             .OrderBy(target => target.Provider).ThenBy(target => target.Path, SkillPaths.Comparer)
             .Select(target => new SyncDestinationStatus(target.Provider, target.Path, target.State, target.AppliedRevision, target.Error))
             .ToArray();
+        var previous = _managed.TryGetValue(copy.Name, out var before) ? before.Revision : -1;
         _managed[copy.Name] = copy;
+        if (previous != copy.Revision) RaiseSkillChanged(copy.Name);
     }
 
     private static bool SameFiles(IReadOnlyDictionary<string, string> first, IReadOnlyDictionary<string, string> second) =>

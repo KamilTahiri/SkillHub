@@ -112,6 +112,7 @@ try {
 
   // Settings → Connections with the new agents
   await evaluate('document.querySelector("[data-route=settings]").click()');
+  await evaluate('[...document.querySelectorAll("#settings-screen .settings-tabs button")].find(b => b.textContent.trim() === "Connections")?.click()');
   await until('document.querySelector(".connection-card")', 'Connections');
   await evaluate('document.querySelector(".connections-other")?.setAttribute("open", "")');
   const other = await evaluate('document.querySelector(".connections-other")?.innerText ?? ""');

@@ -1,83 +1,135 @@
+<div align="center">
+
 # SkillHub
 
-**SkillHub** is a native desktop application, multi-provider skill transpiler, bi-directional file watcher, and local MCP server that keeps your AI agent skills in sync across:
-- **Claude Desktop & Claude Code** (`~/.claude/skills/<name>/SKILL.md`)
-- **Google Gemini CLI & Antigravity** (`~/.gemini/skills/<name>/SKILL.md` & `~/.gemini/antigravity/skills/<name>/SKILL.md`)
-- **ChatGPT / OpenAI Codex** (`~/.codex/skills/<name>/SKILL.md` & `~/.agents/skills/<name>/SKILL.md`)
-- **Cursor** (`~/.cursor/rules/<name>.mdc`)
-- **GitHub Copilot** (`~/.copilot/skills/<name>/SKILL.md`) and **Windsurf** (`~/.codeium/windsurf/skills/<name>/SKILL.md`)
-- **Cline** (`~/Documents/Cline/Rules/<name>.md`) and **Roo Code** (`~/.roo/rules/<name>.md`), opt-in per skill because these tools load every rule into every chat
+**One library of AI agent skills, kept in sync across every AI tool on your PC.**
 
-A skill is `SKILL.md` plus every text file in its folder (for example `rules/*.md`, `references/`, `scripts/`).
-Every save is kept in revision history (`~/.skillhub/history/`, 30 per skill) with diff and restore. Skill Doctor
-checks provider rules, broken bundle links, overlapping triggers, leaked secrets and risky scripts. Explore indexes
-GitHub repositories and the skills.sh directory, reviews scripts before import, and reports upstream updates for
-imported skills. The MCP server also exposes every skill as a prompt (`/skillhub:<name>`) and a resource
-(`skillhub://skills/<name>`).
+Write a skill once. SkillHub turns it into the exact format Claude, Codex, Gemini, Antigravity, Cursor, Copilot, Windsurf, Cline and Roo Code expect, keeps every copy current in both directions, and lets your AI assistants search, preview and create skills for you over MCP.
+
+Windows 11 · .NET 8 · native desktop app with a tray icon · local-first, no account, no cloud
+
+![SkillHub Library](docs/screenshots/library.png)
+
+</div>
 
 ---
 
-## Windows installation
+## Why SkillHub
 
-SkillHub is a Windows 11 x64 desktop application. It needs the Microsoft Edge WebView2 Evergreen Runtime. The setup includes .NET 8. For an unsigned preview build, install only the artifact you built or whose checksum you verified.
+AI tools now share one idea, the `SKILL.md` skill folder, but each keeps its own copy in its own place and format. Edit a skill in Claude and Codex never hears about it; copy it by hand and the two drift apart. SkillHub fixes that with five pieces that work together:
 
-Run `SkillHub-Setup.exe`. It installs per user into `%LOCALAPPDATA%\SkillHub` with a Start Menu shortcut and an entry in Installed Apps. Choose **Open SkillHub** on the final screen. Use Settings to connect clients and manage login startup. The first daemon run reconciles detected provider skills with the canonical store.
+| | |
+|---|---|
+| **Two-way sync** | Edit a skill in SkillHub *or* inside any AI tool's folder. A debounced file watcher picks up the change and carries it everywhere else within a second. |
+| **Safe ownership ledger** | SkillHub records the hash of every file it writes. It only overwrites or deletes copies that still match, so an edit you made inside a tool is never lost: it becomes a review with a side-by-side diff and a safety backup. |
+| **Multi-provider transpiler** | One canonical skill, many outputs: Claude frontmatter with `allowed-tools`, Gemini's single-line description, Codex's short summary, Cursor `.mdc` rules with globs. Merges are non-destructive, so metadata one tool cannot express survives a round trip through it. |
+| **MCP authoring and prompts** | A local MCP server lets any connected assistant list, create, update, tag and import skills, search the ecosystem, and use every skill as a prompt (`/skillhub:<name>`) or resource (`skillhub://skills/<name>`). |
+| **skills.sh and GitHub indexer** | Explore searches the skills.sh directory, curated repositories and any GitHub repository you paste. Every skill shows whether it is one file or a bundle, and scripts are reviewed before anything is imported. |
 
-To build setup from source, use the .NET 8 SDK and Inno Setup 6.7.4. Set `SKILLHUB_ISCC` to the compiler path if needed.
+## A tour
+
+<table>
+<tr>
+<td width="50%"><img src="docs/screenshots/explore.png" alt="Explore with a bundle preview"><br><b>Explore</b>: skills.sh and GitHub in one search. The preview lists every bundle file and flags executable content before import.</td>
+<td width="50%"><img src="docs/screenshots/editor.png" alt="Editor 2.0 with Skill Doctor"><br><b>Editor 2.0</b>: Markdown toolbar, live preview, the exact output each tool receives, and Skill Doctor checks for provider limits, broken links, secrets and risky scripts.</td>
+</tr>
+<tr>
+<td width="50%"><img src="docs/screenshots/projects.png" alt="Project workspaces"><br><b>Projects</b>: give a repository its own skill set. SkillHub writes it into the project's <code>.claude</code>, <code>.agents</code>, <code>.gemini</code>, <code>.cursor</code> and <code>.github</code> folders and keeps it current.</td>
+<td width="50%"><img src="docs/screenshots/connections.png" alt="Connections"><br><b>Connections</b>: every detected tool, its skills folder and its MCP connection, with one-click connect and re-apply.</td>
+</tr>
+<tr>
+<td width="50%"><img src="docs/screenshots/welcome.png" alt="Welcome guide"><br><b>Welcome guide</b>: on first launch, see which AI tools were found and connect them in one click.</td>
+<td width="50%"><img src="docs/screenshots/welcome-skills.png" alt="Skills found on this PC"><br>…then what is already on disk: personal skills, built-ins from OpenAI, Anthropic and Google, and bundles.</td>
+</tr>
+</table>
+
+## Supported AI tools
+
+| Tool | Global skills folder | Format | Synced by default | MCP connection | Project folder |
+|---|---|---|---|---|---|
+| ChatGPT / OpenAI Codex | `~/.codex/skills`, `~/.agents/skills` | `SKILL.md` folder | Yes | Automatic (`~/.codex/config.toml`) | `.agents/skills` |
+| Gemini CLI | `~/.gemini/skills` | `SKILL.md` folder | Yes | Automatic (`~/.gemini/settings.json`) | `.gemini/skills` |
+| Google Antigravity | `~/.gemini/antigravity/skills` | `SKILL.md` folder | Yes | Automatic (`mcp_config.json`) | `.gemini/skills` |
+| Claude Code | `~/.claude/skills`, `~/.claude/commands` | `SKILL.md` folder | Yes | Automatic (`~/.claude.json`) | `.claude/skills` |
+| Claude Desktop | Built-in Anthropic skills are listed read-only | n/a | n/a | Automatic, including the Microsoft Store app's data folder | n/a |
+| Cursor | `~/.cursor/rules` | `.mdc` rule | Yes | Automatic (`~/.cursor/mcp.json`) | `.cursor/rules` |
+| GitHub Copilot | `~/.copilot/skills` | `SKILL.md` folder | Yes | Add `SkillHub.exe mcp-stdio` yourself | `.github/instructions` (opt-in) |
+| Windsurf | `~/.codeium/windsurf/skills` | `SKILL.md` folder | Yes | Add `SkillHub.exe mcp-stdio` yourself | n/a |
+| Cline | `~/Documents/Cline/Rules` | `.md` rule | Opt-in per skill | Add `SkillHub.exe mcp-stdio` yourself | n/a |
+| Roo Code | `~/.roo/rules` | `.md` rule | Opt-in per skill | Add `SkillHub.exe mcp-stdio` yourself | n/a |
+
+Cline and Roo Code load every rule into every conversation, so skills reach them only when you turn them on. Claude Desktop's chat app manages its own uploaded skills in your claude.ai account; SkillHub connects its MCP server and shows Anthropic's built-in skills so you can copy them to other tools.
+
+## Quick start
+
+1. **Install.** Download `SkillHub-Setup.exe` from a release (or build it, below) and run it. It installs per user into `%LOCALAPPDATA%\SkillHub`, adds a Start Menu shortcut, and needs the Microsoft Edge WebView2 Runtime (already present on Windows 11).
+2. **Follow the welcome guide.** It shows the AI tools SkillHub found and connects their MCP settings in one click. Restart each tool you connected.
+3. **Ask your assistant.** In any connected tool, try:
+
+   > Use SkillHub to find or create a skill for writing Playwright tests in this project.
+
+   > Use SkillHub to search skills.sh and GitHub for skills that fit this repository, preview the best three, and tell me which to import.
+
+### Build from source
+
+Requirements: .NET 8 SDK, Inno Setup 6.7.4 (set `SKILLHUB_ISCC` if it is not on `PATH`), and Node.js 22+ with Chrome or Edge for the UI tests.
 
 ```powershell
-.\build-installer.ps1
-.\install.ps1
+dotnet test SkillSync.sln                 # engine, transpilers, sync safety, HTTP contracts, MCP
+node --test tests/SkillSync.Frontend/     # headless Chromium UI harness
+.\install.ps1                             # build the installer, install for this user, verify every file, launch
 ```
 
-The build emits `dist/SkillHub-Setup.exe` and its SHA-256 file. To sign setup and its uninstaller, supply an Inno SignTool command with `-SignCommand` or `SKILLHUB_SETUP_SIGN_COMMAND`. The packaged app records SHA-256 hashes of the installed files in `install-manifest.json`.
+`build-installer.ps1` alone produces `dist/SkillHub-Setup.exe` and its SHA-256 checksum. Pass `-SignCommand` (or set `SKILLHUB_SETUP_SIGN_COMMAND`) to sign setup and the uninstaller.
 
-Remove client connections and disable login startup in Settings before uninstalling from Installed Apps. The uninstaller removes packaged files and the Start Menu shortcut. Skills, conflict backups, and WebView profile data are retained.
+## Features
 
-## CLI Commands
+- **Library**: My Skills, Active & Synced, Built-in & Templates (OpenAI, Anthropic and Antigravity built-ins found on disk) and System, with tags, filters, instruction search and a Ctrl+K command palette.
+- **History**: 30 revisions per skill with diff and one-click restore. **Update inbox** for imported skills when their upstream changes.
+- **Projects**: per-project skill sets written into a repository's own AI folders. Edits you make inside the project are never overwritten.
+- **Skill packs**: export one skill, a selection, or a full backup as `.skillpack.zip` (each `SKILL.md`, every companion file and a `skillpack.json` manifest). Import reviews name conflicts and scripts before anything is written.
+- **Diagnostics in plain language**: the folders being watched, *Verify & Sync All Folders*, conflict and safety backups with compare / restore, and a readable activity log.
+- **Explore**: sticky result counts, infinite scroll, `1 file (SKILL.md)` versus `📦 Bundle · N files` on every row, and per-skill imports or batch imports.
 
-```powershell
-# Legacy registration command for an existing installation:
-SkillHub.exe install --launch-ui
+## MCP tools
 
-# Check live status of providers and MCP registrations:
-SkillHub.exe status
+Connected assistants get 18 tools: `list_skills`, `get_skill`, `create_skill`, `update_skill`, `delete_skill`, `manage_skill_tags`, `toggle_skill_provider`, `lint_skill`, `get_sync_status`, `restore_skill`, `activate_catalog_skill`, `clone_catalog_skill`, `search_community_skills` (skills.sh, curated and pinned repositories, the offline catalog, or any `owner/repo`), `browse_community_repo`, `preview_community_skill` (full `SKILL.md`, bundle manifest, script review and companion files), `prepare_skill_import`, `apply_skill_import` and `import_community_skill`. Every skill is also an MCP prompt and resource. The seeded `00-skillhub-bootstrap` skill teaches assistants to use these tools instead of copying files between tools.
 
-# Remove registrations created by the legacy CLI installer:
-SkillHub.exe uninstall
+## Architecture
+
+```text
+ AI tools (Claude, Codex, Gemini, Antigravity, Cursor, Copilot, …)
+        │  read/write their own folders            │  MCP over stdio
+        ▼                                            ▼
+ MultiRootFileWatcher ──► SyncEngine ◄── SkillHub.exe mcp-stdio ──named pipe──► McpJsonRpcHandler
+   (debounced saves,        │   ▲                                                 (18 tools, prompts,
+    ignores *.skillsync-tmp)│   │ transpilers: Canonical · Claude · Gemini ·       resources)
+                            │   │ Codex · Cursor .mdc · Agent skill · Plain rule
+                            ▼   │
+             ~/.skillhub/skills/<name>/  ← single source of truth (SKILL.md + bundle files)
+             ~/.skillhub/sync-ledger.json, history/, conflicts/, trash/, workspaces/
+                            ▲
+ WinForms + WebView2 window ┘ REST API on 127.0.0.1 (desktop session token) · vanilla ES module UI
 ```
 
----
+Loop prevention has three layers: a pre-registered hash of every file SkillHub writes, semantic hash comparison so formatting changes never trigger writes, and per-skill debouncing that ignores temporary files. There is no database: skills, the ledger, history, backups and workspaces are plain files under `~/.skillhub`.
 
-## Building & Running Tests
-
-```powershell
-dotnet build SkillSync.sln
-dotnet test SkillSync.sln
-# Portable engine and provider adapter tests
-dotnet test tests/SkillHub.Core.Tests
+```text
+src/SkillSync.Daemon/   desktop host, REST API, MCP server, watcher, engine (Core/), UI (wwwroot/)
+src/SkillHub.Core/      the portable engine as a net8.0 library
+tests/                  xUnit, the Chromium UI harness, live checks against the running app (tests/live/)
+installer/              Inno Setup script
 ```
 
-## Release status and privacy
+## Privacy and local access
 
-The package is a Windows preview. Codex, Claude Code and Desktop, Gemini CLI and Antigravity, and Cursor are supported configuration targets. Compatibility with a specific installed client depends on its configuration format. Inspect effective paths and registration status in Settings.
+- Skills and sync state stay in your user profile. Explore contacts GitHub and skills.sh only when you browse, search or import.
+- Installed AI clients use `SkillHub.exe mcp-stdio`, which talks to the current user's named pipe. HTTP MCP is off unless you set `SKILLHUB_HTTP_MCP_TOKEN` (32+ characters); it is loopback-only and requires a bearer token.
+- Every config file SkillHub edits is backed up first. Deleted skills go to `~/.skillhub/trash/` and can be restored from Diagnostics or with `restore_skill`.
+- Uninstalling keeps your skills, backups and WebView data. Disconnect clients and turn off login startup in Settings first if you want those removed too.
 
-Skills and sync state stay in the user profile. Explore contacts GitHub for repository metadata and pinned files when you browse or review an import. Imported instructions and supporting files can be reviewed before deploying them to providers.
+## Status
 
-See [LICENSE](LICENSE), [third-party notices](THIRD_PARTY_NOTICES.md), [Contributing](CONTRIBUTING.md), and [Security](SECURITY.md).
+SkillHub 1.3 is a Windows preview. Compatibility with a particular client depends on its configuration format; Settings shows the exact paths and registration state SkillHub uses.
 
-## Local access and recovery
-
-- Installed AI clients use `SkillHub.exe mcp-stdio`. The proxy talks to the current user's named pipe. If the daemon is unavailable, start SkillHub and retry.
-- HTTP MCP is off by default. For a local HTTP client, set `SKILLHUB_HTTP_MCP_TOKEN` to a private value of at least 32 characters before launching SkillHub, then pass it as an `Authorization: Bearer` header. HTTP remains loopback-only. The desktop uses a separate per-run credential. Quick Tunnel is disabled.
-- Local MCP compatibility is 2024-11-05 and 2025-06-18 over stdio, 2024-11-05 over legacy HTTP+SSE, and 2025-06-18 over Streamable HTTP. For Streamable HTTP, use the returned session ID and negotiated version on subsequent requests. The client must send the initialized notification before invoking tools.
-- Explore reviews one skill at an immutable revision. It shows the license status and supporting files before saving. Choose provider targets in the review to deploy the new copy. The MCP equivalents are `prepare_skill_import` and `apply_skill_import`.
-- Custom tags and desktop preferences are stored in `~/.skillhub/tags.json` and `~/.skillhub/desktop.json`. Library, Reader, and MCP use the same tag registry.
-- Turning off a provider withdraws the files SkillHub owns at that destination. A missing provider copy appears in sync status and can be repaired explicitly. Conflicting edits remain on disk, and SkillHub saves a review copy under `~/.skillhub/conflicts/`.
-- Deleting a managed skill moves its canonical bundle to `~/.skillhub/trash/`. Use the MCP `restore_skill` tool to restore it. Client config repair leaves a `.bak` copy alongside each file it changes.
-- REST skill lists return metadata. Fetch `GET /api/v1/skills/{name}` for full details and the revision used by `PUT`. Use the dedicated catalog activation or clone command to make a managed copy.
-
-
-### Browser regression test
-
-Run `node --test tests/SkillSync.Frontend/workbench.test.mjs` with Node.js 22 or later and Chrome or Edge. Set `SKILLHUB_BROWSER` if the browser is installed outside its default Windows location. The test serves fixture data and uses a temporary browser profile.
+See [LICENSE](LICENSE) (Apache 2.0), [third-party notices](THIRD_PARTY_NOTICES.md), [Contributing](CONTRIBUTING.md) and [Security](SECURITY.md).
