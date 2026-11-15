@@ -1,5 +1,5 @@
 import { api } from '../api.js';
-import { h, button, modal, busy, errorText, confirmAction, notify } from '../ui.js';
+import { h, button, modal, busy, errorText, confirmAction, notify, fill } from '../ui.js';
 
 const choices = {
   recognize: ['Recognize existing mirror', 'Register this identical copy without writing its contents.'],
@@ -51,7 +51,7 @@ export function showDestinationReview(app, skill, target) {
       const summary = review.reason === 'identical' ? 'All reviewed files match byte-for-byte.'
         : review.reason === 'different' ? 'The provider bundle differs from the current SkillHub projection.'
         : review.reason === 'missing' ? 'The managed provider copy is missing.' : 'The last deployment failed.';
-      body.replaceChildren(h('h3', {}, review.issue.title), h('p', {}, summary),
+      fill(body, h('h3', {}, review.issue.title), h('p', {}, summary),
         review.issue.detail && h('details', {}, h('summary', {}, 'Technical details'), h('code', { class: 'path' }, review.issue.path),
           h('p', {}, review.issue.detail)),
         selectFile, fileDetail, compare, feedback);

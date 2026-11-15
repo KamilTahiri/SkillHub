@@ -1742,3 +1742,83 @@ dialog.wide-dialog { width: min(980px, calc(100% - 24px)); }
 @keyframes toast-out { to { opacity: 0; transform: translateX(12px); } }
 @keyframes toast-timer { from { transform: scaleX(1); } to { transform: scaleX(0); } }
 .outline li { min-width: 0; }
+
+/* Explore: the result count and kind tabs stay visible while the list scrolls. */
+.explore-summary {
+  position: sticky;
+  top: 0;
+  z-index: 5;
+  margin: 0 -3px 4px;
+  padding: 6px 3px 2px;
+  background: var(--surface);
+  box-shadow: 0 1px 0 var(--line);
+}
+.explore-summary .group-tabs { margin-bottom: 6px; }
+.explore-summary .explore-count { margin-bottom: 4px; }
+@media (width < 768px) {
+  .explore-summary { top: var(--app-bar-height); z-index: 3; }
+}
+.load-more-sentinel { display: flex; justify-content: center; padding: 10px 0 14px; }
+.load-more { font-size: .85rem; color: var(--secondary); }
+
+/* Single file versus bundle, said plainly. */
+.files-badge.single { color: var(--muted); background: transparent; border: 1px solid var(--line); font-weight: 550; }
+.files-badge.bundle { color: var(--accent); background: var(--accent-soft); }
+.files-badge.unknown { color: var(--muted); background: transparent; border: 1px dashed var(--line); font-weight: 550; }
+.result-files { display: flex; min-width: 0; }
+.preview-files { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; margin: 4px 0 0; font-size: .85rem; }
+.preview-files .files-badge.bundle { font-size: .8rem; white-space: normal; }
+.reader-file-tabs { margin-bottom: 10px; }
+.reader-file-view .file-code { max-height: 70vh; overflow: auto; }
+
+/* Diagnostics: watched folders, safety backups and activity. */
+.verify-action { display: grid; justify-items: end; gap: 4px; max-width: 320px; text-align: right; }
+.watched-folders { list-style: none; margin: 10px 0 0; padding: 0; display: grid; gap: 8px; }
+.watched-folder {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--panel);
+}
+.watched-folder-text { display: grid; gap: 2px; min-width: 0; }
+.watched-folder-text .path { overflow-wrap: anywhere; font-size: .8rem; }
+.backups > .stack { margin-top: 10px; }
+.backup-row {
+  display: grid;
+  gap: 8px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--panel);
+}
+.backup-title { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.backup-text p { margin: 2px 0; }
+.backup-text .path { overflow-wrap: anywhere; font-size: .8rem; }
+.actions.wrap { flex-wrap: wrap; }
+.activity:has(.activity-row) { padding-left: 0; list-style: none; display: grid; gap: 6px; }
+.activity .activity-row {
+  display: grid;
+  grid-template-columns: 26px minmax(0, 1fr) auto;
+  align-items: start;
+  gap: 10px;
+  margin: 0;
+  padding: 8px 10px;
+  border-radius: 10px;
+  background: var(--panel);
+}
+.activity-icon { display: grid; place-items: center; width: 26px; height: 26px; border-radius: 50%; background: var(--surface-2); color: var(--secondary); }
+.activity-row[data-tone="ok"] .activity-icon { color: var(--ok); }
+.activity-row[data-tone="warn"] .activity-icon { color: var(--warn); }
+.activity-row[data-tone="info"] .activity-icon { color: var(--accent); }
+.activity-head { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.activity-detail { display: block; overflow-wrap: anywhere; }
+.btn.link { padding: 0; border: 0; background: none; box-shadow: none; color: var(--accent); font-weight: 650; text-decoration: underline; text-underline-offset: 2px; min-height: 0; }
+@media (max-width: 600px) {
+  .watched-folder { grid-template-columns: auto minmax(0, 1fr); }
+  .watched-folder > .actions { grid-column: 1 / -1; }
+  .verify-action { justify-items: start; text-align: left; }
+}

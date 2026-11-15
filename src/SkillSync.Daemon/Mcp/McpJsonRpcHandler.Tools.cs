@@ -401,24 +401,166 @@ public sealed partial class McpJsonRpcHandler
     {
         var query = args["query"]?.GetValue<string>();
         var repo = args["repo"]?.GetValue<string>();
+        var source = args["source"]?.GetValue<string>()?.Trim().ToLowerInvariant() ?? "all";
+        var (limit, offset) = ReadPage(args, 50, 200);
 
-        IReadOnlyList<CommunitySkillSummary> results;
+        CommunityBrowseResult browse;
         if (!string.IsNullOrWhiteSpace(repo))
         {
-            results = await _importer.BrowseRepositorySkillsAsync(repo, query, ct).ConfigureAwait(false);
+            browse = await _importer.BrowseRepositoryAsync(repo, query, ct).ConfigureAwait(false);
+        }
+        else if (source is "skills.sh" or "skillssh")
+        {
+            browse = await _importer.BrowseRepositoryAsync(SkillsShDirectory.SourceId, query, ct).ConfigureAwait(false);
+        }
+        else if (source == "catalog")
+        {
+            browse = await _importer.BrowseRepositoryAsync("local/catalog", query, ct).ConfigureAwait(false);
         }
         else
         {
-            results = await _importer.SearchCommunitySkillsAsync(query, ct).ConfigureAwait(false);
+            browse = await _importer.SearchCommunityAsync(query, ct).ConfigureAwait(false);
+            if (source == "curated")
+            {
+                browse = browse with
+                {
+                    Skills = browse.Skills.Where(skill => skill.Source != SkillsShDirectory.SourceId && skill.Repo != "local/catalog").ToList()
+                };
+            }
         }
 
+        var rows = FilterKind(browse.Skills, args["kind"]?.GetValue<string>());
+        var page = rows.Skip(offset).Take(limit).ToList();
         return JsonSerializer.Serialize(new
         {
-            count = results.Count,
+            count = rows.Count,
+            returned = page.Count,
+            offset,
+            has_more = offset + page.Count < rows.Count,
+            searched = string.IsNullOrWhiteSpace(repo)
+                ? source switch
+                {
+                    "skills.sh" or "skillssh" => new[] { "skills.sh" },
+                    "catalog" => new[] { "local/catalog" },
+                    "curated" => SkillImporterService.GetCuratedRepositories().Select(item => item.Repo).ToArray(),
+                    _ => new[] { "skills.sh", "local/catalog" }.Concat(SkillImporterService.GetCuratedRepositories().Select(item => item.Repo)).ToArray()
+                }
+                : [browse.Repository?.Repo ?? repo],
+            still_indexing = browse.PendingSources ?? [],
+            repository = browse.Repository,
             curated_repositories = SkillImporterService.GetCuratedRepositories(),
-            skills = results
+            next_step = page.Count > 0
+                ? "Call preview_community_skill with a result's repo, path and git_ref to read it before importing."
+                : "Try other keywords, a specific repo, or source 'skills.sh'.",
+            skills = page
         }, IndentedJson);
     }
+
+    private async Task<string> ExecuteBrowseCommunityRepoAsync(JsonObject args, CancellationToken ct)
+    {
+        var repo = args["repo"]?.GetValue<string>();
+        if (string.IsNullOrWhiteSpace(repo)) throw new ArgumentException("Parameter 'repo' is required, for example 'anthropics/skills'.");
+        var (limit, offset) = ReadPage(args, 100, 500);
+        var browse = await _importer.BrowseRepositoryAsync(repo, args["query"]?.GetValue<string>(), ct).ConfigureAwait(false);
+        var rows = FilterKind(browse.Skills, args["kind"]?.GetValue<string>());
+        var page = rows.Skip(offset).Take(limit).ToList();
+        return JsonSerializer.Serialize(new
+        {
+            repository = browse.Repository,
+            count = rows.Count,
+            returned = page.Count,
+            offset,
+            has_more = offset + page.Count < rows.Count,
+            by_kind = rows.GroupBy(row => row.Kind).ToDictionary(group => group.Key, group => group.Count()),
+            bundles = rows.Count(row => row.FileCount > 0),
+            next_step = "Call preview_community_skill with an entry's repo, path and git_ref to read its SKILL.md and files.",
+            skills = page.Select(row => new
+            {
+                row.Slug, row.Title, row.Description, row.Kind, row.Group, row.Repo, row.Path, row.GitRef,
+                companion_files = row.FileCount, files_known = row.FilesKnown, row.IsInstalled, row.ExistingName, row.Topic
+            })
+        }, StructuredJson);
+    }
+
+    private async Task<string> ExecutePreviewCommunitySkillAsync(JsonObject args, CancellationToken ct)
+    {
+        var repo = args["repo"]?.GetValue<string>();
+        var path = args["path"]?.GetValue<string>();
+        if (string.IsNullOrWhiteSpace(repo) || string.IsNullOrWhiteSpace(path))
+            throw new ArgumentException("Parameters 'repo' and 'path' are required. Use the values from search_community_skills or browse_community_repo.");
+        var gitRef = args["git_ref"]?.GetValue<string>();
+        var preview = await _importer.PreviewCommunitySkillAsync(repo, path, string.IsNullOrWhiteSpace(gitRef) ? "HEAD" : gitRef, ct).ConfigureAwait(false);
+        var maxChars = Math.Clamp(args["max_chars"]?.GetValue<int>() ?? 60000, 1000, 200000);
+        var file = args["file"]?.GetValue<string>();
+        var includeFiles = args["include_files"]?.GetValue<bool>() ?? false;
+
+        async Task<string> ReadFile(string relative) =>
+            await _importer.ReadPreviewFileAsync(preview.Repo, preview.Path, preview.Revision, relative, ct).ConfigureAwait(false);
+
+        string? requestedText = null;
+        if (!string.IsNullOrWhiteSpace(file))
+        {
+            if (!preview.SupportingPaths.Contains(file, StringComparer.Ordinal))
+                throw new ArgumentException($"'{file}' is not part of this skill. Choose one of: {string.Join(", ", preview.SupportingPaths.Take(30))}.");
+            requestedText = await ReadFile(file).ConfigureAwait(false);
+        }
+        var contents = new Dictionary<string, string>(StringComparer.Ordinal);
+        if (includeFiles)
+        {
+            var budget = 200 * 1024;
+            foreach (var relative in preview.SupportingPaths.Take(20))
+            {
+                if (budget <= 0) break;
+                try
+                {
+                    var text = await ReadFile(relative).ConfigureAwait(false);
+                    contents[relative] = text.Length > budget ? text[..budget] + "\n… (truncated)" : text;
+                    budget -= text.Length;
+                }
+                catch (Exception error) when (error is IOException or InvalidDataException or KeyNotFoundException or ArgumentException or CommunitySourceException)
+                {
+                    contents[relative] = "(could not read: " + error.Message + ")";
+                }
+            }
+        }
+
+        var instructions = preview.InstructionsMarkdown.Length > maxChars
+            ? preview.InstructionsMarkdown[..maxChars] + "\n… (truncated; raise max_chars to read more)"
+            : preview.InstructionsMarkdown;
+        return JsonSerializer.Serialize(new
+        {
+            preview.Slug, preview.Title, preview.Repo, preview.Path, preview.Source, revision = preview.Revision, preview.License,
+            preview.Kind, preview.Description, preview.WhenToUse,
+            bundle = new
+            {
+                total_files = preview.SupportingPaths.Count + 1,
+                is_single_file = preview.SupportingPaths.Count == 0,
+                main_file = preview.Path.Split('/')[^1],
+                companion_files = preview.SupportingPaths,
+                not_importable = preview.ExcludedPaths ?? []
+            },
+            script_review = preview.Scripts ?? [],
+            already_in_library = preview.IsInstalled, preview.ExistingName, preview.NameExists,
+            instructions_markdown = instructions,
+            file = requestedText is null ? null : new { path = file, text = requestedText },
+            files = includeFiles ? contents : null,
+            next_step = preview.IsInstalled
+                ? "This skill is already in the library as '" + (preview.ExistingName ?? preview.Slug) + "'."
+                : "To import, call prepare_skill_import with repo, path and git_ref = revision, then apply_skill_import (or import_community_skill with source '" + preview.Repo + "/" + preview.Path + "')."
+        }, StructuredJson);
+    }
+
+    private static (int Limit, int Offset) ReadPage(JsonObject args, int fallback, int maximum)
+    {
+        var limit = Math.Clamp(args["limit"]?.GetValue<int>() ?? fallback, 1, maximum);
+        var offset = Math.Max(0, args["offset"]?.GetValue<int>() ?? 0);
+        return (limit, offset);
+    }
+
+    private static List<CommunitySkillSummary> FilterKind(IEnumerable<CommunitySkillSummary> rows, string? kind) =>
+        string.IsNullOrWhiteSpace(kind) ? rows.ToList()
+            : rows.Where(row => string.Equals(row.Kind, kind.Trim(), StringComparison.OrdinalIgnoreCase) ||
+                (kind.Trim().Equals("doc", StringComparison.OrdinalIgnoreCase) && row.Group == "docs")).ToList();
 
     private static readonly JsonSerializerOptions StructuredJson = new(CompactJson)
     {

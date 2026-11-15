@@ -18,7 +18,9 @@ public sealed partial class InstallManager
         string claudeDesktopConfigPath;
         if (OperatingSystem.IsWindows())
         {
-            claudeDesktopConfigPath = Path.Combine(_appDataRoot, "Claude", "claude_desktop_config.json");
+            // The Microsoft Store app keeps its data outside %APPDATA% (Claude-Data or the package's LocalCache),
+            // so resolve the file the installed app actually reads.
+            claudeDesktopConfigPath = Watchers.ProviderDiscoveryService.ResolveClaudeDesktopConfigPath(LocalAppDataRoot, _appDataRoot);
         }
         else if (OperatingSystem.IsMacOS())
         {
@@ -86,6 +88,10 @@ public sealed partial class InstallManager
         "claude-code" or "claude-desktop" => ClaudeEvidence().Description,
         _ => null
     };
+
+    private string LocalAppDataRoot => _hasCustomHome || _appDataRoot != Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData)
+        ? Path.Combine(Path.GetDirectoryName(_appDataRoot) ?? _appDataRoot, "Local")
+        : Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
 
     private Watchers.ClaudeInstallEvidence ClaudeEvidence() =>
         new Watchers.ProviderDiscoveryService(_hasCustomHome ? _userHomeRoot : null).DetectClaude();

@@ -1,12 +1,31 @@
 import { api } from '../api.js';
 import { Latest, deployment, installedProviders } from '../state.js';
 import { icon } from '../icons.js';
-import { h, button, heading, panel, field, select, disclosure, confirmAction, errorText, busy, notify, copy } from '../ui.js';
+import { h, button, heading, panel, field, select, disclosure, confirmAction, errorText, busy, notify, copy, fill, modal, relativeTime as when } from '../ui.js';
+import { renderDiff } from '../diff.js';
 
+const REAPPLY_HINT = 'Re-applies SkillHub’s MCP connection in this tool’s config file if an update overwrote it.';
 const CONNECTION_GROUPS = { codex: 'ChatGPT / Codex', gemini: 'Gemini & Antigravity', claude: 'Claude', cursor: 'Cursor',
   copilot: 'GitHub Copilot', windsurf: 'Windsurf', cline: 'Cline', roocode: 'Roo Code' };
 // SkillHub syncs skills to these tools but does not write their MCP settings yet.
 const FOLDER_ONLY = new Set(['copilot', 'windsurf', 'cline', 'roocode']);
+const PROVIDER_LABELS = { codex: 'ChatGPT / Codex', gemini: 'Gemini & Antigravity', claude: 'Claude', cursor: 'Cursor',
+  copilot: 'GitHub Copilot', windsurf: 'Windsurf', cline: 'Cline', roocode: 'Roo Code', canonical: 'SkillHub' };
+const PROVIDER_ICONS = { codex: 'codex', gemini: 'gemini', claude: 'claude', cursor: 'cursor', copilot: 'copilot', windsurf: 'windsurf',
+  cline: 'cline', roocode: 'roocode', canonical: 'library', home: 'explore' };
+// Engine activity kinds, shown as plain-language badges in Recent Operations.
+const ACTIVITY = {
+  synced: { label: 'Synced', icon: 'sync', tone: 'ok' },
+  ingested: { label: 'Imported', icon: 'download', tone: 'info' },
+  updated: { label: 'Updated', icon: 'edit', tone: 'info' },
+  conflict: { label: 'Backup Created', icon: 'info', tone: 'warn' },
+  review: { label: 'Reviewed', icon: 'check', tone: 'ok' },
+  recognized: { label: 'Linked', icon: 'check', tone: 'ok' },
+  withdrawn: { label: 'Removed copy', icon: 'unplug', tone: 'muted' },
+  deleted: { label: 'Moved to Trash', icon: 'close', tone: 'muted' },
+  error: { label: 'Problem', icon: 'close', tone: 'warn' },
+  default: { label: 'Activity', icon: 'info', tone: 'muted' }
+};
 const CLIENT_PROVIDERS = { codex: 'codex', 'gemini-cli': 'gemini', antigravity: 'gemini', 'claude-code': 'claude', 'claude-desktop': 'claude', cursor: 'cursor' };
 
 export function createSettings(root, app) {
@@ -61,7 +80,7 @@ export function createSettings(root, app) {
       .sort((a, b) => a.rank - b.rank || b.synced - a.synced);
     const active = groups.filter(group => group.rank < 2);
     const missing = groups.filter(group => group.rank === 2);
-    content.replaceChildren(
+    fill(content,
       active.length ? h('div', { class: 'connection-list' }, active.map(connectionCard))
         : h('div', { class: 'empty' }, h('h2', {}, 'No AI tools detected'),
           h('p', { class: 'muted' }, 'Install Codex, Gemini CLI, Antigravity, Claude, or Cursor. SkillHub detects them automatically.')),
@@ -113,9 +132,10 @@ export function createSettings(root, app) {
     const [state, tone] = client.error ? ['Needs attention', 'warn'] : client.restart_required ? ['Restart required', 'warn']
       : client.is_registered ? ['MCP connected', 'ok'] : available ? ['MCP not connected', 'muted'] : ['Not installed', 'muted'];
     const action = client.is_registered ? 'repair' : 'connect';
-    const update = button([icon(client.is_registered ? 'wrench' : 'plug'), client.is_registered ? 'Repair' : 'Connect'],
+    const update = button([icon(client.is_registered ? 'wrench' : 'plug'), client.is_registered ? 'Re-apply connection' : 'Connect'],
       () => updateClient(client, action, update, feedback), client.is_registered ? 'small' : 'primary small',
-      { disabled: !available && !client.is_registered, 'aria-label': (client.is_registered ? 'Repair ' : 'Connect ') + client.display_name });
+      { disabled: !available && !client.is_registered, title: client.is_registered ? REAPPLY_HINT : 'Add SkillHub to this tool’s MCP config file.',
+        'aria-label': (client.is_registered ? 'Re-apply SkillHub connection for ' : 'Connect ') + client.display_name });
     const folder = client.client_id === 'antigravity' && group.provider?.provider_root
       ? group.provider.provider_root + '/antigravity/skills' : group.provider?.skills_root;
     const menu = h('details', { class: 'action-menu' },
@@ -140,13 +160,14 @@ export function createSettings(root, app) {
     return h('li', { class: 'connection-client' },
       h('div', { class: 'connection-client-main' },
         h('div', { class: 'connection-client-name' }, h('strong', {}, client.display_name),
-          h('span', { class: 'status-badge small ' + tone }, h('span', { class: 'status-badge-dot', 'aria-hidden': 'true' }), state)),
+          h('span', { class: 'status-badge small ' + tone }, h('span', { class: 'status-badge-dot', 'aria-hidden': 'true' }), state),
+          client.is_registered && h('small', { class: 'field-help' }, REAPPLY_HINT)),
         h('div', { class: 'actions' }, update, menu)),
       restart, client.error && errorText(client.error), feedback);
   }
 
   async function updateClient(client, action, control, feedback) {
-    const label = action === 'remove' ? 'Disconnect' : action[0].toUpperCase() + action.slice(1);
+    const label = { remove: 'Disconnect', repair: 'Re-apply connection', connect: 'Connect' }[action] ?? action;
     const text = action === 'remove'
       ? 'Remove SkillHub from the ' + client.display_name + ' configuration? Your skills stay in place. The file is backed up first.'
       : label + ' SkillHub in the ' + client.display_name + ' configuration? An existing file is backed up before a change.';
@@ -200,13 +221,14 @@ export function createSettings(root, app) {
     const body = h('div', { class: 'stack' });
     const subnav = h('nav', { class: 'settings-tabs', 'aria-label': 'Diagnostics sections' });
     let current = data;
-    let showSnapshots = false;
-    const reconcile = button('Reconcile destinations', () => busy(reconcile, async () => {
+    let showSnapshots = true;
+    const verify = button([icon('restart'), 'Verify & Sync All Folders'], () => busy(verify, async () => {
       const response = await api.resync();
       const report = response.report ?? {};
-      feedback.textContent = [report.projected + ' updated', report.syncedDestinations + ' synced',
-        report.conflictedDestinations + ' conflicts', report.missingDestinations + ' missing',
-        report.failedDestinations + ' failed'].join(' · ');
+      const count = (value, one, many) => (value ?? 0) + ' ' + ((value ?? 0) === 1 ? one : many);
+      feedback.replaceChildren(h('p', { class: 'muted' }, 'Checked every folder: ' + [count(report.projected, 'skill updated', 'skills updated'),
+        count(report.syncedDestinations, 'copy in sync', 'copies in sync'), count(report.missingDestinations, 'missing copy restored', 'missing copies restored'),
+        count(report.conflictedDestinations, 'needs review', 'need review'), count(report.failedDestinations, 'failed', 'failed')].join(' · ') + '.'));
       await refreshDiagnostics();
       app.refresh();
     }, error => feedback.replaceChildren(errorText(error.message))), 'primary');
@@ -214,60 +236,132 @@ export function createSettings(root, app) {
     subnav.append(...sections.map(name => button(name, event => {
       diagnosticsTab = name;
       for (const tabButton of subnav.querySelectorAll('button')) tabButton.setAttribute('aria-pressed', String(tabButton === event.currentTarget));
-      fill();
+      renderSection();
     }, '', { 'aria-pressed': String(name === diagnosticsTab) })));
     const watcher = data.watcher ?? {};
-    content.replaceChildren(h('div', { class: 'spread' }, h('p', { class: 'muted' },
-      watcher.running ? 'Watching ' + watcher.roots + ' folders' : 'Watcher is starting or offline'), reconcile),
-      watcher.last_error && errorText(watcher.last_error), feedback, subnav, body);
-    updateDiagnostics = next => { current = next; fill(); };
-    function fill() {
+    const folders = watcher.folders ?? [];
+    const folderList = folders.length > 0 && disclosure('Show the ' + folders.length + ' watched ' + (folders.length === 1 ? 'folder' : 'folders'),
+      h('ul', { class: 'watched-folders' }, folders.map(folder => h('li', { class: 'watched-folder' },
+        h('span', { class: 'provider-mark', 'data-provider': folder.provider }, icon(PROVIDER_ICONS[folder.provider] ?? 'library')),
+        h('div', { class: 'watched-folder-text' }, h('strong', {}, folder.label),
+          h('code', { class: 'path' }, folder.path), folder.purpose && h('small', { class: 'muted' }, folder.purpose)),
+        h('div', { class: 'actions' },
+          button([icon('copy'), 'Copy path'], () => copy(folder.path), 'quiet small', { 'aria-label': 'Copy ' + folder.path }),
+          button('Open folder', event => busy(event.currentTarget, () => api.openFolder(folder.path),
+            error => feedback.replaceChildren(errorText(error.message))), 'quiet small', { 'aria-label': 'Open ' + folder.path }))))));
+    fill(content,
+      h('section', { class: 'settings-group' },
+        h('div', { class: 'spread' },
+          h('div', {}, h('p', { class: 'muted' }, watcher.running
+            ? 'Watching ' + (watcher.roots ?? folders.length) + ' folders' : 'The folder watcher is starting or offline'),
+            h('small', { class: 'field-help' }, 'SkillHub notices edits in these folders and copies them to your other AI tools.')),
+          h('div', { class: 'verify-action' }, verify,
+            h('small', { class: 'field-help' }, 'Checks all AI tool folders on disk, repairs missing copies, and checks for external edits.'))),
+        folderList),
+      watcher.last_error && errorText('The folder watcher reported: ' + watcher.last_error), feedback, subnav, body);
+    updateDiagnostics = next => { current = next; renderSection(); };
+
+    function backupRow(entry) {
+      const restoreReplace = entry.skill_exists !== false && button('Restore & Replace Current Skill', async event => {
+        const control = event.currentTarget;
+        if (!await confirmAction('Restore & replace ' + entry.skill,
+          'Replace the current ' + entry.skill + ' with this backup and sync it to your AI tools? The current version stays in the skill’s History, so you can undo this.',
+          'Restore & replace')) return;
+        busy(control, async () => {
+          await api.restoreConflict(entry.id, entry.revision);
+          notify('Restored the backup over ' + entry.skill + '.');
+          app.refresh();
+          await refreshDiagnostics();
+        }, error => feedback.replaceChildren(errorText(error.message)));
+      }, 'small');
+      const restoreNew = button('Restore as New Separate Skill', async event => {
+        const control = event.currentTarget;
+        if (!await confirmAction('Restore as a new skill', 'Save this backup as a separate skill in My Skills? It starts with sync turned off, and the current skill is not changed.', 'Restore as new skill', false)) return;
+        busy(control, async () => {
+          await api.conflict(entry.id, entry.revision);
+          notify('Saved the backup as a new skill in My Skills.');
+          app.refresh();
+        }, error => feedback.replaceChildren(errorText(error.message)));
+      }, 'small');
+      const undo = entry.can_undo && button('Undo last replacement', async event => {
+        const control = event.currentTarget;
+        if (!await confirmAction('Undo replacement', 'Put this tool’s saved files back and stop SkillHub from overwriting this copy?', 'Undo replacement')) return;
+        busy(control, async () => {
+          await api.undoConflict(entry.id, entry.revision);
+          notify('Restored the tool’s saved files.');
+          app.refresh();
+          await refreshDiagnostics();
+        }, error => feedback.replaceChildren(errorText(error.message)));
+      }, 'small quiet');
+      const compare = button('Preview / Compare Changes', event => busy(event.currentTarget, async () => {
+        const preview = await api.conflictPreview(entry.id);
+        const changed = [...new Set([...Object.keys(preview.backup_files ?? {}), ...Object.keys(preview.current_files ?? {})])]
+          .filter(path => (preview.backup_files ?? {})[path] !== (preview.current_files ?? {})[path]);
+        modal('Backup of ' + entry.skill, h('div', { class: 'stack' },
+          h('p', { class: 'muted' }, (preview.provider ? (PROVIDER_LABELS[preview.provider] ?? preview.provider) + ' copy' : 'Tool copy') + ' saved ' + when(entry.saved_at) + '.'),
+          preview.current_markdown == null
+            ? h('div', { class: 'stack' }, h('p', { class: 'warning' }, 'The skill no longer exists in SkillHub. This is the full backup.'),
+              h('pre', { class: 'diff-plain' }, preview.backup_markdown))
+            : renderDiff(preview.current_markdown, preview.backup_markdown, { labels: ['Current skill', 'Backup'] }),
+          changed.length > 0 && disclosure('Bundle files that differ (' + changed.length + ')', h('div', { class: 'stack' },
+            changed.map(path => disclosure(path, renderDiff((preview.current_files ?? {})[path] ?? '', (preview.backup_files ?? {})[path] ?? '',
+              { labels: ['Current skill', 'Backup'] })))))));
+      }, error => feedback.replaceChildren(errorText(error.message))), 'quiet small');
+      return h('div', { class: 'backup-row' },
+        h('div', { class: 'backup-text' },
+          h('div', { class: 'backup-title' }, h('strong', {}, entry.skill),
+            entry.provider && h('span', { class: 'status-badge small muted' }, (PROVIDER_LABELS[entry.provider] ?? entry.provider) + ' copy'),
+            h('small', { class: 'muted', title: entry.saved_at ? new Date(entry.saved_at).toLocaleString() : '' }, when(entry.saved_at))),
+          h('p', {}, entry.reason ?? 'This tool’s copy differed from SkillHub’s version, so it was saved before syncing.'),
+          h('p', { class: 'path muted' }, entry.destination + (entry.file_count > 1 ? ' · ' + entry.file_count + ' files' : ''))),
+        h('div', { class: 'actions wrap' }, compare, restoreReplace, restoreNew, undo));
+    }
+
+    function activityRow(event) {
+      const kind = ACTIVITY[event.action ?? event.event_type] ?? ACTIVITY.default;
+      const provider = PROVIDER_LABELS[event.source];
+      const slug = event.skill_slug;
+      const skill = slug && app.snapshot.skills.find(item => item.name === slug);
+      return h('li', { class: 'activity-row', 'data-tone': kind.tone },
+        h('span', { class: 'activity-icon', 'aria-hidden': 'true' }, icon(kind.icon)),
+        h('div', { class: 'activity-text' },
+          h('div', { class: 'activity-head' },
+            h('span', { class: 'status-badge small ' + kind.tone }, kind.label),
+            slug ? (skill ? button(skill.title || slug, () => app.read(slug), 'link small') : h('strong', {}, slug)) : null,
+            provider && h('span', { class: 'muted' }, (kind.label === 'Imported' ? 'from ' : '→ ') + provider)),
+          event.details && h('small', { class: 'muted activity-detail' }, event.details)),
+        h('time', { class: 'muted', datetime: event.timestamp_utc, title: new Date(event.timestamp_utc).toLocaleString() }, when(event.timestamp_utc)));
+    }
+
+    function renderSection() {
       const focused = body.contains(document.activeElement) ? document.activeElement.dataset.key : null;
       if (diagnosticsTab === 'Needs Review') {
         const issues = current.issues ?? [];
         body.replaceChildren(...issues.map(issue => h('div', { class: 'settings-row spread' },
-          h('div', {}, h('strong', {}, issue.title), h('p', { class: 'warning' }, issue.label + ' · ' + issue.state)),
+          h('div', {}, h('strong', {}, issue.title), h('p', { class: 'warning' }, [issue.label, issue.state].filter(Boolean).join(' · '))),
           h('div', { class: 'actions' }, button('Open skill', () => app.read(issue.skill), 'quiet small'),
             button('Review ' + issue.label, () => app.review(issue.skill, issue), 'small', { 'data-key': issue.path })))));
-        if (!issues.length) body.append(h('p', { class: 'muted' }, 'No destinations need review.'));
+        if (!issues.length) body.append(h('p', { class: 'muted' }, 'Nothing needs review. Every AI tool has the current version of your skills.'));
         const backups = current.conflicts ?? [];
         if (backups.length) {
-          const retained = disclosure('Retained snapshots (' + backups.length + ')', backups.map(entry =>
-          h('div', { class: 'settings-row spread' }, h('div', {}, h('strong', {}, entry.skill), h('p', { class: 'path' }, entry.destination)),
-            h('div', { class: 'actions' }, entry.can_undo && button('Undo replacement', async event => {
-              const control = event.currentTarget;
-              if (!await confirmAction('Undo replacement', 'Restore the saved provider files and leave this copy provider-managed?', 'Undo replacement')) return;
-              busy(control, async () => {
-                await api.undoConflict(entry.id, entry.revision);
-                notify('Restored the provider snapshot.');
-                app.refresh();
-                await refreshDiagnostics();
-              }, error => feedback.replaceChildren(errorText(error.message)));
-            }, 'small'),
-            button('Recover inactive copy', async event => {
-              const control = event.currentTarget;
-              if (!await confirmAction('Recover snapshot', 'Save an inactive copy in My Skills?', 'Recover copy', false)) return;
-              busy(control, async () => {
-                await api.conflict(entry.id, entry.revision);
-                notify('Recovered an inactive copy in My Skills.');
-                app.refresh();
-              });
-            }, 'small')))));
+          const retained = h('details', { class: 'disclosure backups' },
+            h('summary', {}, 'Conflict & Safety Backups (' + backups.length + ')'),
+            h('p', { class: 'field-help' }, 'When an AI tool’s copy of a skill differs from SkillHub’s, SkillHub saves that copy here before syncing, so nothing is lost.'),
+            h('div', { class: 'stack' }, backups.map(backupRow)));
           retained.open = showSnapshots;
           retained.addEventListener('toggle', () => { showSnapshots = retained.open; });
           body.append(retained);
         }
       } else if (diagnosticsTab === 'Recent Operations') {
         const all = current.recent_activity ?? [];
-        const kinds = [...new Set(all.map(event => event.event_type ?? event.action ?? 'activity'))];
-        const filter = select([['all', 'All operations'], ...kinds.map(kind => [kind, kind])], diagnosticsFilter, {
-          'aria-label': 'Filter operations', 'data-key': 'operation-filter',
-          onchange: event => { diagnosticsFilter = event.target.value; fill(); }
+        const kindOf = event => event.action ?? event.event_type ?? 'activity';
+        const kinds = [...new Set(all.map(kindOf))];
+        const filter = select([['all', 'All activity'], ...kinds.map(kind => [kind, (ACTIVITY[kind] ?? ACTIVITY.default).label])], diagnosticsFilter, {
+          'aria-label': 'Filter activity', 'data-key': 'operation-filter',
+          onchange: event => { diagnosticsFilter = event.target.value; renderSection(); }
         });
-        const events = all.filter(event => diagnosticsFilter === 'all' || (event.event_type ?? event.action ?? 'activity') === diagnosticsFilter);
-        body.replaceChildren(filter, events.length ? h('ul', { class: 'activity' }, events.map(event =>
-          h('li', {}, h('small', { class: 'muted' }, new Date(event.timestamp_utc).toLocaleString()),
-            h('p', {}, event.details)))) : h('p', { class: 'muted' }, 'No matching operations.'));
+        const events = all.filter(event => diagnosticsFilter === 'all' || kindOf(event) === diagnosticsFilter);
+        body.replaceChildren(filter, events.length ? h('ul', { class: 'activity' }, events.map(activityRow)) : h('p', { class: 'muted' }, 'No matching activity yet.'));
       } else {
         const trash = current.trash ?? [];
         body.replaceChildren(...trash.map(item => {
@@ -290,7 +384,7 @@ export function createSettings(root, app) {
       }
       if (focused) body.querySelector('[data-key="' + CSS.escape(focused) + '"]')?.focus({ preventScroll: true });
     }
-    fill();
+    renderSection();
   }
 
   async function refreshDiagnostics() {

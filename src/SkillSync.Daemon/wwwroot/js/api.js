@@ -65,5 +65,8 @@ export const api = {
   diagnostics: signal => request('/diagnostics', { signal }),
   resync: () => request('/resync', { method: 'POST' }),
   undoConflict: (id, revision) => request('/diagnostics/conflicts/undo', { method: 'POST', data: { id, revision } }),
-  conflict: (id, revision) => request('/diagnostics/conflicts/recover', { method: 'POST', data: { id, revision } })
+  conflict: (id, revision) => request('/diagnostics/conflicts/recover', { method: 'POST', data: { id, revision } }),
+  restoreConflict: (id, revision) => request('/diagnostics/conflicts/restore', { method: 'POST', data: { id, revision } }),
+  conflictPreview: id => request('/diagnostics/conflicts/preview?id=' + encodeURIComponent(id)),
+  openFolder: path => request('/diagnostics/folders/open', { method: 'POST', data: { path } })
 };

@@ -17,4 +17,6 @@ public sealed record SkillSummary(
     [property: JsonPropertyName("tags")] IReadOnlyList<string> Tags,
     [property: JsonPropertyName("targets")] SkillTargetsConfig Targets,
     [property: JsonPropertyName("destinations")] IReadOnlyList<SyncDestinationStatus> Destinations,
-    [property: JsonPropertyName("instruction_match")] string? InstructionMatch);
+    [property: JsonPropertyName("instruction_match")] string? InstructionMatch,
+    [property: JsonPropertyName("file_count")] int FileCount = 0,
+    [property: JsonPropertyName("supporting_paths")] IReadOnlyList<string>? SupportingPaths = null);

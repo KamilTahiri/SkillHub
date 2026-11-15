@@ -2,7 +2,7 @@ import { api } from '../api.js';
 import { Latest, PROVIDERS, slugify } from '../state.js';
 import { renderMarkdown } from '../markdown.js';
 import { icon, PROVIDER_NAMES } from '../icons.js';
-import { h, button, field, select, panel, modal, errorText, busy, notify, disclosure, confirmAction } from '../ui.js';
+import { h, button, field, select, panel, modal, errorText, busy, notify, disclosure, confirmAction, fill, bundleBadge, autoLoadMore } from '../ui.js';
 
 const TOPICS = [['', 'All topics'], ['coding', 'Coding'], ['web', 'Web and design'], ['data', 'Data'],
   ['devops', 'Infrastructure'], ['productivity', 'Productivity'], ['testing', 'Testing and security']];
@@ -109,6 +109,15 @@ export function createExplore(root, app) {
     return cached.value;
   }
 
+  const mainFile = path => (path ?? '').split('/').at(-1) || 'SKILL.md';
+  // Single file or bundle, said plainly on every row. Listings that do not know the folder yet (skills.sh) say so until the preview loads.
+  const rowBadge = skill => bundleBadge(skill.file_count, { known: skill.files_known !== false,
+    main: /\.(md|mdc|txt)$/i.test(skill.path ?? '') ? mainFile(skill.path) : 'SKILL.md' });
+  const previewBadge = (skill, value) => {
+    const paths = value.supporting_paths ?? Object.keys(value.supporting_files ?? {});
+    return bundleBadge(paths.length, { paths, main: mainFile(value.path ?? skill.path) });
+  };
+
   function fetchPreview(selection) {
     const cached = cachedPreview(selection);
     if (cached) return Promise.resolve(cached);
@@ -119,6 +128,7 @@ export function createExplore(root, app) {
         const row = resultRows.get(selection);
         row?.querySelector('.result-title').replaceChildren(value.title);
         if (value.description) row?.querySelector('.result-description').replaceChildren(value.description);
+        row?.querySelector('.files-badge')?.replaceWith(previewBadge(selection, value));
       }
       const size = (value.instructions_markdown?.length ?? 0) * 2;
       const budget = 8 * 1024 * 1024;
@@ -160,7 +170,7 @@ export function createExplore(root, app) {
     sources = list;
     const curated = list.filter(repo => !repo.pinned).map(repo => h('option', { value: repo.repo }, repo.title));
     const pinned = list.filter(repo => repo.pinned).map(repo => h('option', { value: repo.repo }, repo.title));
-    sourceChooser.replaceChildren(...curated, pinned.length ? h('optgroup', { label: 'Pinned' }, pinned) : null);
+    fill(sourceChooser, ...curated, pinned.length ? h('optgroup', { label: 'Pinned' }, pinned) : null);
     if (![...sourceChooser.options].some(option => option.value === source)) {
       sourceChooser.append(h('option', { value: source }, source));
     }
@@ -273,11 +283,7 @@ export function createExplore(root, app) {
       renderBatch();
       return;
     }
-    results.replaceChildren(...[card, tabs].filter(Boolean),
-      h('p', { class: 'muted explore-count', role: 'status' }, filtered.length + (filtered.length === 1 ? ' result' : ' results'),
-        pendingSources.length > 0 && h('span', { class: 'pending-note' }, h('span', { class: 'spinner', 'aria-hidden': 'true' }),
-          'Still indexing ' + pendingSources.join(', ') + '. Results update automatically.')),
-      h('ul', { class: 'results' }, filtered.slice(0, visibleCount).map(skill => {
+    const resultRow = skill => {
         const key = cacheKey(skill);
         const row = h('button', { type: 'button', class: 'result-button', 'aria-current': String(selected === skill),
           onclick: () => {
@@ -289,7 +295,7 @@ export function createExplore(root, app) {
             : skill.description || (skill.has_frontmatter === false ? 'No description in this file.' : '')),
           h('span', { class: 'result-meta' },
             skill.kind && skill.kind !== 'skill' && h('span', { class: 'kind-badge', 'data-kind': skill.kind }, KIND_LABELS[skill.kind] ?? skill.kind),
-            skill.file_count > 0 && h('span', { class: 'files-badge', title: skill.file_count + ' bundled files' }, '+' + skill.file_count + ' files'),
+            rowBadge(skill),
             skill.installs > 0 && h('span', { class: 'installs-badge', title: skill.installs.toLocaleString() + ' installs on skills.sh' },
               icon('download'), compactNumber(skill.installs)),
             skill.is_installed && h('span', { class: 'installed-badge' }, icon('check'), 'In library'),
@@ -299,6 +305,7 @@ export function createExplore(root, app) {
         const cached = cachedPreview(skill);
         if (cached) {
           row.querySelector('.result-title').replaceChildren(cached.title);
+          row.querySelector('.files-badge')?.replaceWith(previewBadge(skill, cached));
           if (cached.description) row.querySelector('.result-description').replaceChildren(cached.description);
         }
         const pick = !skill.is_installed && skill.repo !== 'local/catalog' && h('input', {
@@ -309,13 +316,20 @@ export function createExplore(root, app) {
           } });
         return h('li', { class: 'result-row' + (pick ? ' pickable' : '') }, pick, row, skill.existing_name &&
           button('Open existing skill', () => app.read(skill.existing_name), 'quiet small result-open'));
-      })));
-    if (filtered.length > visibleCount) results.append(button('Show more results', () => {
+      };
+    // The count and kind tabs stay pinned while the list scrolls, so the active filter is always visible.
+    const summary = h('div', { class: 'explore-summary' }, tabs,
+      h('p', { class: 'muted explore-count', role: 'status' }, filtered.length + (filtered.length === 1 ? ' result' : ' results'),
+        pendingSources.length > 0 && h('span', { class: 'pending-note' }, h('span', { class: 'spinner', 'aria-hidden': 'true' }),
+          'Still indexing ' + pendingSources.join(', ') + '. Results update automatically.')));
+    const list = h('ul', { class: 'results' }, filtered.slice(0, visibleCount).map(resultRow));
+    results.replaceChildren(...[card, summary, list].filter(Boolean));
+    autoLoadMore(results, filtered.length, () => visibleCount, more => {
       const index = visibleCount;
-      visibleCount += 50;
-      showList();
-      results.querySelectorAll('.result-button')[index]?.focus();
-    }));
+      visibleCount += more;
+      list.append(...filtered.slice(index, visibleCount).map(resultRow));
+      return index;
+    }, list, 'results');
     renderBatch();
   }
 
@@ -524,8 +538,9 @@ export function createExplore(root, app) {
       h('p', { class: 'muted', title: [review.source, review.license].filter(Boolean).join(' · ') },
         review.kind && review.kind !== 'skill' ? (KIND_LABELS[review.kind] ?? review.kind) + ' · ' : '',
         review.source, review.license && ' · ' + review.license),
-      h('p', { class: 'muted' }, files.length + (files.length === 1 ? ' supporting file' : ' supporting files'),
-        excluded.length > 0 && ' · ' + excluded.length + ' excluded', review.name_exists && ' · Name in use'));
+      h('p', { class: 'preview-files' }, bundleBadge(files.length, { paths: files, verbose: true, main: mainFile(review.path) }),
+        excluded.length > 0 && h('span', { class: 'muted' }, ' · ' + excluded.length + ' not importable (binary or too large)'),
+        review.name_exists && h('span', { class: 'muted' }, ' · Name in use')));
     // Script review: executable files and shell instructions are listed before anything is imported.
     const scripts = review.scripts ?? [];
     const risky = scripts.filter(script => script.concerns.length);

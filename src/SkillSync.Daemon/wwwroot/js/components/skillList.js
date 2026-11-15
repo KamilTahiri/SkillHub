@@ -2,7 +2,7 @@ import { api } from '../api.js';
 import { COLLECTIONS, PROVIDERS, Latest, deployment, installedProviders, matchesFilters, inCollection, skillKey, targetIssues, slugify, tagSlug } from '../state.js';
 import { icon, PROVIDER_NAMES } from '../icons.js';
 import { highlighted } from '../markdown.js';
-import { h, button, field, select, modal, confirmAction, errorText, notify, busy, copy } from '../ui.js';
+import { h, button, field, select, modal, confirmAction, errorText, notify, busy, copy, bundleBadge, autoLoadMore } from '../ui.js';
 import { copySkillPrompt, reviewUpdate } from './skillInsights.js';
 
 const STATUSES = { synced: 'Synced', issue: 'Needs attention', disabled: 'Disabled', pending: 'Pending or undeployed', catalog: 'Catalog' };
@@ -306,7 +306,7 @@ export function createLibrary(root, app) {
         sortOrder === 'issues' ? severity(a) - severity(b) || (a.title || a.name).localeCompare(b.title || b.name)
           : sortOrder === 'synced' ? syncFor(b).synced.length - syncFor(a).synced.length || (a.title || a.name).localeCompare(b.title || b.name)
             : (b.revision ?? 0) - (a.revision ?? 0) || (a.title || a.name).localeCompare(b.title || b.name));
-      const list = h('ul', { class: 'results' }, ordered.slice(0, limit).map(skill => {
+      const libraryRow = skill => {
         const key = skillKey(skill);
         const sync = syncFor(skill);
         const tags = (skill.tags ?? []).filter(tag => collection === 'system' && !allScope || !RESERVED_TAGS.has(slugify(tag)));
@@ -322,6 +322,8 @@ export function createLibrary(root, app) {
             'aria-hidden': 'true' }, glyphText(skill.title || skill.name)),
           h('span', { class: 'result-title' }, highlighted(skill.title || skill.name, query)),
           h('span', { class: 'result-description' }, highlighted(skill.instruction_match ?? skill.description ?? '', query)),
+          h('span', { class: 'result-files' }, bundleBadge(skill.file_count ?? Object.keys(skill.supporting_files ?? {}).length,
+            { paths: skill.supporting_paths ?? Object.keys(skill.supporting_files ?? {}) })),
           !syncView && h('span', { class: 'chips' }, origin && !['My Skill', 'Personal', 'SkillHub'].includes(origin) &&
             h('span', { class: 'result-meta', title: origin }, origin),
             tags.slice(0, 2).map(tag => h('span', { class: 'chip' }, '#' + tag)),
@@ -363,14 +365,16 @@ export function createLibrary(root, app) {
         const updateBadge = update && button([icon('sync'), 'Update'], () => reviewUpdate(app, skill), 'small update-badge',
           { title: update.repo + ' has a newer version', 'aria-label': 'Review the upstream update for ' + (skill.title || skill.name) });
         return h('li', { class: 'result-row library-row' }, row, h('div', { class: 'library-row-status' }, updateBadge, providers, exceptions), quick);
-      }));
+      };
+      const list = h('ul', { class: 'results' }, ordered.slice(0, limit).map(libraryRow));
       results.replaceChildren(list);
-      if (visible.length > limit) results.append(button('Show more skills', () => {
-        const next = visible[limit];
-        limit += 50;
-        render();
-        root.querySelector('[data-control="' + CSS.escape('row-' + skillKey(next)) + '"]')?.focus();
-      }));
+      // More rows load automatically as the list scrolls; the sentinel button keeps this reachable by keyboard.
+      autoLoadMore(results, visible.length, () => limit, more => {
+        const index = limit;
+        limit += more;
+        list.append(...ordered.slice(index, limit).map(libraryRow));
+        return index;
+      }, list, 'skills');
     }
     if (focused) root.querySelector('[data-control="' + CSS.escape(focused) + '"]')?.focus({ preventScroll: true });
   }

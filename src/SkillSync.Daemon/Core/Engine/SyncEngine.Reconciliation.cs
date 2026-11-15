@@ -596,7 +596,9 @@ public sealed partial class SyncEngine
             {
                 destination = item.Destination.Path,
                 markdown = item.Snapshot.Markdown,
-                supporting_files = item.Snapshot.Files
+                supporting_files = item.Snapshot.Files,
+                reason = details,
+                saved_at = DateTimeOffset.UtcNow
             })).ConfigureAwait(false);
             item.Target.ConflictHash = hash;
             item.Target.State = "conflict";

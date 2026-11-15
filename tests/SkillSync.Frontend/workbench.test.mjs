@@ -84,7 +84,11 @@ async function fixtureServer() {
         return send({ theme: fixture.theme });
       }
       if (route === '/status') return send({ install: { mcp_clients: [] } });
-      if (route === '/diagnostics') return send({ watcher: { running: true, roots: 1 },
+      if (route === '/diagnostics') return send({ watcher: { running: true, roots: 1, last_error: null,
+          folders: [{ path: '/codex', provider: 'codex', label: 'ChatGPT / Codex', purpose: 'Picks up edits you make to skills inside this tool.' }] },
+        conflicts: [{ id: 'fixture/20261113-093739918-a.json', skill: 'fixture', destination: '/gemini/fixture/SKILL.md', revision: 'r1',
+          can_undo: false, saved_at: '2026-11-13T09:37:39Z', reason: 'The skill was edited in SkillHub and in this tool at the same time.',
+          provider: 'gemini', file_count: 1, skill_exists: true }],
         issues: [{ title: 'Conflicted', label: 'Gemini', state: 'conflict', path: '/gemini', skill: 'conflicted' }],
         recent_activity: [{ event_type: 'synced', timestamp_utc: '2026-11-13T12:00:00Z', details: 'Applied a projection' }],
         trash: [] });
@@ -99,9 +103,9 @@ async function fixtureServer() {
       }
       if (route === '/community/repos') return send({ repositories: [{ repo: 'featured/all', title: 'Featured' }] });
       if (route === '/community/skills') return send({ skills: ['Slow', 'Fast', 'Broken',
-        ...Array.from({ length: 30 }, (_, index) => 'Skill ' + index)].map(item),
+        ...Array.from({ length: 70 }, (_, index) => 'Skill ' + index)].map(item),
         repository: { repo: 'fixture/repo', sha: 'f'.repeat(40), mode: 'tarball', readme_excerpt: '# Fixture\n\nFixture readme text.',
-          license_path: 'LICENSE', counts: { skills: 32, docs: 1 }, truncated: false, pinned: false } });
+          license_path: 'LICENSE', counts: { skills: 72, docs: 1 }, truncated: false, pinned: false } });
       if (route === '/community/preview') {
         const path = url.searchParams.get('path');
         fixture.prefetched.set(path, (fixture.prefetched.get(path) ?? 0) + 1);
@@ -365,10 +369,27 @@ test('workbench at desktop and docked sizes, with keyboard, themes, Markdown and
       await wait('document.querySelector("#explore-screen .result-button")');
       await until(() => fixture.prefetched.has('Slow/SKILL.md'), 'Prefetch did not start');
       assert.match(await evaluate('document.querySelector(".repo-card h2").textContent'), /fixture\/repo/);
-      assert.deepEqual(await evaluate('[...document.querySelectorAll(".group-tabs .btn")].map(tab => tab.textContent)'), ['All33', 'Skills32', 'Docs1']);
+      assert.deepEqual(await evaluate('[...document.querySelectorAll(".group-tabs .btn")].map(tab => tab.textContent)'), ['All73', 'Skills72', 'Docs1']);
       // A repository opens on the Skills tab so READMEs and docs do not crowd out actual skills.
-      assert.equal(await evaluate('document.querySelector(".group-tabs [aria-pressed=true]").textContent'), 'Skills32');
-      assert.match(await evaluate('document.querySelector(".result-row:nth-child(2) .files-badge").textContent'), /\+1 files/);
+      assert.equal(await evaluate('document.querySelector(".group-tabs [aria-pressed=true]").textContent'), 'Skills72');
+      assert.match(await evaluate('document.querySelector(".result-row:nth-child(2) .files-badge").textContent'), /📦 Bundle · 2 files/);
+      assert.equal(await evaluate('document.querySelector(".result-row:nth-child(30) .files-badge").textContent'), '1 file (SKILL.md)');
+      // Infinite scroll: the first 50 rows render, more load as the sentinel scrolls into view, and the count stays pinned.
+      assert.equal(await evaluate('document.querySelectorAll("#explore-screen .result-row").length'), 50);
+      assert.ok(await evaluate('Boolean(document.querySelector(".load-more-sentinel button"))'));
+      await evaluate('{ const list = document.querySelector(".explore-results"); list.scrollTop = list.scrollHeight; }');
+      await wait('document.querySelectorAll("#explore-screen .result-row").length === 72 && !document.querySelector(".load-more-sentinel")',
+        'more Explore rows load on scroll');
+      const pinned = await evaluate(`(() => {
+        const list = document.querySelector(".explore-results");
+        list.scrollTop = list.scrollHeight;
+        const summary = document.querySelector(".explore-summary").getBoundingClientRect();
+        return { position: getComputedStyle(document.querySelector(".explore-summary")).position, scrolled: list.scrollTop,
+          offset: Math.round(summary.top - list.getBoundingClientRect().top), height: summary.height };
+      })()`);
+      assert.ok(pinned.position === 'sticky' && pinned.scrolled > 0 && Math.abs(pinned.offset) <= 4 && pinned.height > 0,
+        'the result count stays visible while scrolling ' + JSON.stringify(pinned));
+      await evaluate('document.querySelector(".explore-results").scrollTop = 0');
       await evaluate('for (const box of [...document.querySelectorAll(".result-pick")].slice(3, 5)) box.click()');
       await wait('!document.querySelector(".batch-bar").hidden && document.querySelector(".batch-bar").textContent.includes("2 selected")');
       await textButton('Clear');
@@ -438,12 +459,24 @@ test('workbench at desktop and docked sizes, with keyboard, themes, Markdown and
       assert.ok(await evaluate('document.documentElement.scrollWidth <= innerWidth'));
       await textButton('Diagnostics');
       await wait('document.querySelector("#settings-screen").textContent.includes("Watching 1 folders")');
+      // Native replaceChildren would print null or undefined as text; nothing like that may reach the screen.
+      assert.equal(await evaluate(`(() => {
+        const walker = document.createTreeWalker(document.querySelector("#settings-screen"), NodeFilter.SHOW_TEXT);
+        while (walker.nextNode()) if (/^(null|undefined|false)$/.test(walker.currentNode.textContent.trim())) return walker.currentNode.textContent;
+        return "";
+      })()`), '');
+      assert.ok(await evaluate('[...document.querySelectorAll("#settings-screen button")].some(b => b.textContent.includes("Verify & Sync All Folders"))'));
+      assert.match(await evaluate('document.querySelector("#settings-screen .watched-folder").textContent'), /ChatGPT \/ Codex.*\/codex/);
+      assert.match(await evaluate('document.querySelector("#settings-screen .backups summary").textContent'), /Conflict & Safety Backups \(1\)/);
+      assert.match(await evaluate('document.querySelector("#settings-screen .backup-row").textContent'),
+        /edited in SkillHub and in this tool[\s\S]*Preview \/ Compare Changes[\s\S]*Restore & Replace Current Skill[\s\S]*Restore as New Separate Skill/);
       await textButton('Review Gemini');
       await wait('document.querySelector("dialog[open]")?.textContent.includes("Frontmatter unchanged")');
       await key('Escape');
       await wait('!document.querySelector("dialog[open]")');
       await textButton('Recent Operations');
       await wait('document.querySelector("#settings-screen").textContent.includes("Applied a projection")');
+      assert.equal(await evaluate('document.querySelector("#settings-screen .activity-row .status-badge").textContent'), 'Synced');
       await textButton('Trash');
       await wait('!document.querySelector("#settings-screen").textContent.includes("Applied a projection")');
       assert.equal(fixture.startup, true);

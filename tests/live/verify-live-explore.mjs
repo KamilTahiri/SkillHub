@@ -73,7 +73,24 @@ try {
   console.log(`pdf scripts flagged: ${scripts.length} → ${scripts.slice(0, 4).map(script => script.path + (script.concerns.length ? ' [' + script.concerns.join(', ') + ']' : '')).join(', ')}`);
   check(scripts.some(script => script.path.endsWith('.py')), 'Python scripts are listed for review before import');
 
-  // 4. MCP prompts, resources and Skill Doctor on the live library (read-only).
+  // 4. Discovery tools an AI uses to recommend skills: browse any repo, preview a candidate, search skills.sh only.
+  const browsed = await tool('browse_community_repo', { repo: 'anthropics/skills', kind: 'skill' });
+  const docx = (browsed.skills ?? []).find(row => row.path === 'skills/docx/SKILL.md');
+  check(browsed.repository?.repo === 'anthropics/skills' && browsed.count > 5,
+    `browse_community_repo anthropics/skills: ${browsed.count} skills, ${browsed.bundles} bundles`);
+  check(docx?.companion_files > 0, `docx lists its companion files in the repo listing (${docx?.companion_files})`);
+  const previewed = await tool('preview_community_skill', { repo: 'anthropics/skills', path: 'skills/docx/SKILL.md', include_files: false });
+  check(previewed.bundle?.companion_files?.length === docx?.companion_files && previewed.instructions_markdown?.length > 200,
+    `preview_community_skill docx: ${previewed.bundle?.total_files} files, ${previewed.instructions_markdown?.length} chars of instructions`);
+  const oneFile = previewed.bundle.companion_files.find(path => path.endsWith('.md') || path.endsWith('.py'));
+  if (oneFile) {
+    const withFile = await tool('preview_community_skill', { repo: 'anthropics/skills', path: 'skills/docx/SKILL.md', file: oneFile });
+    check(withFile.file?.text?.length > 0, `preview_community_skill reads companion file ${oneFile}`);
+  }
+  const directory = await tool('search_community_skills', { query: 'testing', source: 'skills.sh', limit: 5 });
+  check(directory.searched?.[0] === 'skills.sh' && directory.returned <= 5, `skills.sh-only search: ${directory.count} results, ${directory.returned} returned`);
+
+  // 5. MCP prompts, resources and Skill Doctor on the live library (read-only).
   const prompts = (await rpc('prompts/list', {})).prompts ?? [];
   check(prompts.length > 0, `prompts/list exposes ${prompts.length} skills as prompts`);
   if (prompts.length) {

@@ -60,6 +60,15 @@ public sealed class MultiRootFileWatcher : BackgroundService
         }
     }
 
+    /// <summary>The folders currently watched, sorted for display.</summary>
+    public IReadOnlyList<string> GetWatchedRoots()
+    {
+        lock (_watcherLock)
+        {
+            return _watchers.Keys.Order(StringComparer.OrdinalIgnoreCase).ToArray();
+        }
+    }
+
     public void RefreshProviderWatchers()
     {
         if (RefreshRoots())

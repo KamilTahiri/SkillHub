@@ -365,19 +365,64 @@ public static class McpToolDefinitions
               },
               {
                 "name": "search_community_skills",
-                "description": "Browses or searches open-source community skills from GitHub and skills.sh repositories (e.g., 'vercel-labs/agent-skills', 'anthropics/skills') before importing.",
+                "description": "Searches the whole skill ecosystem in one call: the skills.sh public directory, SkillHub's curated GitHub repositories, repositories the user pinned in Explore, and the offline plugin catalog. Pass `repo` (any public GitHub 'owner/repo', URL or skills.sh link) to search inside that repository instead; it is indexed on the fly. Each result has repo, path and git_ref for preview_community_skill, plus file_count (companion files besides SKILL.md; files_known=false means the listing has not read the folder yet). Use this to answer 'are there good skills for my project?' then preview the best candidates before importing.",
                 "inputSchema": {
                   "type": "object",
                   "properties": {
                     "query": {
                       "type": "string",
-                      "description": "Search keyword or owner/repo shorthand."
+                      "description": "Keywords describing what the skill should do (for example 'playwright testing', 'stripe', 'react performance'), or an owner/repo shorthand."
                     },
                     "repo": {
                       "type": "string",
-                      "description": "Optional GitHub repository to browse (e.g., 'vercel-labs/agent-skills' or 'anthropics/skills')."
-                    }
+                      "description": "Optional GitHub repository to search inside, e.g. 'vercel-labs/agent-skills', 'https://github.com/anthropics/skills', or 'skills.sh' for the directory only."
+                    },
+                    "source": {
+                      "type": "string",
+                      "enum": ["all", "skills.sh", "curated", "catalog"],
+                      "description": "Narrow a keyword search: 'skills.sh' (public directory only), 'curated' (curated and pinned GitHub repositories), 'catalog' (offline plugin catalog). Default 'all'."
+                    },
+                    "kind": {
+                      "type": "string",
+                      "enum": ["skill", "command", "rule", "agent", "doc"],
+                      "description": "Only return documents of this kind."
+                    },
+                    "limit": { "type": "integer", "minimum": 1, "maximum": 200, "description": "Maximum results to return (default 50)." },
+                    "offset": { "type": "integer", "minimum": 0, "description": "Skip this many results (for paging)." }
                   },
+                  "additionalProperties": false
+                }
+              },
+              {
+                "name": "browse_community_repo",
+                "description": "Lists every skill, command, rule and agent inside any public GitHub repository (indexed on the fly and cached per commit), with the repository README excerpt, license, commit SHA, counts per kind and each skill's companion file count. Use it when the user names a repository ('check owner/repo for useful skills').",
+                "inputSchema": {
+                  "type": "object",
+                  "properties": {
+                    "repo": { "type": "string", "description": "GitHub 'owner/repo', a github.com URL (a folder URL narrows the listing), or a skills.sh link." },
+                    "query": { "type": "string", "description": "Optional keywords to filter the listing; also searches cached document bodies." },
+                    "kind": { "type": "string", "enum": ["skill", "command", "rule", "agent", "doc"], "description": "Only list documents of this kind." },
+                    "limit": { "type": "integer", "minimum": 1, "maximum": 500, "description": "Maximum entries to return (default 100)." },
+                    "offset": { "type": "integer", "minimum": 0 }
+                  },
+                  "required": ["repo"],
+                  "additionalProperties": false
+                }
+              },
+              {
+                "name": "preview_community_skill",
+                "description": "Reads one community skill before importing it: the full SKILL.md instructions, description, license, pinned commit, the complete bundle manifest (every companion file, plus files that cannot be imported), and a script review of executable content. Set include_files to also read the companion files' text, or file to read one of them. Nothing is imported or changed. Use the result to judge whether the skill fits the user's project, then call prepare_skill_import / apply_skill_import or import_community_skill.",
+                "inputSchema": {
+                  "type": "object",
+                  "properties": {
+                    "repo": { "type": "string", "description": "The repo value from a search or browse result ('owner/repo' or 'local/catalog')." },
+                    "path": { "type": "string", "description": "The path value from the result (for skills.sh rows this is the skill id), or a skill folder." },
+                    "git_ref": { "type": "string", "description": "The git_ref from the result; defaults to the default branch." },
+                    "file": { "type": "string", "description": "Optional companion file to read, as listed in supporting_paths (e.g. 'scripts/run.py')." },
+                    "include_files": { "type": "boolean", "description": "Also return the text of companion files (up to 20 files and 200 KB in total)." },
+                    "max_chars": { "type": "integer", "minimum": 1000, "maximum": 200000, "description": "Truncate the instructions to this many characters (default 60000)." }
+                  },
+                  "required": ["repo", "path"],
                   "additionalProperties": false
                 }
               },

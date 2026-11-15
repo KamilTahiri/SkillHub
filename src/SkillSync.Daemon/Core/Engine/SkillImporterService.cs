@@ -44,6 +44,8 @@ public sealed record CommunitySkillSummary(
     [property: JsonPropertyName("file_count")] int FileCount = 0,
     [property: JsonPropertyName("has_frontmatter")] bool HasFrontmatter = true,
     [property: JsonPropertyName("installs")] long? Installs = null,
+    // False when the listing does not know the skill's folder yet (skills.sh, featured picks); the preview lists its files.
+    [property: JsonPropertyName("files_known")] bool FilesKnown = true,
     [property: JsonIgnore] int SearchScore = 0
 );
 

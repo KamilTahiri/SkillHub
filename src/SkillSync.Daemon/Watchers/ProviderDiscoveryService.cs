@@ -153,7 +153,7 @@ public sealed class ProviderDiscoveryService
         var results = new List<CatalogSkillDescriptor>();
         var seenPaths = new HashSet<string>(SkillPaths.Comparer);
 
-        void TryAddSkillFile(string skillMdPath, string sourceCategory, string originProvider, IEnumerable<string>? tags = null)
+        void TryAddSkillFile(string skillMdPath, string sourceCategory, string originProvider, IEnumerable<string>? tags = null, string? identityKey = null)
         {
             try
             {
@@ -213,8 +213,8 @@ public sealed class ProviderDiscoveryService
                 segments.RemoveAt(5);
                 relative = string.Join('/', segments);
             }
-            var identity = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(
-                OperatingSystem.IsWindows() ? relative.ToLowerInvariant() : relative))).ToLowerInvariant();
+            var identitySource = identityKey ?? (OperatingSystem.IsWindows() ? relative.ToLowerInvariant() : relative);
+            var identity = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(identitySource))).ToLowerInvariant();
             results.Add(new CatalogSkillDescriptor(slug, skillMdPath, sourceCategory, originProvider, tagList, $"catalog-{identity}", cacheVersion));
         }
 
@@ -367,6 +367,36 @@ public sealed class ProviderDiscoveryService
             }
         }
 
+        // 5c. Claude Desktop "From Anthropic and partners" skills. The desktop app keeps them in a managed plugin under
+        // <data>/local-agent-mode-sessions/skills-plugin/<account>/<org>/skills/<slug>/SKILL.md, described by manifest.json.
+        // Their identity is keyed by slug so a new account or organisation folder never duplicates them.
+        foreach (var dataRoot in ClaudeDesktopDataRoots(LocalAppDataRoot, RoamingAppDataRoot))
+        {
+            var pluginRoot = Path.Combine(dataRoot, "local-agent-mode-sessions", "skills-plugin");
+            if (!Directory.Exists(pluginRoot))
+            {
+                continue;
+            }
+
+            try
+            {
+                foreach (var file in EnumerateCatalogFiles(pluginRoot))
+                {
+                    var slugFolder = Path.GetFileName(Path.GetDirectoryName(file)) ?? string.Empty;
+                    var skillsFolder = Path.GetFileName(Path.GetDirectoryName(Path.GetDirectoryName(file)) ?? string.Empty);
+                    if (!string.Equals(skillsFolder, "skills", StringComparison.OrdinalIgnoreCase))
+                    {
+                        continue;
+                    }
+                    TryAddSkillFile(file, "template", "Claude Built-in", ["claude", "anthropic"],
+                        identityKey: "claude-desktop/anthropic-skills/" + slugFolder.ToLowerInvariant());
+                }
+            }
+            catch
+            {
+            }
+        }
+
         // 6. Codex Plugin Catalog Skills (~/.codex/.tmp/plugins/plugins/<plugin>/skills/.../SKILL.md)
         // Categorized separately as "plugin" so uninstalled marketplace plugins never clutter "My Skills" or "Built-in & Templates"
         var codexPluginsCatalog = Path.Combine(_userHomeRoot, ".codex", ".tmp", "plugins", "plugins");
@@ -440,7 +470,8 @@ public sealed class ProviderDiscoveryService
             Directory.EnumerateDirectories(packages, "Claude_*").Any();
         var desktop = desktopPackage ||
             Directory.Exists(Path.Combine(localAppData, "AnthropicClaude")) ||
-            File.Exists(Path.Combine(roamingAppData, "Claude", "claude_desktop_config.json"));
+            ClaudeDesktopDataRoots(localAppData, roamingAppData).Any(root =>
+                File.Exists(Path.Combine(root, "claude_desktop_config.json")) || File.Exists(Path.Combine(root, "config.json")));
         var description = (code, desktop) switch
         {
             (true, true) => "Claude Desktop and Claude Code found on this PC",
@@ -450,6 +481,53 @@ public sealed class ProviderDiscoveryService
         };
         return new ClaudeInstallEvidence(code || desktop, code, desktop, description);
     }
+
+    /// <summary>
+    /// Every folder where Claude Desktop keeps its data on Windows, most authoritative first:
+    /// the Store app's data folder <c>%LOCALAPPDATA%\Claude-Data\claude_&lt;package&gt;</c>, the Store package's
+    /// redirected roaming folder <c>%LOCALAPPDATA%\Packages\Claude_*\LocalCache\Roaming\Claude</c>, and the classic
+    /// <c>%APPDATA%\Claude</c>. Only folders that exist are returned.
+    /// </summary>
+    public static IReadOnlyList<string> ClaudeDesktopDataRoots(string localAppData, string roamingAppData)
+    {
+        var roots = new List<string>();
+        void AddMatches(string parent, string pattern, string? child = null)
+        {
+            try
+            {
+                if (!Directory.Exists(parent)) return;
+                foreach (var dir in Directory.EnumerateDirectories(parent, pattern).OrderBy(d => d, StringComparer.OrdinalIgnoreCase))
+                {
+                    var candidate = child is null ? dir : Path.Combine(dir, child);
+                    if (Directory.Exists(candidate)) roots.Add(candidate);
+                }
+            }
+            catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+            {
+            }
+        }
+
+        AddMatches(Path.Combine(localAppData, "Claude-Data"), "claude_*");
+        AddMatches(Path.Combine(localAppData, "Packages"), "Claude_*", Path.Combine("LocalCache", "Roaming", "Claude"));
+        var classic = Path.Combine(roamingAppData, "Claude");
+        if (Directory.Exists(classic)) roots.Add(classic);
+        return roots;
+    }
+
+    /// <summary>
+    /// The <c>claude_desktop_config.json</c> that the installed Claude Desktop actually reads. A data folder that already
+    /// holds the file wins; otherwise the first folder with Claude's own <c>config.json</c>; otherwise <c>%APPDATA%\Claude</c>.
+    /// </summary>
+    public static string ResolveClaudeDesktopConfigPath(string localAppData, string roamingAppData)
+    {
+        var roots = ClaudeDesktopDataRoots(localAppData, roamingAppData);
+        var withConfig = roots.FirstOrDefault(root => File.Exists(Path.Combine(root, "claude_desktop_config.json")))
+            ?? roots.FirstOrDefault(root => File.Exists(Path.Combine(root, "config.json")));
+        return Path.Combine(withConfig ?? Path.Combine(roamingAppData, "Claude"), "claude_desktop_config.json");
+    }
+
+    private string LocalAppDataRoot => _isCustomHome ? Path.Combine(_userHomeRoot, "AppData", "Local") : Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
+    private string RoamingAppDataRoot => _isCustomHome ? Path.Combine(_userHomeRoot, "AppData", "Roaming") : Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData);
 
     public bool DetectOpenAiCodexOrChatGpt()
     {

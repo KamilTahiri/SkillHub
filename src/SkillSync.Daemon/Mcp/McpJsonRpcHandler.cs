@@ -179,7 +179,7 @@ public sealed partial class McpJsonRpcHandler
                 ["name"] = "skillhub",
                 ["version"] = ProductVersion.Current
             },
-            ["instructions"] = "Use SkillHub MCP tools (list_skills, get_skill, create_skill, update_skill, delete_skill, manage_skill_tags, toggle_skill_provider, search_community_skills, prepare_skill_import, apply_skill_import, lint_skill, get_sync_status) as the Single Source of Truth whenever managing AI skills across Claude, Gemini/Antigravity, OpenAI Codex, and Cursor."
+            ["instructions"] = "Use SkillHub MCP tools (list_skills, get_skill, create_skill, update_skill, delete_skill, manage_skill_tags, toggle_skill_provider, search_community_skills, browse_community_repo, preview_community_skill, prepare_skill_import, apply_skill_import, lint_skill, get_sync_status) as the Single Source of Truth whenever managing AI skills across Claude, Gemini/Antigravity, OpenAI Codex, and Cursor."
         };
 
         return SerializeResult(idNode, result);
@@ -224,6 +224,8 @@ public sealed partial class McpJsonRpcHandler
                 "manage_skill_tags" => await ExecuteManageSkillTagsAsync(arguments, ct).ConfigureAwait(false),
                 "toggle_skill_provider" => await ExecuteToggleSkillProviderAsync(arguments, ct).ConfigureAwait(false),
                 "search_community_skills" => await ExecuteSearchCommunitySkillsAsync(arguments, ct).ConfigureAwait(false),
+                "browse_community_repo" => await ExecuteBrowseCommunityRepoAsync(arguments, ct).ConfigureAwait(false),
+                "preview_community_skill" => await ExecutePreviewCommunitySkillAsync(arguments, ct).ConfigureAwait(false),
                 "prepare_skill_import" => await ExecutePrepareImportAsync(arguments, ct).ConfigureAwait(false),
                 "apply_skill_import" => await ExecuteApplyImportAsync(arguments, ct).ConfigureAwait(false),
                 "import_community_skill" => await ExecuteImportCommunitySkillAsync(arguments, ct).ConfigureAwait(false),

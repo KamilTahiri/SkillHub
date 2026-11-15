@@ -114,18 +114,51 @@ public static class SkillRestEndpoints
             SyncEngine engine, CancellationToken ct) => SkillResult(engine,
                 await engine.ResolveDestinationAsync(name, request.Path, request.Version, request.Action, ct).ConfigureAwait(false)));
 
-        api.MapGet("/diagnostics", async (SyncEngine engine, MultiRootFileWatcher watcher, CancellationToken ct) =>
+        api.MapGet("/diagnostics", async (SyncEngine engine, MultiRootFileWatcher watcher, ProviderDiscoveryService discovery, CancellationToken ct) =>
         {
             var data = await engine.GetDiagnosticsAsync(ct).ConfigureAwait(false);
             var health = watcher.GetHealth();
+            var names = discovery.DiscoverProviders().ToDictionary(item => item.Provider, item => item.DisplayName);
+            var observable = discovery.GetObservableRoots();
+            var folders = watcher.GetWatchedRoots().Select(path =>
+            {
+                var match = observable.FirstOrDefault(item => string.Equals(Path.GetFullPath(item.Root), Path.GetFullPath(path), StringComparison.OrdinalIgnoreCase));
+                var isHome = string.Equals(Path.GetFullPath(path), Path.GetFullPath(discovery.UserHomeRoot), StringComparison.OrdinalIgnoreCase);
+                return new
+                {
+                    path,
+                    provider = isHome ? "home" : match.Root is null ? "other" : match.Provider.ToString().ToLowerInvariant(),
+                    label = isHome ? "Your user folder" : match.Root is null ? "Other folder" : names.GetValueOrDefault(match.Provider, match.Provider.ToString()),
+                    purpose = isHome ? "Notices when a new AI tool creates its folder, so SkillHub can start syncing it."
+                        : match.Provider == ProviderType.Canonical ? "SkillHub's own copy of every skill (the source of truth)."
+                        : "Picks up edits you make to skills inside this tool."
+                };
+            }).ToArray();
             return Results.Json(new
             {
-                watcher = new { running = health.Running, roots = health.Roots, last_error = health.LastError },
+                watcher = new { running = health.Running, roots = health.Roots, last_error = health.LastError, folders },
                 conflicts = data.Conflicts,
                 issues = data.Issues,
                 trash = data.Trash,
                 recent_activity = engine.GetRecentActivity().Reverse().Take(40)
             }, WebJsonOptions);
+        });
+        api.MapGet("/diagnostics/conflicts/preview", async (string id, SyncEngine engine, CancellationToken ct) =>
+            Results.Json(await engine.GetConflictPreviewAsync(id, ct).ConfigureAwait(false), WebJsonOptions));
+        api.MapPost("/diagnostics/conflicts/restore", async (ConflictRecoveryRequest request, SyncEngine engine, CancellationToken ct) =>
+            Results.Json(await engine.RestoreConflictOverCurrentAsync(request.Id, request.Revision, ct).ConfigureAwait(false), WebJsonOptions));
+        api.MapPost("/diagnostics/folders/open", (FolderOpenRequest request, MultiRootFileWatcher watcher) =>
+        {
+            // Only folders SkillHub itself watches can be opened, and only in File Explorer (never a browser).
+            var match = watcher.GetWatchedRoots().FirstOrDefault(root => string.Equals(root, request.Path, StringComparison.OrdinalIgnoreCase));
+            if (match is null || !Directory.Exists(match))
+            {
+                return Results.NotFound(new { error = "SkillHub only opens folders it is watching." });
+            }
+            var start = new System.Diagnostics.ProcessStartInfo("explorer.exe") { UseShellExecute = false };
+            start.ArgumentList.Add(match);
+            System.Diagnostics.Process.Start(start)?.Dispose();
+            return Results.Json(new { opened = match }, WebJsonOptions);
         });
         api.MapPost("/diagnostics/conflicts/recover", async (ConflictRecoveryRequest request, SyncEngine engine, CancellationToken ct) =>
             SkillResult(engine, await engine.RecoverConflictCopyAsync(request.Id, request.Revision, ct).ConfigureAwait(false)));
@@ -598,6 +631,7 @@ public static class SkillRestEndpoints
 public sealed record ProviderToggleRequest(bool Enabled);
 public sealed record ClientConfigurationRequest(string Action);
 public sealed record ConflictRecoveryRequest(string Id, string Revision);
+public sealed record FolderOpenRequest(string Path);
 public sealed record TagRenameRequest(
     [property: System.Text.Json.Serialization.JsonPropertyName("old_tag")] string OldTag,
     [property: System.Text.Json.Serialization.JsonPropertyName("new_tag")] string NewTag);

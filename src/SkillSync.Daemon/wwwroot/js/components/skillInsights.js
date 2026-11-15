@@ -1,7 +1,7 @@
 import { api } from '../api.js';
 import { icon } from '../icons.js';
 import { renderDiff } from '../diff.js';
-import { h, button, modal, errorText, busy, notify, copy, confirmAction, disclosure } from '../ui.js';
+import { h, button, modal, errorText, busy, notify, copy, confirmAction, disclosure, fill } from '../ui.js';
 
 /** The text pasted into any chat to make an assistant follow a skill, matching SkillHub's MCP prompt. */
 export function skillPrompt(skill) {
@@ -81,7 +81,7 @@ export function historySection(app, detail) {
           await app.read(response.skill.name);
         });
       }, 'primary small');
-      viewer.replaceChildren(
+      fill(viewer,
         h('div', { class: 'spread' }, h('h3', {}, 'Changes since ' + when(revision.saved_at)), restore),
         renderDiff(snapshot.markdown, current, { labels: ['This version', 'Current'] }),
         fileChanges.length > 0 && disclosure('Bundle files that differ (' + fileChanges.length + ')',
@@ -115,7 +115,7 @@ export async function reviewUpdate(app, skill) {
   try {
     const diff = await api.updateDiff(skill.name);
     apply.disabled = keep.disabled = false;
-    body.replaceChildren(
+    fill(body,
       h('p', {}, diff.update.repo, ' · ', h('code', {}, diff.update.path)),
       diff.update.local_modified && h('p', { class: 'warning' }, 'You changed this skill since importing it. Applying the update replaces those edits; the current version stays in History.'),
       renderDiff(diff.local, diff.upstream, { labels: ['Current local', 'New upstream'] }),

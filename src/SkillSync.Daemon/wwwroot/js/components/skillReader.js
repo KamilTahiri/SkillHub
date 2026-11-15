@@ -1,7 +1,7 @@
 import { api } from '../api.js';
 import { deployment, installedProviders, destinationLabel, targetIssues, PROVIDERS, skillKey, tagSlug, isTargetEnabled } from '../state.js';
 import { renderMarkdown, outline } from '../markdown.js';
-import { h, button, heading, panel, disclosure, copy, download, busy, notify, modal, confirmAction, field, errorText } from '../ui.js';
+import { h, button, heading, panel, disclosure, copy, download, busy, notify, modal, confirmAction, field, errorText, bundleBadge } from '../ui.js';
 import { showProviderPreview } from './transpilerPreview.js';
 import { copySkillPrompt, doctorPanel, historySection, updateBanner } from './skillInsights.js';
 import { icon } from '../icons.js';
@@ -53,7 +53,8 @@ export function createReader(root, app) {
       { 'data-focus-key': 'copy-prompt', title: 'Copy the instructions as a prompt for any chat' });
     const title = heading(skill.title || skill.name, h('div', { class: 'actions' }, primary, copyPrompt, actions),
       h('p', { class: 'result-count' }, skill.origin_provider || 'Personal', ' · ',
-        h('span', { class: 'muted' }, sync.key === 'issue' ? 'Managed skill' : sync.label)));
+        h('span', { class: 'muted' }, sync.key === 'issue' ? 'Managed skill' : sync.label), ' · ',
+        bundleBadge(Object.keys(files).length, { paths: Object.keys(files).sort(), verbose: true })));
 
     const tags = h('div', { class: 'chips', 'aria-label': 'Skill tags' },
       ...(skill.tags ?? []).map(tag => readOnly ? h('span', { class: 'chip' }, '#' + tag)
@@ -67,8 +68,22 @@ export function createReader(root, app) {
     const article = h('article', { class: 'markdown reader-document', 'aria-label': 'Skill instructions' },
       renderMarkdown(skill.instructions_markdown, { title: skill.title, query, openFile }));
     const headings = outline(article);
+    // Bundles show every file right above the instructions so nothing looks missing.
+    let activeFile = '';
+    const filePaths = Object.keys(files).sort();
+    const fileView = h('div', { class: 'reader-file-view' });
+    const switcher = filePaths.length > 0 && h('div', { class: 'file-tabs reader-file-tabs', role: 'tablist', 'aria-label': 'Files in this skill' },
+      [['', 'SKILL.md'], ...filePaths.map(path => [path, path])].map(([path, label]) => h('button', {
+        type: 'button', role: 'tab', class: 'file-tab', 'data-file': path, 'aria-selected': String(path === activeFile), title: label,
+        onclick: () => { activeFile = path; showFileView(); } }, label)));
+    function showFileView() {
+      for (const tab of switcher?.querySelectorAll('.file-tab') ?? []) tab.setAttribute('aria-selected', String(tab.dataset.file === activeFile));
+      fileView.replaceChildren(activeFile ? h('div', { class: 'stack' }, h('div', { class: 'spread' }, h('p', { class: 'path' }, activeFile),
+        button([icon('copy'), 'Copy file'], () => copy(files[activeFile]), 'quiet small')),
+        h('pre', { class: 'file-code', tabindex: '0' }, files[activeFile])) : article);
+    }
     const sections = {
-      Instructions: () => article,
+      Instructions: () => { if (!switcher) return article; showFileView(); return h('div', { class: 'stack' }, switcher, fileView); },
       Files: () => Object.keys(files).length ? h('div', { class: 'stack' },
         Object.keys(files).sort().map(path => button(path, () => openFile(path), 'quiet')))
         : h('p', { class: 'muted' }, 'This skill has no supporting files.'),
@@ -93,6 +108,7 @@ export function createReader(root, app) {
       h('ul', {}, headings.map(item => h('li', { class: 'outline-level-' + item.level },
         h('button', { type: 'button', class: 'outline-link', onclick: () => {
           if (activeSection !== 'Instructions') { activeSection = 'Instructions'; showSection(); }
+          if (activeFile) { activeFile = ''; showFileView(); }
           const target = document.getElementById(item.id);
           target?.scrollIntoView({ behavior: matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth', block: 'start' });
           target?.setAttribute('tabindex', '-1');

@@ -175,10 +175,13 @@ public sealed partial class SyncEngine : IAsyncDisposable
         SelectSkills(query, tag, includeDisabled: true, category).Skip(offset).Take(limit).Select(skill =>
         {
             var metadata = skill.Clone(includeContents: false);
+            IReadOnlyList<string> files = skill.IsCatalogOnly && skill.CatalogId is { } catalogId
+                ? _catalog.Files(catalogId)
+                : skill.SupportingFiles?.Keys.Order(StringComparer.Ordinal).ToArray() ?? [];
             return new SkillSummary(metadata.Name, metadata.Title, metadata.Version, metadata.Description,
                 metadata.WhenToUse, metadata.SummaryShort, metadata.SourceCategory, metadata.OriginProvider,
                 metadata.IsCatalogOnly, metadata.CatalogId, metadata.Revision, metadata.Tags, metadata.Targets, metadata.Destinations,
-                FindInstructionExcerpt(skill.InstructionsMarkdown, query));
+                FindInstructionExcerpt(skill.InstructionsMarkdown, query), files.Count, files);
         }).ToList();
 
     public IReadOnlyDictionary<string, int> CountSkills() => SelectSkills(null, null, true, null)

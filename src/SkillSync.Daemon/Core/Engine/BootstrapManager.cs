@@ -32,6 +32,8 @@ public static class BootstrapManager
                         "mcp__skillhub__manage_skill_tags",
                         "mcp__skillhub__toggle_skill_provider",
                         "mcp__skillhub__search_community_skills",
+                        "mcp__skillhub__browse_community_repo",
+                        "mcp__skillhub__preview_community_skill",
                         "mcp__skillhub__prepare_skill_import",
                         "mcp__skillhub__apply_skill_import",
                         "mcp__skillhub__activate_catalog_skill",
@@ -66,15 +68,25 @@ public static class BootstrapManager
                    - `delete_skill` — Cleanly remove a skill from all providers simultaneously.
                    - `manage_skill_tags` — List, add, remove, rename, or delete tags across skills (`action`: `"list"`, `"add"`, `"remove"`, `"rename"`, `"delete"`).
                    - `toggle_skill_provider` — Enable or disable syncing a skill or built-in template to a specific provider (`claude`, `gemini`, `codex`, `cursor`).
-                   - `search_community_skills` — Browse or search open-source skills from GitHub / `skills.sh` repositories (`vercel-labs/agent-skills`, `anthropics/skills`, etc.).
+                   - `search_community_skills` — Search the whole ecosystem at once: the `skills.sh` public directory, curated GitHub repositories, repositories the user pinned in Explore, and the offline catalog. Pass `repo` to search inside any GitHub repository, or `source: "skills.sh"` for the directory only.
+                   - `browse_community_repo` — List every skill, command, rule and agent in any public GitHub `owner/repo` (indexed on the fly), with its README, license and per-skill companion file counts.
+                   - `preview_community_skill` — Read a candidate's full `SKILL.md`, its bundle manifest and script review (and, with `include_files` or `file`, its companion files) before importing.
                    - `prepare_skill_import` — Review a pinned community skill with its origin, license, and files.
                    - `apply_skill_import` — Import the reviewed revision and deploy only to explicitly selected providers.
                    - `get_sync_status` — Inspect connected AI providers, skill counts, and recent sync events.
 
-                2. **DO NOT MANUALLY COPY SKILLS BETWEEN PROVIDERS:**
+                2. **FINDING SKILLS FOR THE USER'S PROJECT:**
+                   When the user asks "are there good skills for my project?" or "check `owner/repo` for useful skills":
+                   1. Work out what the project needs (languages, frameworks, tools, recurring tasks) from the conversation and the workspace.
+                   2. Call `list_skills` first so you do not recommend something the user already has.
+                   3. Search: `search_community_skills` with focused keywords (one call per need, e.g. `"playwright"`, `"stripe webhooks"`), or `browse_community_repo` when the user names a repository. Any public GitHub repository works; it does not need to be curated or pinned.
+                   4. Read the two to five most promising results with `preview_community_skill` (use the `repo`, `path` and `git_ref` from the result). Check the instructions, license, companion files and `script_review` before recommending anything.
+                   5. Recommend the best fits with a one-line reason each, and import only what the user approves (`prepare_skill_import` then `apply_skill_import`, or `import_community_skill`). Imports stay local unless the user asks for provider deployment.
+
+                3. **DO NOT MANUALLY COPY SKILLS BETWEEN PROVIDERS:**
                    Never run shell commands (`cp`, `Copy-Item`, `rsync`) to copy `SKILL.md` files between `~/.claude/skills/`, `~/.gemini/skills/`, `~/.codex/skills/`, `~/.agents/skills/`, or `.cursor/rules/`. SkillHub handles cross-provider transpilation automatically in real time.
 
-                3. **PRESERVE CROSS-PROVIDER METADATA WHEN AUTHORING SKILLS:**
+                4. **PRESERVE CROSS-PROVIDER METADATA WHEN AUTHORING SKILLS:**
                    When calling `create_skill` or `update_skill`, always provide:
                    - `name`: Lowercase kebab-case slug (e.g., `api-contract-validator`).
                    - `description`: Detailed explanation of what the skill does.
@@ -82,7 +94,7 @@ public static class BootstrapManager
                    - `summary_short`: A concise (<160 chars) summary optimized for OpenAI Codex's token budget.
                    - `instructions_markdown`: Clean, well-structured Markdown body (without YAML frontmatter fences, as SkillHub generates the frontmatter for each target provider).
 
-                4. **FALLBACK IF MCP TOOLS ARE UNAVAILABLE:**
+                5. **FALLBACK IF MCP TOOLS ARE UNAVAILABLE:**
                    Only if the `skillhub` MCP server is unreachable or not loaded in your current session may you write directly to `~/.skillhub/skills/<name>/SKILL.md` (or your native skills directory). SkillHub's background bi-directional file watcher will ingest and transpile the change automatically.
                 """
         };

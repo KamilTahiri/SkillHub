@@ -98,7 +98,7 @@ public sealed partial class SkillImporterService
             (skill.Name == slug || Compact(skill.Name) == Compact(entry.SkillId)))?.Name;
         return new CommunitySkillSummary(slug, CanonicalSkillModel.HumanizeSlug(slug), entry.Source, "HEAD", entry.SkillId,
             SkillsShDirectory.SourceId, $"{entry.Installs:N0} installs on skills.sh · {entry.Source}", existing is not null,
-            InferTopic(slug, entry.Source), existing, Installs: entry.Installs);
+            InferTopic(slug, entry.Source), existing, Installs: entry.Installs, FilesKnown: false);
     }
 
     private static string Compact(string value) => Regex.Replace(value.ToLowerInvariant(), "[^a-z0-9]", string.Empty);
@@ -341,7 +341,8 @@ public sealed partial class SkillImporterService
                     Description: x.Desc,
                     IsInstalled: existing is not null,
                     ExistingName: existing,
-                    Topic: InferTopic(x.Slug, x.Desc));
+                    Topic: InferTopic(x.Slug, x.Desc),
+                    FilesKnown: false);
             });
     }
 }

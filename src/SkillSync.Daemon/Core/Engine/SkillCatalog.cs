@@ -7,7 +7,8 @@ namespace SkillSync.Daemon.Core.Engine;
 
 internal sealed class SkillCatalog(ProviderDiscoveryService discovery)
 {
-    private sealed record Entry(CatalogSkillDescriptor Descriptor, CanonicalSkillModel Summary, HashSet<string> InstructionTerms);
+    private sealed record Entry(CatalogSkillDescriptor Descriptor, CanonicalSkillModel Summary, HashSet<string> InstructionTerms,
+        IReadOnlyList<string> Files);
     private IReadOnlyDictionary<string, Entry> _entries = new Dictionary<string, Entry>();
     private readonly CodexTranspiler _parser = new();
 
@@ -23,7 +24,7 @@ internal sealed class SkillCatalog(ProviderDiscoveryService discovery)
                 {
                     var terms = InstructionTerms(model.InstructionsMarkdown);
                     model.InstructionsMarkdown = string.Empty;
-                    next.TryAdd(descriptor.Id, new Entry(descriptor, model, terms));
+                    next.TryAdd(descriptor.Id, new Entry(descriptor, model, terms, ListBundle(descriptor)));
                 }
             }
             catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or YamlException or InvalidOperationException or ArgumentException)
@@ -32,6 +33,29 @@ internal sealed class SkillCatalog(ProviderDiscoveryService discovery)
             }
         }
         Volatile.Write(ref _entries, next);
+    }
+
+    /// <summary>Companion file paths of a catalog skill, listed without reading them, so the Library can say "bundle" up front.</summary>
+    public IReadOnlyList<string> Files(string id) =>
+        Volatile.Read(ref _entries).TryGetValue(id, out var entry) ? entry.Files : [];
+
+    private static IReadOnlyList<string> ListBundle(CatalogSkillDescriptor descriptor)
+    {
+        if (!Path.GetFileName(descriptor.SkillMdPath).Equals("SKILL.md", StringComparison.OrdinalIgnoreCase)) return [];
+        var directory = Path.GetDirectoryName(descriptor.SkillMdPath)!;
+        try
+        {
+            var files = SkillStorage.EnumerateBundleFileGroups(directory).SelectMany(group => group)
+                .Where(file => !AtomicFileWriter.IsTemporaryOrIgnoredPath(file))
+                .Select(file => Path.GetRelativePath(directory, file).Replace('\\', '/'))
+                .Take(SkillStorage.MaxBundleFiles + 1).ToArray();
+            // A folder too large to import as one bundle shows only its SKILL.md, matching what Get() loads.
+            return files.Length > SkillStorage.MaxBundleFiles ? [] : files;
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or ArgumentException)
+        {
+            return [];
+        }
     }
 
     public IEnumerable<CanonicalSkillModel> Summaries() => Volatile.Read(ref _entries).Values.Select(entry => entry.Summary);
