@@ -10,15 +10,24 @@ namespace SkillSync.Daemon.Core.Engine;
 /// <summary>Where a project receives its skills. Every path is relative to the project folder.</summary>
 public static class WorkspaceTargets
 {
-    public static readonly IReadOnlyList<string> All = ["claude", "codex", "gemini", "cursor", "copilot"];
+    public static readonly IReadOnlyList<string> All = ["claude", "codex", "gemini", "cursor", "copilot", "windsurf", "cline", "roocode"];
+
+    /// <summary>Written for a new project unless the user changes it. The rest are opt-in.</summary>
+    public static readonly IReadOnlyList<string> Defaults = ["claude", "codex", "gemini", "cursor"];
+
+    /// <summary>Adapters checked only against documented paths and fixtures, not live against the installed tool.</summary>
+    public static bool IsExperimental(string target) => target is "cursor" or "copilot" or "windsurf" or "cline" or "roocode";
 
     public static string Label(string target) => target switch
     {
         "claude" => "Claude (.claude/skills)",
-        "codex" => "Codex & agents (.agents/skills)",
+        "codex" => "Codex, Antigravity & agents (.agents/skills)",
         "gemini" => "Gemini & Antigravity (.gemini/skills)",
         "cursor" => "Cursor (.cursor/rules)",
-        "copilot" => "GitHub Copilot (.github/instructions)",
+        "copilot" => "GitHub Copilot (.github/skills)",
+        "windsurf" => "Windsurf (.windsurf/skills)",
+        "cline" => "Cline (.clinerules)",
+        "roocode" => "Roo Code (.roo/rules)",
         _ => target
     };
 }
@@ -29,7 +38,7 @@ public sealed class WorkspaceRecord
     [JsonPropertyName("name")] public string Name { get; set; } = string.Empty;
     [JsonPropertyName("path")] public string Path { get; set; } = string.Empty;
     [JsonPropertyName("skills")] public List<string> Skills { get; set; } = [];
-    [JsonPropertyName("targets")] public List<string> Targets { get; set; } = [.. WorkspaceTargets.All.Where(target => target != "copilot")];
+    [JsonPropertyName("targets")] public List<string> Targets { get; set; } = [.. WorkspaceTargets.Defaults];
     /// <summary>Files SkillHub wrote, by project-relative path, with the normalized hash it wrote.</summary>
     [JsonPropertyName("owned")] public Dictionary<string, string> Owned { get; set; } = new(StringComparer.OrdinalIgnoreCase);
     [JsonPropertyName("created_at")] public DateTimeOffset CreatedAt { get; set; } = DateTimeOffset.UtcNow;
@@ -199,16 +208,24 @@ public sealed class WorkspaceService : IDisposable
             model.Name = slug;
             foreach (var target in record.Targets)
             {
+                // Project folders as each tool documents them: skill folders where the tool supports on-demand skills,
+                // one rule file per skill for Cline (.clinerules/) and Roo Code (.roo/rules/), which load rules into every task.
                 var folder = target switch
                 {
                     "claude" => ".claude/skills/",
                     "codex" => ".agents/skills/",
                     "gemini" => ".gemini/skills/",
+                    "copilot" => ".github/skills/",
+                    "windsurf" => ".windsurf/skills/",
                     _ => null
                 };
                 if (folder is not null)
                 {
-                    var provider = target switch { "claude" => ProviderType.Claude, "gemini" => ProviderType.Gemini, _ => ProviderType.Codex };
+                    var provider = target switch
+                    {
+                        "claude" => ProviderType.Claude, "gemini" => ProviderType.Gemini, "copilot" => ProviderType.Copilot,
+                        "windsurf" => ProviderType.Windsurf, _ => ProviderType.Codex
+                    };
                     files[folder + slug + "/SKILL.md"] = _engine.RenderForProvider(provider, model);
                     foreach (var (relative, content) in model.SupportingFiles ?? [])
                         files[folder + slug + "/" + SkillPaths.NormalizeRelative(relative)] = content;
@@ -217,25 +234,17 @@ public sealed class WorkspaceService : IDisposable
                 {
                     files[".cursor/rules/" + slug + ".mdc"] = _engine.RenderForProvider(ProviderType.Cursor, model);
                 }
-                else if (target == "copilot")
+                else if (target == "cline")
                 {
-                    files[".github/instructions/" + slug + ".instructions.md"] = CopilotInstructions(model);
+                    files[".clinerules/" + slug + ".md"] = _engine.RenderForProvider(ProviderType.Cline, model);
+                }
+                else if (target == "roocode")
+                {
+                    files[".roo/rules/" + slug + ".md"] = _engine.RenderForProvider(ProviderType.RooCode, model);
                 }
             }
         }
         return files;
-    }
-
-    /// <summary>Copilot repository instructions: <c>applyTo</c> frontmatter, a description line, then the skill body.</summary>
-    public static string CopilotInstructions(CanonicalSkillModel model)
-    {
-        var builder = new StringBuilder();
-        builder.Append("---\napplyTo: \"**\"\ndescription: ")
-            .Append(JsonSerializer.Serialize(FrontmatterParser.CleanSingleLine(model.Description))).Append("\n---\n\n");
-        builder.Append("# ").Append(model.GetEffectiveTitle()).Append("\n\n");
-        if (!string.IsNullOrWhiteSpace(model.WhenToUse)) builder.Append("Use when: ").Append(model.WhenToUse.Trim()).Append("\n\n");
-        builder.Append(model.InstructionsMarkdown.Trim()).Append('\n');
-        return builder.ToString();
     }
 
     private async Task ProjectAsync(WorkspaceRecord record, CancellationToken ct)

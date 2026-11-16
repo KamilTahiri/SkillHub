@@ -20,3 +20,14 @@ WebView2Data/
 AGENTS.md
 
 dist/
+
+## Local logs, backups and personal settings
+*.log
+*.bak
+*.tmp
+.env
+.env.*
+.claude/settings.local.json
+.claude/launch.json
+TestResults/
+node_modules/

@@ -4,7 +4,7 @@
 
 **One library of AI agent skills, kept in sync across every AI tool on your PC.**
 
-Write a skill once. SkillHub turns it into the exact format Claude, Codex, Gemini, Antigravity, Cursor, Copilot, Windsurf, Cline and Roo Code expect, keeps every copy current in both directions, and lets your AI assistants search, preview and create skills for you over MCP.
+Write a skill once. SkillHub turns it into the exact format Claude, Codex, Gemini and Antigravity expect (with experimental adapters for Cursor, Copilot, Windsurf, Cline and Roo Code), keeps every copy current in both directions, and lets your AI assistants search, preview and create skills for you over MCP.
 
 Windows 11 · .NET 8 · native desktop app with a tray icon · local-first, no account, no cloud
 
@@ -45,20 +45,38 @@ AI tools now share one idea, the `SKILL.md` skill folder, but each keeps its own
 
 ## Supported AI tools
 
-| Tool | Global skills folder | Format | Synced by default | MCP connection | Project folder |
-|---|---|---|---|---|---|
-| ChatGPT / OpenAI Codex | `~/.codex/skills`, `~/.agents/skills` | `SKILL.md` folder | Yes | Automatic (`~/.codex/config.toml`) | `.agents/skills` |
-| Gemini CLI | `~/.gemini/skills` | `SKILL.md` folder | Yes | Automatic (`~/.gemini/settings.json`) | `.gemini/skills` |
-| Google Antigravity IDE & CLI | `~/.gemini/config/skills` (global customizations), plus `~/.gemini/antigravity/skills` for older builds | `SKILL.md` folder | Yes | Automatic (`~/.gemini/config/mcp_config.json`) | `.gemini/skills` |
-| Claude Code | `~/.claude/skills`, `~/.claude/commands` | `SKILL.md` folder | Yes | Automatic (`~/.claude.json`) | `.claude/skills` |
-| Claude Desktop | Code tab: `~/.claude/skills`. Chat Skills screen: your claude.ai account (upload ZIPs from Connections) | `SKILL.md` folder | Code tab only | Automatic, including the Microsoft Store app; *Restart Claude to apply* closes and reopens Claude so it keeps the entry | n/a |
-| Cursor | `~/.cursor/rules` | `.mdc` rule | Yes | Automatic (`~/.cursor/mcp.json`) | `.cursor/rules` |
-| GitHub Copilot | `~/.copilot/skills` | `SKILL.md` folder | Yes | Add `SkillHub.exe mcp-stdio` yourself | `.github/instructions` (opt-in) |
-| Windsurf | `~/.codeium/windsurf/skills` | `SKILL.md` folder | Yes | Add `SkillHub.exe mcp-stdio` yourself | n/a |
-| Cline | `~/Documents/Cline/Rules` | `.md` rule | Opt-in per skill | Add `SkillHub.exe mcp-stdio` yourself | n/a |
-| Roo Code | `~/.roo/rules` | `.md` rule | Opt-in per skill | Add `SkillHub.exe mcp-stdio` yourself | n/a |
+SkillHub's adapters fall into two tiers. Please read them as what they are.
 
-Cline and Roo Code load every rule into every conversation, so skills reach them only when you turn them on. Claude Desktop's chat **Skills** screen lists skills saved in your claude.ai account: the app downloads them into a cache and removes anything else from it, so they cannot be synced from disk. SkillHub shows this in Connections, prepares upload-ready ZIPs, connects the MCP server, and lists Anthropic's built-in skills so you can copy them to other tools.
+### Tier 1: live-verified on Windows 11
+
+Checked against the installed tools on the maintainer's Windows 11 PC: SkillHub detected each tool, wrote its skills and MCP entry to the listed paths, and the files were confirmed on disk. Codex, Antigravity CLI and Claude Code (including the Code tab in Claude Desktop) were seen loading the synced skills. Antigravity IDE's global folder (`~/.gemini/config/`) was added in 1.3 from Antigravity's own bundled documentation and confirmed on disk.
+
+| Tool | Global skills folder | MCP connection | Project folder |
+|---|---|---|---|
+| ChatGPT / OpenAI Codex | `~/.codex/skills`, `~/.agents/skills` | Automatic: `~/.codex/config.toml` | `.agents/skills` |
+| Gemini CLI | `~/.gemini/skills` | Automatic: `~/.gemini/settings.json` | `.gemini/skills` |
+| Google Antigravity (CLI & IDE) | `~/.gemini/config/skills`, the global customization root both read; `~/.gemini/antigravity/skills` for older builds | Automatic: `~/.gemini/config/mcp_config.json` (and `~/.gemini/antigravity/mcp_config.json` for older builds) | `.agents/skills` |
+| Claude Code | `~/.claude/skills`, `~/.claude/commands` | Automatic: `~/.claude.json` | `.claude/skills` |
+| Claude Desktop (Microsoft Store & standard) | The Code tab reads `~/.claude/skills`. The chat **Skills** screen shows skills saved in your claude.ai account (see below) | Automatic: `claude_desktop_config.json` in the app's real data folder, including the Store app's `%LOCALAPPDATA%\Claude-Data\` | Uses Claude Code's `.claude/skills` |
+
+Claude Desktop notes:
+
+- **The chat Skills screen can't be filled from disk.** Claude downloads your account's skills into a local cache and deletes anything else it finds there. Connections explains this and prepares upload-ready ZIPs; upload a skill once in Claude › Settings › Capabilities › Skills to use it in chat. Anthropic's built-in skills from that cache are listed read-only under Built-in & Templates.
+- **Close Claude before connecting.** Claude Desktop rewrites its config while it runs, which can drop a newly added MCP entry. *Restart Claude to apply* in Connections closes Claude, writes and checks the entry, and starts Claude again. This button is covered by automated tests; it was not clicked on the maintainer's PC, because that session ran inside Claude Desktop.
+
+### Tier 2: experimental, tested against documented paths and fixtures
+
+These adapters follow each tool's public documentation and are covered by automated tests against fixture folders. **They were not live-tested against an installed copy of the tool.** Feedback and corrections are welcome.
+
+| Tool | Global folder SkillHub writes | MCP connection | Project folder (Projects tab) |
+|---|---|---|---|
+| Cursor | `~/.cursor/rules/<name>.mdc`. Cursor documents user-level skills in `~/.cursor/skills` and also reads `~/.claude/skills` and `~/.codex/skills`, which SkillHub already fills, so expect Cursor to find your skills there. | Automatic: `~/.cursor/mcp.json` | `.cursor/rules/<name>.mdc` |
+| GitHub Copilot | `~/.copilot/skills` (personal skills; documented for the Copilot coding agent and CLI, and for VS Code) | Manual: add the command `SkillHub.exe` with the argument `mcp-stdio` to VS Code's `mcp.json` or the Copilot CLI settings | `.github/skills` (opt-in) |
+| Windsurf | `~/.codeium/windsurf/skills` | Automatic: `~/.codeium/windsurf/mcp_config.json` (Claude Desktop schema per Windsurf's docs) | `.windsurf/skills` (opt-in) |
+| Cline | `Documents\Cline\Rules\<name>.md`, opt-in per skill | Manual: Cline keeps MCP servers in its VS Code extension storage (MCP Servers › Configure) | `.clinerules/<name>.md` (opt-in) |
+| Roo Code | `~/.roo/rules/<name>.md`, opt-in per skill | Manual: Roo keeps global MCP servers in its VS Code extension storage (Edit Global MCP) | `.roo/rules/<name>.md` (opt-in) |
+
+Cline and Roo Code load every rule into every conversation, so skills reach them only when you turn them on per skill or per project. SkillHub does not write Cline's or Roo's MCP settings because their location depends on the VS Code variant and extension storage, which SkillHub could not verify.
 
 ## Quick start
 
@@ -86,7 +104,7 @@ node --test tests/SkillSync.Frontend/     # headless Chromium UI harness
 
 - **Library**: My Skills, Active & Synced, Built-in & Templates (OpenAI, Anthropic and Antigravity built-ins found on disk) and System, with tags, filters, instruction search and a Ctrl+K command palette.
 - **History**: 30 revisions per skill with diff and one-click restore. **Update inbox** for imported skills when their upstream changes.
-- **Projects**: per-project skill sets written into a repository's own AI folders. Edits you make inside the project are never overwritten.
+- **Projects**: per-project skill sets written into a repository's own AI folders (`.claude/skills`, `.agents/skills`, `.gemini/skills`, `.cursor/rules`, and opt-in `.github/skills`, `.windsurf/skills`, `.clinerules`, `.roo/rules`). Edits you make inside the project are never overwritten.
 - **Skill packs**: export one skill, a selection, or a full backup as `.skillpack.zip` (each `SKILL.md`, every companion file and a `skillpack.json` manifest). Import reviews name conflicts and scripts before anything is written.
 - **Diagnostics in plain language**: the folders being watched, *Verify & Sync All Folders*, conflict and safety backups with compare / restore, and a readable activity log.
 - **Explore**: sticky result counts, infinite scroll, `1 file (SKILL.md)` versus `📦 Bundle · N files` on every row, and per-skill imports or batch imports.

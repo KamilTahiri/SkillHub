@@ -55,6 +55,18 @@ public sealed class ReleaseReadinessTests : IDisposable
     }
 
     [Fact]
+    public void WindsurfMcpConfigIsAClientTargetWhenWindsurfIsInstalled()
+    {
+        var manager = new InstallManager(_root);
+        var target = manager.DiscoverMcpClientConfigTargets().Single(item => item.ClientId == "windsurf");
+        Assert.Equal(Path.Combine(_root, ".codeium", "windsurf", "mcp_config.json"), target.ConfigFilePath);
+        Assert.False(manager.CanConfigure(target));
+        Directory.CreateDirectory(Path.Combine(_root, ".codeium", "windsurf"));
+        manager.ConfigureClient("windsurf", "connect");
+        Assert.True(InstallManager.IsSkillHubPresentInJsonFile(target.ConfigFilePath));
+    }
+
+    [Fact]
     public void IdenticalBuiltInsFromSeveralInstallsAreListedOnce()
     {
         foreach (var install in new[] { "antigravity", "antigravity-cli", "antigravity-ide" })

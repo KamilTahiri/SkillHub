@@ -45,15 +45,19 @@ public sealed class WaveTwoTests : IDisposable
         Assert.Equal("demo-app", created.Name);
         await Assert.ThrowsAsync<ArgumentException>(() => workspaces.RegisterAsync(project, "again"));
 
-        var status = await workspaces.UpdateAsync(created.Id, ["api-review", "release-notes"], ["claude", "codex", "gemini", "cursor", "copilot"], null);
+        var status = await workspaces.UpdateAsync(created.Id, ["api-review", "release-notes"], ["claude", "codex", "gemini", "cursor", "copilot", "windsurf", "cline", "roocode"], null);
         Assert.Empty(status.Issues);
         Assert.Contains("Review the API.", File.ReadAllText(Path.Combine(project, ".claude", "skills", "api-review", "SKILL.md")));
         Assert.True(File.Exists(Path.Combine(project, ".claude", "skills", "api-review", "scripts", "check.py")));
         Assert.True(File.Exists(Path.Combine(project, ".agents", "skills", "release-notes", "SKILL.md")));
         Assert.True(File.Exists(Path.Combine(project, ".gemini", "skills", "api-review", "SKILL.md")));
         Assert.True(File.Exists(Path.Combine(project, ".cursor", "rules", "api-review.mdc")));
-        var copilot = File.ReadAllText(Path.Combine(project, ".github", "instructions", "release-notes.instructions.md"));
-        Assert.StartsWith("---\napplyTo: \"**\"", copilot);
+        // Experimental targets use each tool's documented project folder.
+        Assert.StartsWith("---\nname: release-notes", File.ReadAllText(Path.Combine(project, ".github", "skills", "release-notes", "SKILL.md")));
+        Assert.True(File.Exists(Path.Combine(project, ".github", "skills", "api-review", "scripts", "check.py")));
+        Assert.True(File.Exists(Path.Combine(project, ".windsurf", "skills", "api-review", "SKILL.md")));
+        Assert.Contains("Write release notes.", File.ReadAllText(Path.Combine(project, ".clinerules", "release-notes.md")));
+        Assert.Contains("Review the API.", File.ReadAllText(Path.Combine(project, ".roo", "rules", "api-review.md")));
         Assert.True(File.Exists(Path.Combine(workspaces.Root, created.Id + ".json")));
         // The global provider folders are untouched by a project workspace.
         Assert.False(Directory.Exists(Path.Combine(_root, ".claude", "skills", "api-review")));
@@ -65,7 +69,8 @@ public sealed class WaveTwoTests : IDisposable
         Assert.Equal("my local edit", File.ReadAllText(edited));
         Assert.Contains(status.Issues, issue => issue.Path == ".cursor/rules/api-review.mdc");
         Assert.False(Directory.Exists(Path.Combine(project, ".agents", "skills", "release-notes")));
-        Assert.False(File.Exists(Path.Combine(project, ".github", "instructions", "release-notes.instructions.md")));
+        Assert.False(File.Exists(Path.Combine(project, ".github", "skills", "release-notes", "SKILL.md")));
+        Assert.False(File.Exists(Path.Combine(project, ".clinerules", "release-notes.md")));
         Assert.True(Directory.Exists(Path.Combine(project, ".claude")));
 
         // Library edits flow into the project.

@@ -103,12 +103,12 @@ public sealed class TranspilerRoundTripTests
     {
         var original = CreateSampleRichCanonicalSkill();
         var cursorTranspiler = new CursorMdcTranspiler();
-        const string canonicalSkillDir = "C:/Users/kamil/.skillsync/skills/git-commit-helper";
+        const string canonicalSkillDir = "C:/Users/dev/.skillsync/skills/git-commit-helper";
 
         var mdcContent = cursorTranspiler.TranspileOutbound(original, canonicalSkillDir);
 
         Assert.Contains("alwaysApply: false", mdcContent);
-        Assert.Contains("C:/Users/kamil/.skillsync/skills/git-commit-helper/scripts/analyze-diff.sh", mdcContent);
+        Assert.Contains("C:/Users/dev/.skillsync/skills/git-commit-helper/scripts/analyze-diff.sh", mdcContent);
 
         // Simulate editing globs and body in Cursor .mdc file
         var editedMdc = mdcContent.Replace("alwaysApply: false", "alwaysApply: true", StringComparison.Ordinal);

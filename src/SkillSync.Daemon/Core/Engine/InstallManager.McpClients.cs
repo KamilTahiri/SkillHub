@@ -46,6 +46,11 @@ public sealed partial class InstallManager
         // 5. Cursor IDE (~/.cursor/mcp.json)
         candidates.Add(("cursor", "Cursor", Path.Combine(_userHomeRoot, ".cursor", "mcp.json"), false));
 
+        // 6. Windsurf (~/.codeium/windsurf/mcp_config.json, the Claude Desktop "mcpServers" schema per Windsurf's docs).
+        //    Experimental: checked against the documented path, not against an installed Windsurf.
+        //    Cline and Roo Code keep MCP settings inside their VS Code extension storage, so they are registered by hand.
+        candidates.Add(("windsurf", "Windsurf", Path.Combine(_userHomeRoot, ".codeium", "windsurf", "mcp_config.json"), false));
+
         // 6. OpenAI Codex (~/.codex/config.toml)
         candidates.Add(("codex", "ChatGPT / OpenAI Codex", Path.Combine(_userHomeRoot, ".codex", "config.toml"), true));
 

@@ -14,7 +14,7 @@ public sealed class ClaudeDesktopAndDiagnosticsTests : IDisposable
 
     private string StoreDataRoot => Path.Combine(_root, "AppData", "Local", "Claude-Data", "claude_pzs8sxrjxfjjc");
 
-    private void WriteStoreSkill(string slug, string account = "7f82faaf", string org = "9d421c56")
+    private void WriteStoreSkill(string slug, string account = "account-1", string org = "org-1")
     {
         var folder = Path.Combine(StoreDataRoot, "local-agent-mode-sessions", "skills-plugin", account, org, "skills", slug);
         Directory.CreateDirectory(folder);
@@ -43,7 +43,7 @@ public sealed class ClaudeDesktopAndDiagnosticsTests : IDisposable
     {
         WriteStoreSkill("skill-creator");
         WriteStoreSkill("morning");
-        var folder = Path.Combine(StoreDataRoot, "local-agent-mode-sessions", "skills-plugin", "7f82faaf", "9d421c56", "skills", "skill-creator");
+        var folder = Path.Combine(StoreDataRoot, "local-agent-mode-sessions", "skills-plugin", "account-1", "org-1", "skills", "skill-creator");
         Directory.CreateDirectory(Path.Combine(folder, "scripts"));
         File.WriteAllText(Path.Combine(folder, "scripts", "run.py"), "print('hi')\n");
         File.WriteAllText(Path.Combine(folder, "reference.md"), "# Reference\n");

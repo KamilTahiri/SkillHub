@@ -9,7 +9,17 @@ const REAPPLY_HINT = 'Re-applies SkillHub’s MCP connection in this tool’s co
 const CONNECTION_GROUPS = { codex: 'ChatGPT / Codex', gemini: 'Gemini & Antigravity', claude: 'Claude', cursor: 'Cursor',
   copilot: 'GitHub Copilot', windsurf: 'Windsurf', cline: 'Cline', roocode: 'Roo Code' };
 // SkillHub syncs skills to these tools but does not write their MCP settings yet.
-const FOLDER_ONLY = new Set(['copilot', 'windsurf', 'cline', 'roocode']);
+// Tools whose MCP settings SkillHub does not write, and why.
+const MANUAL_MCP = {
+  copilot: 'Copilot reads MCP servers from VS Code’s mcp.json or the Copilot CLI settings. Add a server with the command SkillHub.exe and the argument mcp-stdio.',
+  cline: 'Cline keeps MCP servers inside its VS Code extension storage. In Cline open MCP Servers › Configure and add the command SkillHub.exe with the argument mcp-stdio.',
+  roocode: 'Roo Code keeps global MCP servers inside its VS Code extension storage. In Roo Code choose Edit Global MCP and add the command SkillHub.exe with the argument mcp-stdio.'
+};
+const FOLDER_ONLY = new Set(Object.keys(MANUAL_MCP));
+// Tier 2: adapters checked against documented paths and test fixtures, not live against an installed copy of the tool.
+const EXPERIMENTAL = new Set(['cursor', 'copilot', 'windsurf', 'cline', 'roocode']);
+const EXPERIMENTAL_NOTE = 'Experimental: built from the tool’s documented folders and tested against fixtures, not yet verified against an installed copy. Feedback welcome.';
+const experimentalBadge = id => EXPERIMENTAL.has(id) && h('span', { class: 'status-badge small muted tier-badge', title: EXPERIMENTAL_NOTE }, 'Experimental');
 const PROVIDER_LABELS = { codex: 'ChatGPT / Codex', gemini: 'Gemini & Antigravity', claude: 'Claude', cursor: 'Cursor',
   copilot: 'GitHub Copilot', windsurf: 'Windsurf', cline: 'Cline', roocode: 'Roo Code', canonical: 'SkillHub' };
 const PROVIDER_ICONS = { codex: 'codex', gemini: 'gemini', claude: 'claude', cursor: 'cursor', copilot: 'copilot', windsurf: 'windsurf',
@@ -27,7 +37,7 @@ const ACTIVITY = {
   error: { label: 'Problem', icon: 'close', tone: 'warn' },
   default: { label: 'Activity', icon: 'info', tone: 'muted' }
 };
-const CLIENT_PROVIDERS = { codex: 'codex', 'gemini-cli': 'gemini', antigravity: 'gemini', 'antigravity-ide': 'gemini', 'claude-code': 'claude', 'claude-desktop': 'claude', cursor: 'cursor' };
+const CLIENT_PROVIDERS = { codex: 'codex', 'gemini-cli': 'gemini', antigravity: 'gemini', 'antigravity-ide': 'gemini', 'claude-code': 'claude', 'claude-desktop': 'claude', cursor: 'cursor', windsurf: 'windsurf' };
 
 export function createSettings(root, app) {
   let tab = 'Connections';
@@ -89,8 +99,10 @@ export function createSettings(root, app) {
         h('summary', {}, 'Other supported AI tools not installed on this device (' + missing.length + ')'),
         h('ul', {}, missing.map(group => h('li', { class: 'connection-other-row' },
           h('span', { class: 'provider-mark', 'data-provider': group.id }, icon(group.id)),
-          h('div', {}, h('strong', {}, group.label),
-            h('p', { class: 'muted' }, 'Install ' + group.label + ' and SkillHub can connect it from here.')))))));
+          h('div', {}, h('strong', {}, group.label, ' ', experimentalBadge(group.id)),
+            h('p', { class: 'muted' }, EXPERIMENTAL.has(group.id)
+              ? 'Install ' + group.label + ' and SkillHub syncs skills to its documented folders. ' + EXPERIMENTAL_NOTE
+              : 'Install ' + group.label + ' and SkillHub can connect it from here.')))))));
   }
 
   function groupState(group) {
@@ -116,13 +128,15 @@ export function createSettings(root, app) {
         group.issues > 0 && h('span', { class: 'warning' }, ' · ' + group.issues + (group.issues === 1 ? ' needs' : ' need') + ' review')));
     const mcpLine = h('li', { class: 'capability', 'data-state': registered.length ? 'ok' : 'muted' }, icon('plug'),
       h('span', {}, h('strong', {}, 'SkillHub tools (MCP)'), ' ',
-        FOLDER_ONLY.has(group.id) ? 'Add SkillHub to this tool’s MCP settings yourself for now (command: SkillHub.exe mcp-stdio).'
+        FOLDER_ONLY.has(group.id) ? MANUAL_MCP[group.id]
         : registered.length ? 'Connected in ' + registered.join(' and ')
           : 'Not connected. Connect below so ' + group.label.split(' ')[0] + ' can create and update skills through SkillHub.'));
     return h('section', { class: 'connection-card', 'data-state': tone, 'aria-label': group.label },
       h('header', { class: 'connection-head' },
         h('span', { class: 'provider-mark', 'data-provider': group.id }, icon(group.id)),
-        h('div', { class: 'connection-title' }, h('h2', {}, group.label), evidence && h('p', { class: 'muted' }, evidence)),
+        h('div', { class: 'connection-title' }, h('h2', {}, group.label, ' ', experimentalBadge(group.id)),
+          evidence && h('p', { class: 'muted' }, evidence),
+          EXPERIMENTAL.has(group.id) && h('p', { class: 'field-help' }, EXPERIMENTAL_NOTE)),
         h('span', { class: 'status-badge ' + tone }, h('span', { class: 'status-badge-dot', 'aria-hidden': 'true' }), state)),
       h('ul', { class: 'capabilities' }, skillsLine, mcpLine),
       group.id === 'claude' && claudeSkillsNote(),

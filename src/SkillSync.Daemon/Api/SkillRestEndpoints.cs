@@ -63,7 +63,11 @@ public static class SkillRestEndpoints
         api.MapGet("/workspaces", (WorkspaceService workspaces) => Results.Json(new
         {
             workspaces = workspaces.List(),
-            targets = WorkspaceTargets.All.Select(target => new { id = target, label = WorkspaceTargets.Label(target) })
+            targets = WorkspaceTargets.All.Select(target => new
+            {
+                id = target, label = WorkspaceTargets.Label(target), experimental = WorkspaceTargets.IsExperimental(target),
+                @default = WorkspaceTargets.Defaults.Contains(target)
+            })
         }, WebJsonOptions));
         api.MapPost("/workspaces", async (WorkspaceCreateRequest request, WorkspaceService workspaces, CancellationToken ct) =>
             Results.Json(await workspaces.RegisterAsync(request.Path, request.Name, ct).ConfigureAwait(false), WebJsonOptions));

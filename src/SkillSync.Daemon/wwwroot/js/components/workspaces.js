@@ -84,7 +84,7 @@ export function createWorkspaces(root, app) {
       data.targets.map(target => h('label', { class: 'chip-toggle' },
         h('input', { type: 'checkbox', checked: targets.has(target.id), 'data-target': target.id,
           onchange: event => { if (event.target.checked) targets.add(target.id); else targets.delete(target.id); dirty(); } }),
-        target.label)));
+        target.label, target.experimental && h('span', { class: 'tier-badge-inline', title: 'Experimental: documented path, not yet verified against an installed copy' }, ' · experimental'))));
     const save = button([icon('check'), 'Save & sync project'], () => busy(save, async () => {
       const next = await api.updateWorkspace(workspace.id, { skills: [...chosen], targets: [...targets] });
       notify('Synced ' + next.skills.length + (next.skills.length === 1 ? ' skill' : ' skills') + ' to ' + next.name + '.', { tone: 'success' });
@@ -117,7 +117,7 @@ export function createWorkspaces(root, app) {
       workspace.issues.length > 0 && h('div', { class: 'workspace-issues' }, h('strong', {}, 'Needs attention'),
         h('ul', {}, workspace.issues.map(issue => h('li', {}, h('code', { class: 'path' }, issue.path), ' — ', issue.problem)))),
       h('div', { class: 'settings-group' }, h('h3', {}, 'Write skills to'), targetBoxes,
-        h('small', { class: 'field-help' }, 'Copilot instructions apply to every file in the repository, so they are off unless you turn them on.')),
+        h('small', { class: 'field-help' }, 'Claude, Codex/Antigravity, Gemini and Cursor are written by default. Copilot, Windsurf, Cline and Roo Code are experimental and opt-in; Cline and Roo Code load every rule into every task.')),
       h('div', { class: 'settings-group' }, h('div', { class: 'spread' }, h('h3', {}, 'Skills for this project'), count), search, skillList),
       h('footer', { class: 'workspace-foot' }, feedback, save,
         h('small', { class: 'field-help' }, 'Edit skills in SkillHub; project copies update automatically. Copies edited inside the project are never overwritten.')));

@@ -2,12 +2,14 @@
 [CmdletBinding()]
 param(
     [string]$Compiler = $env:SKILLHUB_ISCC,
-    [string]$OutputDirectory = (Join-Path $PSScriptRoot 'dist'),
+    [string]$OutputDirectory,
     [string]$SignCommand = $env:SKILLHUB_SETUP_SIGN_COMMAND,
     [switch]$TestPackage
 )
 
 $ErrorActionPreference = 'Stop'
+# Windows PowerShell 5.1 leaves $PSScriptRoot empty inside param() defaults, so the default is resolved here.
+if (-not $OutputDirectory) { $OutputDirectory = Join-Path $PSScriptRoot 'dist' }
 if (-not $Compiler) {
     $command = Get-Command ISCC.exe -ErrorAction SilentlyContinue
     $Compiler = if ($command) { $command.Source } else { "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" }
