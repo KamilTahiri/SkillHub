@@ -348,7 +348,7 @@ public sealed partial class SyncEngine
         };
         var model = item.Snapshot.Hash == target.LastWrittenRawHash && prior is not null
             ? prior.Clone()
-            : _transpilers[item.Destination.Provider].MergeInbound(slug, item.Snapshot.Markdown!, prior, baseline,
+            : _transpilers[item.Destination.Provider].MergeInbound(slug, LearningFooter.Strip(item.Snapshot.Markdown!), prior, baseline,
                 Path.GetDirectoryName(_storage.CanonicalPath(slug)));
         if (item.Destination.HasBundle)
         {
@@ -487,7 +487,7 @@ public sealed partial class SyncEngine
             return;
         }
 
-        var markdown = _transpilers[destination.Provider].TranspileOutbound(model, Path.GetDirectoryName(_storage.CanonicalPath(slug)));
+        var markdown = Outbound(destination.Provider, model, Path.GetDirectoryName(_storage.CanonicalPath(slug)));
         var intended = new SkillDiskSnapshot(markdown, destination.HasBundle ? model.SupportingFiles : new(SkillPaths.Comparer));
         if (pending.RawHash == intended.Hash && SameFiles(pending.Files, intended.FileHashes()) &&
             (observed.Hash == pending.RawHash || observed.Hash == pending.PreviousRawHash) &&

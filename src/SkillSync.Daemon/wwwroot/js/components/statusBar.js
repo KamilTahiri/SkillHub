@@ -238,6 +238,25 @@ export function createSettings(root, app) {
     }, error => feedback.replaceChildren(errorText(error.message)));
   }
 
+  // Updates: GitHub Releases, or origin/main when this build came from a source checkout.
+  function updatesSection() {
+    const status = h('div', { class: 'stack', role: 'status' }, h('p', { class: 'muted' }, 'Checking for updates…'));
+    const show = info => {
+      const install = info.update_available && button([icon('download'), 'Update & Restart'], () => app.applyUpdate(info), 'primary');
+      fill(status,
+        h('p', {}, 'You have SkillHub ', h('strong', {}, info.current_version), info.current_commit ? h('span', { class: 'muted' }, ' (' + info.current_commit.slice(0, 7) + ')') : null, '.'),
+        h('p', { class: info.update_available ? '' : 'muted' }, info.summary),
+        info.error && h('p', { class: 'warning' }, info.error),
+        h('p', { class: 'field-help' }, info.source === 'source-checkout' ? 'This build came from a source checkout, so updates follow origin/main (git pull + install.ps1).'
+          : info.source === 'gh-cli' ? 'Checked through the GitHub CLI because the repository is private.'
+          : 'Checked against GitHub Releases.'),
+        h('div', { class: 'actions wrap' }, install, button([icon('sync'), 'Check now'], event => busy(event.currentTarget, async () => show(await api.updateStatus(true)),
+          error => status.append(errorText(error.message))), 'small')));
+    };
+    api.updateStatus(false).then(show).catch(error => fill(status, errorText(error.message)));
+    return h('section', { class: 'settings-group' }, h('h2', {}, 'Updates'), status);
+  }
+
   function renderPreferences(data) {
     const feedback = h('span', { role: 'status', class: 'muted' });
     let pending = 0;
@@ -274,6 +293,10 @@ export function createSettings(root, app) {
       h('section', { class: 'settings-group' }, h('h2', {}, 'Startup and window behavior'),
         toggle('Start SkillHub when I sign in', 'startup', data.auto_start),
         toggle('Keep SkillHub running in the tray', 'tray', data.close_to_tray)),
+      h('section', { class: 'settings-group' }, h('h2', {}, 'Continuous skill learning'),
+        toggle('Let AI tools offer skill improvements', 'learning', data.continuous_learning !== false),
+        h('p', { class: 'field-help' }, 'When on, the bootstrap skill and a short note in your synced skills ask AI tools to offer an improvement only after they solved something non-trivial, never on routine tasks. You can also say “turn continuous skill learning off” in chat.')),
+      updatesSection(),
       h('section', { class: 'settings-group' }, h('h2', {}, 'Backup & skill packs'),
         h('p', { class: 'muted' }, 'A .skillpack.zip holds each SKILL.md, every companion file and a manifest. Import one from Explore › Import from link or file.'),
         h('div', { class: 'actions wrap' },

@@ -93,6 +93,24 @@ public sealed partial class SyncEngine : IAsyncDisposable
     public CanonicalSkillModel ParseCanonicalText(string slug, string markdown) =>
         _transpilers[ProviderType.Canonical].MergeInbound(slug, markdown, null);
 
+    /// <summary>
+    /// When on, provider copies of personal skills carry the continuous-learning note (<see cref="LearningFooter"/>) and the
+    /// bootstrap skill explains when to offer a skill improvement. Set from desktop preferences; call SynchronizeAllAsync after changing it.
+    /// </summary>
+    public bool ContinuousLearning { get; set; } = true;
+
+    private static readonly HashSet<ProviderType> SkillFolderProviders =
+        [ProviderType.Claude, ProviderType.Gemini, ProviderType.Codex, ProviderType.Copilot, ProviderType.Windsurf];
+
+    /// <summary>What a provider destination receives: the transpiled skill, plus the learning note for personal skills.</summary>
+    private string Outbound(ProviderType provider, CanonicalSkillModel model, string? directory)
+    {
+        var markdown = _transpilers[provider].TranspileOutbound(model, directory);
+        return ContinuousLearning && SkillFolderProviders.Contains(provider) &&
+            string.Equals(model.SourceCategory, "user", StringComparison.OrdinalIgnoreCase)
+            ? LearningFooter.Append(markdown, model.Name) : markdown;
+    }
+
     /// <summary>The exact file a provider receives for this skill, as written by its transpiler.</summary>
     public string RenderForProvider(ProviderType provider, CanonicalSkillModel model) =>
         _transpilers[provider].TranspileOutbound(model, null);

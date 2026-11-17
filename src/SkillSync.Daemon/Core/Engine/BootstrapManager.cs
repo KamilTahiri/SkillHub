@@ -4,7 +4,7 @@ namespace SkillSync.Daemon.Core.Engine;
 
 public static class BootstrapManager
 {
-    public static CanonicalSkillModel CreateBootstrapSkillModel()
+    public static CanonicalSkillModel CreateBootstrapSkillModel(bool continuousLearning = true)
     {
         return new CanonicalSkillModel
         {
@@ -39,7 +39,12 @@ public static class BootstrapManager
                         "mcp__skillhub__activate_catalog_skill",
                         "mcp__skillhub__clone_catalog_skill",
                         "mcp__skillhub__restore_skill",
-                        "mcp__skillhub__get_sync_status"
+                        "mcp__skillhub__get_sync_status",
+                        "mcp__skillhub__check_skillhub_update",
+                        "mcp__skillhub__set_skillhub_preferences",
+                        "mcp__skillhub__propose_skill_improvement",
+                        "mcp__skillhub__list_skill_proposals",
+                        "mcp__skillhub__apply_skill_proposal"
                     ]
                 },
                 Gemini = new GeminiTargetConfig { Enabled = true },
@@ -96,13 +101,37 @@ public static class BootstrapManager
 
                 5. **FALLBACK IF MCP TOOLS ARE UNAVAILABLE:**
                    Only if the `skillhub` MCP server is unreachable or not loaded in your current session may you write directly to `~/.skillhub/skills/<name>/SKILL.md` (or your native skills directory). SkillHub's background bi-directional file watcher will ingest and transpile the change automatically.
-                """
+
+                6. **SKILLHUB ITSELF:**
+                   - "Is SkillHub up to date?" → `check_skillhub_update`. Install only when the user agrees → `apply_skillhub_update` (SkillHub restarts).
+                   - "Turn continuous skill learning on/off" → `set_skillhub_preferences` with `continuous_learning`.
+                   - Importing a community skill: `import_community_skill` syncs to the detected AI tools by default. If it reports scripts, show the user the script list with the repository's stars and installs, and only call it again with `confirm_scripts: true` after the user agrees.
+                """ + (continuousLearning ? ContinuousLearningSection : string.Empty)
         };
+    }
+
+    /// <summary>Included while continuous skill learning is on (Settings or <c>set_skillhub_preferences</c>).</summary>
+    public const string ContinuousLearningSection =
+        """
+
+        7. **CONTINUOUS SKILL LEARNING (ON):**
+           - Never judge a skill early at the start of a task, and never suggest changes on routine tasks.
+           - Only **after** you solved a non-trivial problem, hit an outdated or wrong instruction in a skill, or found a reusable project pattern or workaround that would clearly make a relevant skill better, ask **once, at the end of your reply**: "Want me to update your `<skill>` skill in SkillHub with <one-line summary>?"
+           - When the user says yes, apply it right away with `update_skill` (SkillHub keeps the previous version in History and syncs every AI tool).
+           - When the user says "save it for later", call `propose_skill_improvement`. Saved proposals are reviewed with `list_skill_proposals` and applied with `apply_skill_proposal` (or in the SkillHub app).
+        """;
+
+    /// <summary>Turns continuous skill learning on or off: rewrites the bootstrap skill and every provider copy of personal skills.</summary>
+    public static async Task ApplyContinuousLearningAsync(SyncEngine engine, bool enabled, CancellationToken ct = default)
+    {
+        engine.ContinuousLearning = enabled;
+        await EnsureBootstrapSkillSeededAsync(engine, ct).ConfigureAwait(false);
+        await engine.SynchronizeAllAsync(ct).ConfigureAwait(false);
     }
 
     public static async Task EnsureBootstrapSkillSeededAsync(SyncEngine engine, CancellationToken ct = default)
     {
-        var model = CreateBootstrapSkillModel();
+        var model = CreateBootstrapSkillModel(engine.ContinuousLearning);
         await engine.UpsertSkillDirectAsync(model, "bootstrap-seed", ct).ConfigureAwait(false);
     }
 }

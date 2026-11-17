@@ -3,7 +3,7 @@ import { deployment, installedProviders, destinationLabel, targetIssues, PROVIDE
 import { renderMarkdown, outline } from '../markdown.js';
 import { h, button, heading, panel, disclosure, copy, download, busy, notify, modal, confirmAction, field, errorText, bundleBadge } from '../ui.js';
 import { showProviderPreview } from './transpilerPreview.js';
-import { copySkillPrompt, doctorPanel, historySection, updateBanner } from './skillInsights.js';
+import { copySkillPrompt, doctorPanel, historySection, updateBanner, proposalsBanner } from './skillInsights.js';
 import { icon } from '../icons.js';
 import { exportPack } from './skillPacks.js';
 
@@ -122,6 +122,7 @@ export function createReader(root, app) {
     const section = h('div', { class: 'stack' }, h('div', { class: 'actions' }, button('← Library', () => app.navigate('library'), 'quiet')),
       title,
       updateBanner(app, skill),
+      proposalsBanner(app, skill),
       issues.length > 0 && h('div', { class: 'issue-banner stack' }, issues.map(issue => h('div', { class: 'spread' },
         h('p', {}, issue.label + (issue.state === 'missing' ? ' copy is missing.' : ' needs review.')),
         button('Review ' + issue.label, () => app.review(skill.name, issue), 'small', { 'data-focus-key': 'review-' + issue.path })))),

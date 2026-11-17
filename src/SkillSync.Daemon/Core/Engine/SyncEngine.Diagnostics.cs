@@ -95,7 +95,7 @@ public sealed partial class SyncEngine
         var observed = _discovery.ResolveObservedPath(backup.GetProperty("destination").GetString() ?? string.Empty)
             ?? throw new InvalidDataException("The backup does not identify a known provider.");
         var slug = RequireSlug(observed.Slug[..Math.Min(observed.Slug.Length, 42)] + "-recovered-" + Guid.NewGuid().ToString("N")[..8]);
-        var model = _transpilers[observed.Provider].MergeInbound(slug, markdown, null);
+        var model = _transpilers[observed.Provider].MergeInbound(slug, LearningFooter.Strip(markdown), null);
         model.Title = CanonicalSkillModel.HumanizeSlug(observed.Slug) + " (Recovered)";
         model.SourceCategory = "user";
         model.OriginProvider = "Recovered conflict";
@@ -179,7 +179,7 @@ public sealed partial class SyncEngine
         var entry = GetEntry(slug);
         var current = await LoadCurrentAsync(slug, entry).ConfigureAwait(false)
             ?? throw new KeyNotFoundException("The current skill no longer exists. Restore the backup as a new skill instead.");
-        var model = _transpilers[observed.Provider].MergeInbound(slug, markdown, current);
+        var model = _transpilers[observed.Provider].MergeInbound(slug, LearningFooter.Strip(markdown), current);
         var files = backup.TryGetProperty("supporting_files", out var supporting) && supporting.ValueKind == JsonValueKind.Object
             ? supporting.Deserialize<Dictionary<string, string>>() : null;
         if (files is { Count: > 0 })

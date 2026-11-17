@@ -49,6 +49,9 @@ foreach ($file in Get-ChildItem -LiteralPath $source -File -Recurse) {
     }
 }
 
+# Record this checkout so the in-app updater follows origin/main here (git pull + install.ps1) instead of GitHub Releases.
+@{ path = $PSScriptRoot } | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $installed 'source-checkout.json') -Encoding UTF8
+
 $exe = Join-Path $installed 'SkillHub.exe'
 Start-Process -FilePath $exe -WorkingDirectory $installed
 $deadline = [DateTime]::UtcNow.AddSeconds(45)

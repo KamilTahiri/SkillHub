@@ -107,11 +107,14 @@ node --test tests/SkillSync.Frontend/     # headless Chromium UI harness
 - **Projects**: per-project skill sets written into a repository's own AI folders (`.claude/skills`, `.agents/skills`, `.gemini/skills`, `.cursor/rules`, and opt-in `.github/skills`, `.windsurf/skills`, `.clinerules`, `.roo/rules`). Edits you make inside the project are never overwritten.
 - **Skill packs**: export one skill, a selection, or a full backup as `.skillpack.zip` (each `SKILL.md`, every companion file and a `skillpack.json` manifest). Import reviews name conflicts and scripts before anything is written.
 - **Diagnostics in plain language**: the folders being watched, *Verify & Sync All Folders*, conflict and safety backups with compare / restore, and a readable activity log.
+- **Self-update**: SkillHub checks GitHub Releases (or `origin/main` on a source checkout) and shows *Update & Restart* in the top bar and Settings. It verifies the installer's SHA-256 before running it. Assistants can do the same through MCP (`check_skillhub_update`, `apply_skillhub_update`).
+- **Hands-free imports**: community skills sync to your detected AI tools by default. Explore and MCP show GitHub stars and skills.sh installs, and a skill that ships scripts asks once ("Confirm, Import & Sync Now", or `confirm_scripts: true` from chat).
+- **Continuous skill learning** (on by default, toggle in Settings or with `set_skillhub_preferences`): your AI tools offer to improve a skill only after solving something non-trivial, and save ideas for later with `propose_skill_improvement`.
 - **Explore**: sticky result counts, infinite scroll, `1 file (SKILL.md)` versus `📦 Bundle · N files` on every row, and per-skill imports or batch imports.
 
 ## MCP tools
 
-Connected assistants get 18 tools: `list_skills`, `get_skill`, `create_skill`, `update_skill`, `delete_skill`, `manage_skill_tags`, `toggle_skill_provider`, `lint_skill`, `get_sync_status`, `restore_skill`, `activate_catalog_skill`, `clone_catalog_skill`, `search_community_skills` (skills.sh, curated and pinned repositories, the offline catalog, or any `owner/repo`), `browse_community_repo`, `preview_community_skill` (full `SKILL.md`, bundle manifest, script review and companion files), `prepare_skill_import`, `apply_skill_import` and `import_community_skill`. Every skill is also an MCP prompt and resource. The seeded `00-skillhub-bootstrap` skill teaches assistants to use these tools instead of copying files between tools.
+Connected assistants get 24 tools: `list_skills`, `get_skill`, `create_skill`, `update_skill`, `delete_skill`, `manage_skill_tags`, `toggle_skill_provider`, `lint_skill`, `get_sync_status`, `restore_skill`, `activate_catalog_skill`, `clone_catalog_skill`, `search_community_skills` (skills.sh, curated and pinned repositories, the offline catalog, or any `owner/repo`), `browse_community_repo`, `preview_community_skill` (full `SKILL.md`, bundle manifest, script review and companion files), `prepare_skill_import`, `apply_skill_import`, `import_community_skill`, `check_skillhub_update`, `apply_skillhub_update`, `set_skillhub_preferences`, `propose_skill_improvement`, `list_skill_proposals` and `apply_skill_proposal`. Every skill is also an MCP prompt and resource. The seeded `00-skillhub-bootstrap` skill teaches assistants to use these tools instead of copying files between tools.
 
 ## Architecture
 
@@ -148,6 +151,6 @@ installer/              Inno Setup script
 
 ## Status
 
-SkillHub 1.3 is a Windows preview. Compatibility with a particular client depends on its configuration format; Settings shows the exact paths and registration state SkillHub uses.
+SkillHub 1.4 is a Windows preview. Compatibility with a particular client depends on its configuration format; Settings shows the exact paths and registration state SkillHub uses.
 
 See [LICENSE](LICENSE) (Apache 2.0), [third-party notices](THIRD_PARTY_NOTICES.md), [Contributing](CONTRIBUTING.md) and [Security](SECURITY.md).

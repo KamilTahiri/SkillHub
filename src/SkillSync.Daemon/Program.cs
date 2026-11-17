@@ -311,6 +311,10 @@ public static class Program
         builder.Services.AddSingleton<SkillPackService>();
         builder.Services.AddSingleton<IClaudeDesktopProcesses, WindowsClaudeDesktopProcesses>();
         builder.Services.AddSingleton<ClaudeDesktopController>();
+        builder.Services.AddSingleton<SkillProposalService>();
+        builder.Services.AddSingleton(sp => new UpdateService(
+            new HttpClient { Timeout = TimeSpan.FromMinutes(10) }, new ProcessCommandRunner(), AppContext.BaseDirectory,
+            Path.Combine(sp.GetRequiredService<ProviderDiscoveryService>().SkillHubRoot, "cache")));
         builder.Services.AddSingleton<McpJsonRpcHandler>();
         builder.Services.AddSingleton(sp =>
             new MultiRootFileWatcher(
@@ -324,6 +328,20 @@ public static class Program
         var app = builder.Build();
         // Created up front so project workspaces follow library edits from the first change.
         _ = app.Services.GetRequiredService<WorkspaceService>();
+        // Continuous skill learning is a saved preference; it must be set before the watcher seeds the bootstrap skill.
+        var preferences = app.Services.GetRequiredService<DesktopPreferencesStore>();
+        app.Services.GetRequiredService<SyncEngine>().ContinuousLearning = preferences.Read().ContinuousLearning;
+        app.Services.GetRequiredService<McpJsonRpcHandler>().Desktop = new McpDesktopFeatures
+        {
+            Updates = app.Services.GetRequiredService<UpdateService>(),
+            Preferences = preferences,
+            ExitForUpdate = () => _ = Task.Run(async () =>
+            {
+                // Give the MCP or HTTP response time to reach the caller, then let setup replace SkillHub's files.
+                await Task.Delay(TimeSpan.FromSeconds(1.5)).ConfigureAwait(false);
+                app.Lifetime.StopApplication();
+            })
+        };
 
         app.Use(access.InvokeAsync);
         app.UseDefaultFiles();

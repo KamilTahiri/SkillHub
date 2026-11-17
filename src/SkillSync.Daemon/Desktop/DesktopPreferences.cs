@@ -7,7 +7,7 @@ namespace SkillSync.Daemon.Desktop;
 
 public sealed record DesktopBounds(int X, int Y, int Width, int Height, bool Maximized);
 public sealed record DesktopPreferences(string Theme = "system", bool CloseToTray = true, DesktopBounds? Bounds = null,
-    bool OnboardingCompleted = false);
+    bool OnboardingCompleted = false, bool ContinuousLearning = true);
 public sealed record DesktopPreferenceRequest(string Theme,
     [property: JsonPropertyName("close_to_tray")] bool? CloseToTray,
     [property: JsonPropertyName("auto_start")] bool? AutoStart);
@@ -50,6 +50,8 @@ public sealed class DesktopPreferencesStore(ProviderDiscoveryService discovery)
     public DesktopPreferences SetCloseToTray(bool enabled) => Update(current => current with { CloseToTray = enabled });
 
     public DesktopPreferences SetOnboardingCompleted(bool completed) => Update(current => current with { OnboardingCompleted = completed });
+
+    public DesktopPreferences SetContinuousLearning(bool enabled) => Update(current => current with { ContinuousLearning = enabled });
 
     private static void ValidateTheme(string theme)
     {

@@ -39,12 +39,12 @@ const template = { ...sample, name: 'template', catalog_id: 'fixture-template', 
 const system = { ...sample, name: 'bootstrap', source_category: 'system', tags: ['system', 'skillhub', 'meta-skill'] };
 const item = name => ({ slug: name.toLowerCase(), title: name, description: name, repo: 'fixture/repo',
   path: name + '/SKILL.md', git_ref: 'main', kind: name === 'Skill 29' ? 'doc' : 'skill', group: name === 'Skill 29' ? 'docs' : 'skills',
-  file_count: name === 'Fast' ? 1 : 0 });
+  file_count: name === 'Fast' ? 1 : 0, stars: name === 'Fast' ? 18400 : undefined });
 
 async function fixtureServer() {
   let releaseSlow;
   const slowPreview = new Promise(resolve => { releaseSlow = resolve; });
-  const fixture = { onboarded: true, workspaces: [], workspaceUpdate: null, packUpload: null, packApply: null, releaseSlow, slowFinished: false, theme: 'dark', tray: true, startup: true, reviewed: null, applied: null, preparing: new Map(), prefetched: new Map(), events: null, reads: 0 };
+  const fixture = { learning: true, proposalApplied: null, updateApplied: false, onboarded: true, workspaces: [], workspaceUpdate: null, packUpload: null, packApply: null, releaseSlow, slowFinished: false, theme: 'dark', tray: true, startup: true, reviewed: null, applied: null, preparing: new Map(), prefetched: new Map(), events: null, reads: 0 };
   const server = createServer(async (req, res) => {
     const url = new URL(req.url, 'http://localhost');
     const send = (value, status = 200) => {
@@ -99,8 +99,16 @@ async function fixtureServer() {
       }
       if (route === '/preferences') {
         if (req.method === 'PUT') fixture.theme = data.theme;
-        return send({ theme: fixture.theme, close_to_tray: fixture.tray, auto_start: fixture.startup, onboarding_completed: fixture.onboarded });
+        return send({ theme: fixture.theme, close_to_tray: fixture.tray, auto_start: fixture.startup, onboarding_completed: fixture.onboarded, continuous_learning: fixture.learning });
       }
+      if (route === '/updates/skillhub') return send({ current_version: '1.4.0', current_commit: 'a'.repeat(40), latest_version: '1.4.1',
+        latest_commit: 'b'.repeat(40), update_available: true, method: 'installer', source: 'github-api', summary: 'SkillHub 1.4.1 is available (you have 1.4.0).' });
+      if (route === '/updates/skillhub/apply') { fixture.updateApplied = true; return send({ started: true, method: 'installer', message: 'Installing SkillHub 1.4.1.' }); }
+      if (route === '/preferences/learning') { fixture.learning = data.enabled; return send({ enabled: data.enabled }); }
+      if (route === '/proposals' && url.searchParams.get('skill') === 'fixture') return send({ proposals: fixture.proposalApplied ? [] : [{ id: 'p1', skill: 'fixture',
+        summary: 'Add the cache-busting step', instructions_markdown: 'Better body', source: 'mcp', created_at: '2026-11-17T10:00:00Z' }] });
+      if (route === '/proposals') return send({ proposals: [] });
+      if (route === '/proposals/p1/apply') { fixture.proposalApplied = true; return send({ skill: sample }); }
       if (route === '/preferences/onboarding') { fixture.onboarded = data.enabled; return send({ enabled: data.enabled }); }
       if (route === '/workspaces' && req.method === 'GET') return send({ workspaces: fixture.workspaces,
         targets: ['claude', 'codex', 'gemini', 'cursor', 'copilot'].map(id => ({ id, label: id + ' folder' })) });
@@ -375,6 +383,7 @@ test('workbench at desktop and docked sizes, with keyboard, themes, Markdown and
       assert.equal(await evaluate('document.querySelectorAll("#reader-screen li li").length'), 1);
       assert.equal(await evaluate('document.querySelector("#reader-screen article a")?.href'), 'https://example.com/?q=fixture&mode=2');
 
+      await wait('document.querySelector("#reader-screen .proposal-banner")?.textContent.includes("Add the cache-busting step")');
       await textButton('Files');
       await textButton('references/notes.md');
       await wait('document.querySelector("dialog[open]")?.textContent.includes("Supporting notes")');
@@ -427,6 +436,7 @@ test('workbench at desktop and docked sizes, with keyboard, themes, Markdown and
       // A repository opens on the Skills tab so READMEs and docs do not crowd out actual skills.
       assert.equal(await evaluate('document.querySelector(".group-tabs [aria-pressed=true]").textContent'), 'Skills72');
       assert.match(await evaluate('document.querySelector(".result-row:nth-child(2) .files-badge").textContent'), /📦 Bundle · 2 files/);
+      assert.match(await evaluate('document.querySelector(".result-row:nth-child(2) .stars-badge").textContent'), /★ 18[.,]4K/i);
       assert.equal(await evaluate('document.querySelector(".result-row:nth-child(30) .files-badge").textContent'), '1 file (SKILL.md)');
       // Infinite scroll: the first 50 rows render, more load as the sentinel scrolls into view, and the count stays pinned.
       assert.equal(await evaluate('document.querySelectorAll("#explore-screen .result-row").length'), 50);
@@ -493,6 +503,8 @@ test('workbench at desktop and docked sizes, with keyboard, themes, Markdown and
       await textButton('← Back to results');
       await click('#explore-screen .result-row:nth-child(2) button');
       await wait('document.querySelector("#explore-preview h2")?.textContent === "Fast review"');
+      assert.match(await evaluate('document.querySelector(".preview-trust")?.textContent ?? ""'), /★ 18[.,]4K stars/i);
+      assert.deepEqual(await evaluate('[...document.querySelectorAll(".deploy-chip")].filter(chip => chip.querySelector("input").checked).map(chip => chip.dataset.provider)'), ['codex', 'gemini']);
       // Bundle files open as tabs inside the preview instead of a modal.
       await click('.file-tab[data-path="references/notes.md"]');
       await wait('document.querySelector(".import-document")?.textContent.includes("The pinned supporting file.")');
@@ -501,7 +513,7 @@ test('workbench at desktop and docked sizes, with keyboard, themes, Markdown and
       await textButton('+ Add this skill');
       await until(() => fixture.applied, 'No import request received');
       assert.equal(fixture.preparing.get('Fast/SKILL.md'), 'Fast-commit');
-      assert.deepEqual(fixture.applied, { route: '/imports/Fast-plan/apply', data: { revision: 'Fast-commit', name: 'fixture-import', providers: [] } });
+      assert.deepEqual(fixture.applied, { route: '/imports/Fast-plan/apply', data: { revision: 'Fast-commit', name: 'fixture-import', providers: ['codex', 'gemini'] } });
       await wait('!document.querySelector("#reader-screen").hidden');
 
       await click('[data-route="settings"]');
@@ -535,6 +547,20 @@ test('workbench at desktop and docked sizes, with keyboard, themes, Markdown and
       await wait('!document.querySelector("#settings-screen").textContent.includes("Applied a projection")');
       assert.equal(fixture.startup, true);
       assert.equal(fixture.tray, true);
+
+      // Continuous skill learning toggle and the Updates section.
+      await textButton('Appearance & Startup');
+      await wait('[...document.querySelectorAll("#settings-screen label")].some(l => l.textContent.includes("Let AI tools offer skill improvements"))');
+      await evaluate('[...document.querySelectorAll("#settings-screen label")].find(l => l.textContent.includes("Let AI tools offer skill improvements")).querySelector("input").click()');
+      await until(() => fixture.learning === false, 'Learning preference was not saved');
+      await wait('document.querySelector("#settings-screen").textContent.includes("SkillHub 1.4.1 is available")');
+      await wait('!document.querySelector("#update-button").hidden');
+      assert.equal(await evaluate('document.querySelector("#update-button .update-label").textContent'), 'Update available (v1.4.1) — Update & Restart');
+      await click('#update-button');
+      await wait('document.querySelector("dialog[open]")?.textContent.includes("Update & Restart")');
+      await evaluate('[...document.querySelectorAll("dialog[open] button")].find(b => b.textContent === "Update & Restart").click()');
+      await until(() => fixture.updateApplied, 'Update was not applied');
+      await wait('!document.querySelector("dialog[open]")');
 
       // Welcome guide: three steps, opened from Settings, marks onboarding done when closed.
       fixture.onboarded = false;

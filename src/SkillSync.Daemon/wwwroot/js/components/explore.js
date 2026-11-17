@@ -12,6 +12,11 @@ const KIND_LABELS = { skill: 'Skill', command: 'Command', prompt: 'Prompt', rule
   'project-rules': 'Project rules', agent: 'Agent', chatmode: 'Chat mode', doc: 'Doc' };
 
 const compactNumber = value => new Intl.NumberFormat(undefined, { notation: 'compact', maximumFractionDigits: 1 }).format(value);
+// Trust context for the user and the AI: "★ 18.4k stars · 420k installs".
+const trustLine = (stars, installs) => [stars != null && '★ ' + compactNumber(stars) + (stars === 1 ? ' star' : ' stars'),
+  installs > 0 && compactNumber(installs) + ' installs'].filter(Boolean).join(' · ');
+// Imports sync to these detected AI tools unless the user unticks them (Tier 1, live-verified).
+const DEFAULT_SYNC = new Set(['claude', 'gemini', 'codex']);
 
 /** Markdown files render with their YAML frontmatter folded into a small block; other files show as code. */
 function renderFile(path, text, openFile) {
@@ -89,8 +94,8 @@ export function createExplore(root, app) {
 
   function deployChips(onchange) {
     const targets = installedTargets().map(id => ({ id, label: PROVIDER_NAMES[id],
-      control: h('input', { type: 'checkbox', class: 'deploy-chip-input', onchange }) }));
-    const node = h('fieldset', { class: 'deploy-targets' }, h('legend', {}, 'Also deploy to'),
+      control: h('input', { type: 'checkbox', class: 'deploy-chip-input', checked: DEFAULT_SYNC.has(id), onchange }) }));
+    const node = h('fieldset', { class: 'deploy-targets' }, h('legend', {}, 'Sync to'),
       targets.length > 0
         ? h('div', { class: 'deploy-chips' }, targets.map(target => h('label', { class: 'deploy-chip', 'data-provider': target.id },
           target.control, icon(target.id), h('span', {}, target.label))))
@@ -298,6 +303,7 @@ export function createExplore(root, app) {
           h('span', { class: 'result-meta' },
             skill.kind && skill.kind !== 'skill' && h('span', { class: 'kind-badge', 'data-kind': skill.kind }, KIND_LABELS[skill.kind] ?? skill.kind),
             rowBadge(skill),
+            skill.stars != null && h('span', { class: 'stars-badge', title: skill.stars.toLocaleString() + ' GitHub stars on ' + skill.repo }, '★ ' + compactNumber(skill.stars)),
             skill.installs > 0 && h('span', { class: 'installs-badge', title: skill.installs.toLocaleString() + ' installs on skills.sh' },
               icon('download'), compactNumber(skill.installs)),
             skill.is_installed && h('span', { class: 'installed-badge' }, icon('check'), 'In library'),
@@ -504,10 +510,14 @@ export function createExplore(root, app) {
             return;
           }
           const planScripts = importPlan.scripts ?? scripts;
+          const targets = deploy.selected();
           if (planScripts.length && !await confirmAction('Import a skill that contains scripts?',
-            'Agents may run these when they use the skill: ' + planScripts.map(script => script.path +
-              (script.concerns.length ? ' (' + script.concerns.join(', ') + ')' : '')).join(' · ') + '. Import only if you trust ' +
-              (review.repo ?? 'this source') + '.', 'I reviewed them, import', planScripts.some(script => script.concerns.length))) {
+            (review.repo ?? 'This source') + (trust ? ' (' + trust + ')' : '') + ' ships ' + planScripts.length +
+              (planScripts.length === 1 ? ' item' : ' items') + ' an agent may run: ' + planScripts.map(script => script.path +
+              (script.concerns.length ? ' (' + script.concerns.join(', ') + ')' : '')).join(' · ') + '. ' +
+              (targets.length ? 'SkillHub imports it and syncs it to ' + targets.map(id => PROVIDER_NAMES[id] ?? id).join(', ') + ' right away.'
+                : 'SkillHub imports it into your library only.'),
+            targets.length ? 'Confirm, Import & Sync Now' : 'Confirm & Import', planScripts.some(script => script.concerns.length))) {
             feedback.textContent = '';
             return;
           }
@@ -535,11 +545,15 @@ export function createExplore(root, app) {
     }, 'primary small');
 
     const existing = review.existing_name ?? (review.name_exists ? review.slug ?? review.name : null);
+    const row = selected && selected.repo === review.repo ? selected : null;
+    const installs = row?.installs ?? null;
+    const trust = trustLine(review.stars ?? row?.stars ?? null, installs);
     const metadata = h('div', { class: 'preview-metadata' },
       h('h2', { tabindex: '-1', title: review.title }, review.title),
       h('p', { class: 'muted', title: [review.source, review.license].filter(Boolean).join(' · ') },
         review.kind && review.kind !== 'skill' ? (KIND_LABELS[review.kind] ?? review.kind) + ' · ' : '',
         review.source, review.license && ' · ' + review.license),
+      trust && h('p', { class: 'preview-trust', title: 'GitHub stars of ' + (review.repo ?? 'the repository') + (installs > 0 ? ' and installs on skills.sh' : '') }, trust),
       h('p', { class: 'preview-files' }, bundleBadge(files.length, { paths: files, verbose: true, main: mainFile(review.path) }),
         excluded.length > 0 && h('span', { class: 'muted' }, ' · ' + excluded.length + ' not importable (binary or too large)'),
         review.name_exists && h('span', { class: 'muted' }, ' · Name in use')));
@@ -551,6 +565,7 @@ export function createExplore(root, app) {
       h('div', {}, h('strong', {}, risky.length ? 'Review scripts before importing' : 'Contains executable content'),
         h('p', {}, scripts.length + (scripts.length === 1 ? ' item' : ' items') + ' an agent may run' +
           (risky.length ? ' · ' + risky.length + ' with risky patterns' : '') + '. Open each one below.'),
+        h('p', { class: 'script-trust' }, 'Source: ' + (review.repo ?? review.source ?? 'unknown') + ' · ' + (trust || 'no GitHub stars data')),
         h('ul', {}, scripts.map(script => h('li', {},
           button(script.path, () => script.path === 'SKILL.md' ? selectTab('') : openFile(script.path), 'quiet small script-link'),
           h('span', { class: 'muted' }, ' ' + script.language),

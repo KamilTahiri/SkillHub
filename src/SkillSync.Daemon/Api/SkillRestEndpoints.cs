@@ -5,6 +5,7 @@ using System.Threading.Channels;
 using SkillSync.Daemon.Core.Engine;
 using SkillSync.Daemon.Core.Models;
 using SkillSync.Daemon.Desktop;
+using SkillSync.Daemon.Mcp;
 using SkillSync.Daemon.Watchers;
 
 namespace SkillSync.Daemon.Api;
@@ -54,7 +55,33 @@ public static class SkillRestEndpoints
         {
             var settings = preferences.Read();
             return Results.Ok(new { theme = settings.Theme, close_to_tray = settings.CloseToTray, auto_start = startup.IsRegistered,
-                onboarding_completed = settings.OnboardingCompleted });
+                onboarding_completed = settings.OnboardingCompleted, continuous_learning = settings.ContinuousLearning });
+        });
+        // Self-update: check GitHub (or origin/main on a source checkout), then install and restart.
+        api.MapGet("/updates/skillhub", async (bool? refresh, UpdateService updates, CancellationToken ct) =>
+            Results.Json(refresh == true || updates.LastStatus is null ? await updates.CheckAsync(ct).ConfigureAwait(false) : updates.LastStatus, WebJsonOptions));
+        api.MapPost("/updates/skillhub/apply", async (McpJsonRpcHandler rpc, UpdateService updates, CancellationToken ct) =>
+        {
+            var result = await updates.PrepareAsync(ct).ConfigureAwait(false);
+            if (result.Started) rpc.Desktop?.ExitForUpdate?.Invoke();
+            return Results.Json(result, WebJsonOptions);
+        });
+        api.MapPatch("/preferences/learning", async (BooleanPreferenceRequest request, [FromServices] DesktopPreferencesStore preferences,
+            SyncEngine engine, CancellationToken ct) =>
+        {
+            var enabled = RequireEnabled(request);
+            preferences.SetContinuousLearning(enabled);
+            await BootstrapManager.ApplyContinuousLearningAsync(engine, enabled, ct).ConfigureAwait(false);
+            return Results.Ok(new { enabled });
+        });
+        // Saved skill improvements (continuous learning).
+        api.MapGet("/proposals", (string? skill, SkillProposalService proposals) => Results.Json(new { proposals = proposals.List(skill) }, WebJsonOptions));
+        api.MapPost("/proposals/{id}/apply", async (string id, SkillProposalService proposals, SyncEngine engine, CancellationToken ct) =>
+            SkillResult(engine, await proposals.ApplyAsync(id, ct).ConfigureAwait(false)));
+        api.MapDelete("/proposals/{id}", (string id, SkillProposalService proposals) =>
+        {
+            proposals.Dismiss(id);
+            return Results.Ok(new { dismissed = id });
         });
         api.MapPatch("/preferences/onboarding", (BooleanPreferenceRequest request, [FromServices] DesktopPreferencesStore preferences) =>
             Results.Ok(new { enabled = preferences.SetOnboardingCompleted(RequireEnabled(request)).OnboardingCompleted }));

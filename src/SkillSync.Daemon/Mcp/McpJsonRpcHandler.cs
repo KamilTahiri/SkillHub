@@ -32,7 +32,13 @@ public sealed partial class McpJsonRpcHandler
         _syncEngine = syncEngine;
         _importer = importer ?? new SkillImporterService(syncEngine);
         _discovery = discovery ?? syncEngine.Discovery;
+        _proposals = new SkillProposalService(syncEngine);
     }
+
+    private readonly SkillProposalService _proposals;
+
+    /// <summary>Self-update and saved preferences, provided by the desktop host.</summary>
+    public McpDesktopFeatures? Desktop { get; set; }
 
     /// <summary>
     /// Processes a single JSON-RPC 2.0 request or notification line.
@@ -233,6 +239,12 @@ public sealed partial class McpJsonRpcHandler
                 "clone_catalog_skill" => await ExecuteCatalogCommandAsync(arguments, false, ct).ConfigureAwait(false),
                 "restore_skill" => await ExecuteRestoreAsync(arguments, ct).ConfigureAwait(false),
                 "get_sync_status" => ExecuteGetSyncStatus(),
+                "check_skillhub_update" => await ExecuteCheckUpdateAsync(ct).ConfigureAwait(false),
+                "apply_skillhub_update" => await ExecuteApplyUpdateAsync(arguments, ct).ConfigureAwait(false),
+                "set_skillhub_preferences" => await ExecuteSetPreferencesAsync(arguments, ct).ConfigureAwait(false),
+                "propose_skill_improvement" => await ExecuteProposeAsync(arguments, ct).ConfigureAwait(false),
+                "list_skill_proposals" => JsonSerializer.Serialize(new { proposals = _proposals.List(arguments["skill"]?.GetValue<string>()) }, IndentedJson),
+                "apply_skill_proposal" => await ExecuteApplyProposalAsync(arguments, ct).ConfigureAwait(false),
                 "lint_skill" => ExecuteLintSkill(arguments),
                 _ => throw new ArgumentException($"Unknown tool '{toolName}'.")
             };

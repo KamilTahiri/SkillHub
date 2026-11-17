@@ -19,6 +19,7 @@ const status = document.getElementById('connection-status');
 const providerNames = { ...PROVIDERS, codex: 'ChatGPT / Codex', gemini: 'Gemini & Antigravity' };
 const providerButton = document.getElementById('provider-overview');
 const themeButton = document.getElementById('quick-theme');
+const updateButton = document.getElementById('update-button');
 let online = false;
 for (const tab of nav.querySelectorAll('button')) { tab.prepend(icon(tab.dataset.route)); tab.title = tab.textContent.trim(); }
 const snapshotJob = new Latest();
@@ -54,8 +55,37 @@ const app = {
   refreshDiagnostics: () => { if (route === 'settings') settings.refreshDiagnostics(); },
   exploreCatalog: () => navigate('explore', { catalog: true }),
   showOnboarding: () => showOnboarding(app),
-  directImport: () => explore.directImport()
+  directImport: () => explore.directImport(),
+  applyUpdate
 };
+
+// Self-update: checked a few seconds after start and every six hours; the button appears only when there is something newer.
+let updateInfo;
+function showUpdate(info) {
+  updateInfo = info;
+  updateButton.hidden = !info?.update_available;
+  if (!info?.update_available) return;
+  const version = info.latest_version ? 'v' + info.latest_version : (info.latest_commit ?? '').slice(0, 7);
+  updateButton.querySelector('.update-label').textContent = 'Update available (' + version + ') — Update & Restart';
+  updateButton.title = info.summary;
+  updateButton.setAttribute('aria-label', 'Update available (' + version + '). Update and restart SkillHub');
+}
+async function checkSkillHubUpdate(refresh) {
+  try { showUpdate(await api.updateStatus(refresh)); } catch { /* Offline: try again later. */ }
+}
+async function applyUpdate(info = updateInfo) {
+  if (!await confirmAction('Update SkillHub', (info?.summary ?? 'A newer SkillHub is available.') + ' SkillHub closes, installs the update and opens again.', 'Update & Restart', false)) return;
+  updateButton.disabled = true;
+  try {
+    const result = await api.applyUpdate();
+    notify(result.message, { tone: result.started ? 'success' : 'warning', duration: 12000 });
+  } catch (error) {
+    notify(error.message, { tone: 'error' });
+  } finally { updateButton.disabled = false; }
+}
+updateButton.addEventListener('click', () => applyUpdate());
+setTimeout(() => checkSkillHubUpdate(true), 5000);
+setInterval(() => checkSkillHubUpdate(true), 6 * 60 * 60_000);
 const library = createLibrary(views.library, app);
 const reader = createReader(views.reader, app);
 const editor = createEditor(views.editor, app);

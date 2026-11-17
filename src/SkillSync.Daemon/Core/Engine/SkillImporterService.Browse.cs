@@ -32,7 +32,7 @@ public sealed partial class SkillImporterService
             var entries = string.IsNullOrWhiteSpace(filterQuery) || filterQuery.Trim().Length < 2
                 ? await _skillsSh.PopularAsync(ct).ConfigureAwait(false)
                 : await _skillsSh.SearchAsync(filterQuery, 60, ct).ConfigureAwait(false);
-            return new(entries.Select(FromSkillsSh).ToList(), null);
+            return new(await WithStarsAsync(entries.Select(FromSkillsSh).ToList(), ct: ct).ConfigureAwait(false), null);
         }
 
         if (string.Equals(repoInput, "featured/all", StringComparison.OrdinalIgnoreCase) ||
@@ -80,9 +80,10 @@ public sealed partial class SkillImporterService
         var pinned = ReadPinnedSources().Contains(fullRepo, StringComparer.OrdinalIgnoreCase) ||
             GetCuratedRepositories().Any(item => item.Repo.Equals(fullRepo, StringComparison.OrdinalIgnoreCase));
         var counts = rows.GroupBy(row => row.Group).ToDictionary(group => group.Key, group => group.Count());
+        var stars = await GetStarsAsync(fullRepo, ct).ConfigureAwait(false);
         var info = new CommunityRepositoryInfo(fullRepo, sha, index.Mode, index.ReadmePath, index.ReadmeExcerpt, index.LicensePath,
-            counts, index.Truncated, pinned, $"https://github.com/{fullRepo}");
-        return new(visible.ToList(), info);
+            counts, index.Truncated, pinned, $"https://github.com/{fullRepo}", stars);
+        return new(visible.Select(row => row with { Stars = stars }).ToList(), info);
     }
 
     /// <summary>
@@ -231,7 +232,7 @@ public sealed partial class SkillImporterService
             .DistinctBy(skill => (skill.Repo.ToLowerInvariant(), skill.Path)).ToArray();
         if (combined.Length == 0 && pending.IsEmpty && results.FirstOrDefault(result => result.Error is not null).Error is { } failure)
             throw failure;
-        return new(combined, null, pending.Order(StringComparer.OrdinalIgnoreCase).ToArray());
+        return new(await WithStarsAsync(combined, ct: ct).ConfigureAwait(false), null, pending.Order(StringComparer.OrdinalIgnoreCase).ToArray());
     }
 
     public async Task<CommunitySkillPreview> PreviewCommunitySkillAsync(string repoInput, string path, string gitRef = "HEAD",
@@ -267,7 +268,8 @@ public sealed partial class SkillImporterService
             document.Kind, document.ExcludedFiles, document.HasFrontmatter,
             // Script review: content is checked when the file is already cached locally (tarball mode), otherwise by name.
             SkillDoctor.InspectScripts(document.Files.ToDictionary(file => file,
-                file => _indexer.TryReadCachedText(index, RepositoryIndexer.SkillDirectoryPrefix(document.Path) + file)), model.InstructionsMarkdown));
+                file => _indexer.TryReadCachedText(index, RepositoryIndexer.SkillDirectoryPrefix(document.Path) + file)), model.InstructionsMarkdown),
+            await GetStarsAsync(fullRepo, ct).ConfigureAwait(false));
     }
 
     private static string License(RepositoryIndex index, IndexedDocument document, string raw)

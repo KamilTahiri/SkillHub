@@ -27,7 +27,7 @@ public sealed partial class SyncEngine
             target.Path, target.State, target.Error);
 
     private SkillDiskSnapshot IntendedProjection(CanonicalSkillModel model, Destination destination) =>
-        new(_transpilers[destination.Provider].TranspileOutbound(model, Path.GetDirectoryName(_storage.CanonicalPath(model.Name))),
+        new(Outbound(destination.Provider, model, Path.GetDirectoryName(_storage.CanonicalPath(model.Name))),
             destination.HasBundle ? model.SupportingFiles : new Dictionary<string, string>(SkillPaths.Comparer));
 
     private static string HashBytes(string text) =>
@@ -203,7 +203,7 @@ public sealed partial class SyncEngine
                 throw new SkillConflictException("Provider files changed. Open a fresh review.");
             if (action == "copy")
             {
-                var copy = _transpilers[destination.Provider].MergeInbound(model.Name, observed.Markdown!, null);
+                var copy = _transpilers[destination.Provider].MergeInbound(model.Name, LearningFooter.Strip(observed.Markdown!), null);
                 copy.Name = model.Name[..Math.Min(model.Name.Length, 42)] + "-provider-" + Guid.NewGuid().ToString("N")[..8];
                 copy.Title = model.GetEffectiveTitle() + " (Provider copy)";
                 copy.SourceCategory = "user";

@@ -48,6 +48,8 @@ public sealed class LocalContractTests : IAsyncLifetime
         builder.Services.AddSingleton<MultiRootFileWatcher>();
         builder.Services.AddSingleton<WorkspaceService>();
         builder.Services.AddSingleton<SkillPackService>();
+        builder.Services.AddSingleton<SkillProposalService>();
+        builder.Services.AddSingleton(new UpdateService(new HttpClient(), new ProcessCommandRunner(), _home, Path.Combine(_home, "update-cache")));
         _app = builder.Build();
         _app.Use(_access.InvokeAsync);
         _app.MapSkillRestApi();

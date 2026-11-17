@@ -46,6 +46,7 @@ public sealed record CommunitySkillSummary(
     [property: JsonPropertyName("installs")] long? Installs = null,
     // False when the listing does not know the skill's folder yet (skills.sh, featured picks); the preview lists its files.
     [property: JsonPropertyName("files_known")] bool FilesKnown = true,
+    [property: JsonPropertyName("stars")] int? Stars = null,
     [property: JsonIgnore] int SearchScore = 0
 );
 
@@ -60,7 +61,8 @@ public sealed record CommunityRepositoryInfo(
     [property: JsonPropertyName("counts")] IReadOnlyDictionary<string, int> Counts,
     [property: JsonPropertyName("truncated")] bool Truncated,
     [property: JsonPropertyName("pinned")] bool Pinned,
-    [property: JsonPropertyName("url")] string Url);
+    [property: JsonPropertyName("url")] string Url,
+    [property: JsonPropertyName("stars")] int? Stars = null);
 
 public sealed record CommunityBrowseResult(
     IReadOnlyList<CommunitySkillSummary> Skills,
@@ -85,7 +87,8 @@ public sealed record CommunitySkillPreview(
     [property: JsonPropertyName("kind")] string Kind = "skill",
     [property: JsonPropertyName("excluded_paths")] IReadOnlyList<string>? ExcludedPaths = null,
     [property: JsonPropertyName("has_frontmatter")] bool HasFrontmatter = true,
-    [property: JsonPropertyName("scripts")] IReadOnlyList<ScriptFinding>? Scripts = null
+    [property: JsonPropertyName("scripts")] IReadOnlyList<ScriptFinding>? Scripts = null,
+    [property: JsonPropertyName("stars")] int? Stars = null
 );
 
 public sealed partial class SkillImporterService

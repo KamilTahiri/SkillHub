@@ -586,19 +586,141 @@ public sealed partial class McpJsonRpcHandler
         return JsonSerializer.Serialize(new { model.Name, model.Revision, model.Destinations }, StructuredJson);
     }
 
+    /// <summary>Tier-1 AI tools found on this PC: what an import syncs to unless the caller says otherwise.</summary>
+    private IReadOnlyList<string> DetectedDefaultProviders() =>
+        _discovery.DiscoverProviders().Where(info => info.IsInstalled && info.Provider is ProviderType.Claude or ProviderType.Gemini or ProviderType.Codex)
+            .Select(info => info.Provider.ToString().ToLowerInvariant()).ToArray();
+
     private async Task<string> ExecuteImportCommunitySkillAsync(JsonObject args, CancellationToken ct)
     {
         var source = args["source"]?.GetValue<string>()
             ?? throw new ArgumentException("Parameter 'source' is required.");
+        var autoSync = args["auto_sync"]?.GetValue<bool>() ?? true;
+        var confirmScripts = args["confirm_scripts"]?.GetValue<bool>() ?? false;
+        var requested = ReadStringList(args["providers"]);
+        IReadOnlyList<string> providers = !autoSync ? [] : requested.Count > 0 ? requested : DetectedDefaultProviders();
 
-        var res = await _importer.ImportAsync(new SkillImportRequest(Source: source, RawMarkdown: null, FileName: null), ct).ConfigureAwait(false);
+        if (source.Trim().StartsWith("local/", StringComparison.OrdinalIgnoreCase))
+        {
+            var local = await _importer.ImportAsync(new SkillImportRequest(Source: source, RawMarkdown: null, FileName: null), ct).ConfigureAwait(false);
+            return JsonSerializer.Serialize(new
+            {
+                status = "imported", imported_count = local.ImportedCount,
+                skills = local.Skills.Select(s => new { name = s.Name, title = s.GetEffectiveTitle() }), message = local.Message
+            }, IndentedJson);
+        }
+
+        var plan = await _importer.PrepareImportAsync(new SkillImportSelection(Source: source), ct).ConfigureAwait(false);
+        var stars = plan.Repository is { } repository ? await _importer.GetStarsAsync(repository, ct).ConfigureAwait(false) : null;
+        var scripts = plan.Scripts ?? [];
+        if (scripts.Count > 0 && !confirmScripts)
+        {
+            // Hands-free confirmation: the assistant asks in chat, then calls again with confirm_scripts: true.
+            var starsText = stars is { } count ? " (★ " + count.ToString("N0", System.Globalization.CultureInfo.InvariantCulture) + " stars)" : string.Empty;
+            var risky = scripts.SelectMany(script => script.Concerns).Distinct().Take(5).ToArray();
+            var question = "This skill from " + (plan.Repository ?? source) + starsText + " contains " + scripts.Count +
+                " item(s) an agent may run: " + string.Join(", ", scripts.Take(8).Select(script => script.Path)) +
+                (risky.Length > 0 ? " (risky patterns: " + string.Join("; ", risky) + ")" : string.Empty) +
+                ". Do you want me to import it" + (providers.Count > 0 ? " and sync it to " + string.Join(", ", providers) : string.Empty) + " anyway?";
+            return JsonSerializer.Serialize(new
+            {
+                status = "needs_confirmation",
+                skill = plan.Name,
+                title = plan.Title,
+                repository = plan.Repository,
+                stars,
+                license = plan.License,
+                revision = plan.Revision,
+                scripts = scripts.Select(script => new { path = script.Path, language = script.Language, risk_flags = script.Concerns }),
+                would_sync_to = providers,
+                ask_user = question,
+                next_step = "If the user agrees, call import_community_skill again with the same source and confirm_scripts: true."
+            }, StructuredJson);
+        }
+        var saved = await _importer.ApplyImportAsync(plan.PlanId,
+            new SkillImportApplyRequest(plan.Revision, args["name"]?.GetValue<string>(), providers), ct).ConfigureAwait(false);
         return JsonSerializer.Serialize(new
         {
             status = "imported",
-            imported_count = res.ImportedCount,
-            skills = res.Skills.Select(s => new { name = s.Name, title = s.GetEffectiveTitle(), origin = s.OriginProvider }),
-            message = res.Message
+            imported_count = 1,
+            skills = new[] { new { name = saved.Name, title = saved.GetEffectiveTitle(), origin = saved.OriginProvider } },
+            synced_to = providers,
+            repository = plan.Repository,
+            stars,
+            revision = plan.Revision,
+            message = providers.Count > 0
+                ? "Imported '" + saved.GetEffectiveTitle() + "' and synced it to " + string.Join(", ", providers) + "."
+                : "Imported '" + saved.GetEffectiveTitle() + "' into SkillHub without syncing it to any AI tool."
         }, IndentedJson);
+    }
+
+    private async Task<string> ExecuteCheckUpdateAsync(CancellationToken ct)
+    {
+        var updates = Desktop?.Updates ?? throw new InvalidOperationException("Update checks are available in the SkillHub desktop app.");
+        var status = await updates.CheckAsync(ct).ConfigureAwait(false);
+        return JsonSerializer.Serialize(new
+        {
+            current_version = status.CurrentVersion, current_commit = status.CurrentCommit, latest_version = status.LatestVersion,
+            latest_commit = status.LatestCommit, update_available = status.UpdateAvailable, method = status.Method, source = status.Source,
+            release_url = status.ReleaseUrl, summary = status.Summary, error = status.Error,
+            next_step = status.UpdateAvailable ? "Ask the user whether to install it now; if yes call apply_skillhub_update with confirm: true." : null
+        }, StructuredJson);
+    }
+
+    private async Task<string> ExecuteApplyUpdateAsync(JsonObject args, CancellationToken ct)
+    {
+        if (args["confirm"]?.GetValue<bool>() != true) throw new ArgumentException("Set confirm: true after the user agreed to install the update.");
+        var updates = Desktop?.Updates ?? throw new InvalidOperationException("Updates can be installed from the SkillHub desktop app.");
+        var result = await updates.PrepareAsync(ct).ConfigureAwait(false);
+        if (result.Started) Desktop.ExitForUpdate?.Invoke();
+        return JsonSerializer.Serialize(result, StructuredJson);
+    }
+
+    private async Task<string> ExecuteSetPreferencesAsync(JsonObject args, CancellationToken ct)
+    {
+        if (args["continuous_learning"]?.GetValue<bool>() is { } learning)
+        {
+            Desktop?.Preferences?.SetContinuousLearning(learning);
+            await BootstrapManager.ApplyContinuousLearningAsync(_syncEngine, learning, ct).ConfigureAwait(false);
+        }
+        return JsonSerializer.Serialize(new
+        {
+            continuous_learning = _syncEngine.ContinuousLearning,
+            message = _syncEngine.ContinuousLearning
+                ? "Continuous skill learning is on. AI tools will offer a skill improvement only after solving something non-trivial."
+                : "Continuous skill learning is off. The learning notes were removed from your synced skills."
+        }, StructuredJson);
+    }
+
+    private async Task<string> ExecuteProposeAsync(JsonObject args, CancellationToken ct)
+    {
+        var files = args["files"] is JsonObject map
+            ? map.ToDictionary(pair => pair.Key, pair => pair.Value?.GetValue<string>() ?? string.Empty)
+            : null;
+        var proposal = await _proposals.ProposeAsync(args["skill"]?.GetValue<string>() ?? throw new ArgumentException("skill is required."),
+            args["summary"]?.GetValue<string>() ?? string.Empty, args["instructions_markdown"]?.GetValue<string>(),
+            args["description"]?.GetValue<string>(), args["when_to_use"]?.GetValue<string>(), files, "mcp", ct).ConfigureAwait(false);
+        return JsonSerializer.Serialize(new
+        {
+            status = "saved", id = proposal.Id, skill = proposal.Skill, summary = proposal.Summary,
+            message = "Saved. Review it later with list_skill_proposals or in SkillHub, and apply it with apply_skill_proposal."
+        }, StructuredJson);
+    }
+
+    private async Task<string> ExecuteApplyProposalAsync(JsonObject args, CancellationToken ct)
+    {
+        var id = args["id"]?.GetValue<string>() ?? throw new ArgumentException("id is required.");
+        if (args["dismiss"]?.GetValue<bool>() == true)
+        {
+            _proposals.Dismiss(id);
+            return JsonSerializer.Serialize(new { status = "dismissed", id }, StructuredJson);
+        }
+        var saved = await _proposals.ApplyAsync(id, ct).ConfigureAwait(false);
+        return JsonSerializer.Serialize(new
+        {
+            status = "applied", id, skill = saved.Name, revision = saved.Revision,
+            message = "Updated '" + saved.GetEffectiveTitle() + "'. The previous version is in its History."
+        }, StructuredJson);
     }
 
     private string ExecuteGetSyncStatus()

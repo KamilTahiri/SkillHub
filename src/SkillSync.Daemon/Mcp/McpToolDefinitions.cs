@@ -459,14 +459,18 @@ public static class McpToolDefinitions
               },
               {
                 "name": "import_community_skill",
-                "description": "Imports an open-source skill from GitHub or skills.sh (e.g., 'vercel-labs/agent-skills/skills/react-best-practices' or 'anthropics/skills/skills/frontend-design') into SkillHub and syncs it across all enabled AI providers.",
+                "description": "Imports an open-source skill from GitHub or skills.sh (e.g., 'vercel-labs/agent-skills/skills/react-best-practices') into SkillHub and, by default, syncs it to every detected AI tool (Codex, Gemini/Antigravity, Claude) so it works immediately. If the skill ships executable scripts, nothing is imported until confirmed: the response has status 'needs_confirmation' with the script list, risk flags, GitHub stars and installs. Show these to the user, and only after they agree call again with confirm_scripts: true.",
                 "inputSchema": {
                   "type": "object",
                   "properties": {
                     "source": {
                       "type": "string",
                       "description": "GitHub URL, owner/repo/path shorthand, or skills.sh command."
-                    }
+                    },
+                    "auto_sync": { "type": "boolean", "description": "Sync to the detected AI tools right away (default true). False keeps it in SkillHub only." },
+                    "providers": { "type": "array", "items": { "type": "string", "enum": ["claude", "gemini", "codex", "cursor", "copilot", "windsurf"] }, "description": "Exact AI tools to sync to instead of the detected defaults." },
+                    "confirm_scripts": { "type": "boolean", "description": "Set to true only after the user agreed to import a skill that contains scripts." },
+                    "name": { "type": "string", "description": "Optional name to save it as." }
                   },
                   "required": ["source"],
                   "additionalProperties": false
@@ -513,6 +517,48 @@ public static class McpToolDefinitions
                   "required": ["name"],
                   "additionalProperties": false
                 }
+              },
+              {
+                "name": "check_skillhub_update",
+                "description": "Checks whether a newer SkillHub is available (GitHub Release, or origin/main on a developer checkout). Returns the current and latest version and commit and whether an update is available.",
+                "inputSchema": { "type": "object", "properties": {}, "additionalProperties": false }
+              },
+              {
+                "name": "apply_skillhub_update",
+                "description": "Downloads, verifies and installs the newer SkillHub found by check_skillhub_update, then restarts SkillHub. SkillHub's MCP server disconnects while it restarts. Only call after the user agreed.",
+                "inputSchema": { "type": "object", "properties": { "confirm": { "type": "boolean", "description": "Must be true: the user agreed to install the update now." } }, "required": ["confirm"], "additionalProperties": false }
+              },
+              {
+                "name": "set_skillhub_preferences",
+                "description": "Changes SkillHub settings from chat. continuous_learning: when on, AI tools are told (in the bootstrap skill and a short note in synced personal skills) to offer a skill improvement only after solving something non-trivial. Omit a field to leave it unchanged; the current values are returned.",
+                "inputSchema": { "type": "object", "properties": { "continuous_learning": { "type": "boolean" } }, "additionalProperties": false }
+              },
+              {
+                "name": "propose_skill_improvement",
+                "description": "Saves a suggested improvement to a skill for later review (when the user says 'save that for later'). Provide a one-line summary and the changed fields. Apply later with apply_skill_proposal.",
+                "inputSchema": {
+                  "type": "object",
+                  "properties": {
+                    "skill": { "type": "string" },
+                    "summary": { "type": "string", "description": "One line: what the improvement is and why." },
+                    "instructions_markdown": { "type": "string", "description": "The full new instructions (replaces the current body)." },
+                    "description": { "type": "string" },
+                    "when_to_use": { "type": "string" },
+                    "files": { "type": "object", "additionalProperties": { "type": "string" }, "description": "Companion files to add or replace, keyed by relative path." }
+                  },
+                  "required": ["skill", "summary"],
+                  "additionalProperties": false
+                }
+              },
+              {
+                "name": "list_skill_proposals",
+                "description": "Lists saved skill improvement proposals, optionally for one skill.",
+                "inputSchema": { "type": "object", "properties": { "skill": { "type": "string" } }, "additionalProperties": false }
+              },
+              {
+                "name": "apply_skill_proposal",
+                "description": "Applies a saved proposal to its skill (the previous version stays in History) and syncs it, or dismisses it with dismiss: true.",
+                "inputSchema": { "type": "object", "properties": { "id": { "type": "string" }, "dismiss": { "type": "boolean" } }, "required": ["id"], "additionalProperties": false }
               },
               {
                 "name": "get_sync_status",

@@ -137,3 +137,33 @@ export async function reviewUpdate(app, skill) {
     body.replaceChildren(errorText(error.message));
   }
 }
+
+/** Saved improvement proposals (continuous learning) for a skill: compare, apply (kept in History) or dismiss. */
+export function proposalsBanner(app, skill) {
+  if (skill.is_catalog_only) return null;
+  const host = h('div', { class: 'proposals-host' });
+  api.proposals(skill.name).then(({ proposals }) => {
+    if (!proposals.length) return;
+    fill(host, h('div', { class: 'proposal-banner' }, icon('edit'),
+      h('div', { class: 'stack' },
+        h('strong', {}, proposals.length === 1 ? 'A suggested improvement is waiting' : proposals.length + ' suggested improvements are waiting'),
+        h('ul', {}, proposals.map(proposal => h('li', { class: 'proposal-row' },
+          h('div', {}, h('p', {}, proposal.summary),
+            h('small', { class: 'muted' }, 'Suggested ' + new Date(proposal.created_at).toLocaleString() + ' via ' + proposal.source)),
+          h('div', { class: 'actions wrap' },
+            proposal.instructions_markdown != null && button('Compare', () => modal('Suggested change · ' + (skill.title || skill.name),
+              renderDiff(skill.instructions_markdown ?? '', proposal.instructions_markdown, { labels: ['Current', 'Suggested'] })), 'quiet small'),
+            button('Apply', event => busy(event.currentTarget, async () => {
+              await api.applyProposal(proposal.id);
+              notify('Applied. The previous version is in History.', { tone: 'success' });
+              await app.refresh();
+              app.read(skill.name);
+            }), 'primary small'),
+            button('Dismiss', event => busy(event.currentTarget, async () => {
+              await api.dismissProposal(proposal.id);
+              event.target.closest('li')?.remove();
+              if (!host.querySelector('li')) host.replaceChildren();
+            }), 'quiet small'))))))));
+  }).catch(() => {});
+  return host;
+}
