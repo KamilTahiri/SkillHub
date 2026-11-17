@@ -283,6 +283,19 @@ public sealed partial class SyncEngine
             throw new SkillConflictException($"A pending write for '{slug}' conflicts with newer files. The pending model and disk files have been preserved.");
         }
 
+        // Pre-update snapshot: the version being replaced is kept in History first, so a skill that predates History (or was
+        // edited outside SkillHub) never loses its baseline on its first edit.
+        if (observed.Markdown is not null && observed.Hash == pending.PreviousHash)
+        {
+            try
+            {
+                _history.RecordBaseline(slug, entry.Revision, observed.Markdown, observed.Files);
+            }
+            catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+            {
+                PublishActivity(slug, "history", "error", $"Could not save the previous version to history: {exception.Message}");
+            }
+        }
         await SkillStorage.ApplyFilesAsync(directory, model.SupportingFiles, pending.PreviousFiles).ConfigureAwait(false);
         await SkillStorage.WriteIfUnchangedAsync(path, markdown, observed.Hash).ConfigureAwait(false);
         entry.PendingCanonical = null;

@@ -64,6 +64,35 @@ public sealed class SkillHistory(string root)
         }
     }
 
+    /// <summary>
+    /// Saves the version that is about to be replaced when history does not have it yet (for example a skill written before
+    /// history existed, or edited outside SkillHub). Skipped when any stored snapshot already has this revision or content.
+    /// Returns true when a baseline was written.
+    /// </summary>
+    public bool RecordBaseline(string slug, long revision, string markdown, IReadOnlyDictionary<string, string> files)
+    {
+        lock (_gate)
+        {
+            var hash = HashOf(markdown, files);
+            foreach (var item in List(slug))
+            {
+                if (item.Revision == revision && revision > 0) return false;
+                if (Get(slug, item.Id)?.Hash == hash) return false;
+            }
+            var directory = Directory(slug);
+            System.IO.Directory.CreateDirectory(directory);
+            // A millisecond earlier than "now" keeps the baseline ordered before the revision written right after it.
+            var at = DateTimeOffset.UtcNow.AddMilliseconds(-1);
+            var id = $"{at:yyyyMMddHHmmssfff}-r{revision}";
+            var snapshot = new SkillRevisionSnapshot(id, revision, at, markdown, new Dictionary<string, string>(files, StringComparer.Ordinal), hash);
+            var target = Path.Combine(directory, id + ".json");
+            var temporary = target + ".skillsync-tmp";
+            File.WriteAllText(temporary, JsonSerializer.Serialize(snapshot, Json), new UTF8Encoding(false));
+            File.Move(temporary, target, overwrite: true);
+            return true;
+        }
+    }
+
     public IReadOnlyList<SkillRevisionInfo> List(string slug)
     {
         var directory = Directory(slug);
