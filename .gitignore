@@ -31,3 +31,8 @@ dist/
 .claude/launch.json
 TestResults/
 node_modules/
+
+## Internal audits (kept locally, not published)
+AUDIT_AND_ROADMAP.md
+PROJECT_EVALUATION.md
+UI_UX_AUDIT.md
