@@ -1856,7 +1856,7 @@ dialog.wide-dialog { width: min(980px, calc(100% - 24px)); }
 .workspace-skill-text { display: grid; min-width: 0; }
 .workspace-skill-text small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .workspace-foot { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
-.workspaces-empty .ui-icon { width: 34px; height: 34px; color: var(--accent); }
+.workspaces-empty > .ui-icon { width: 34px; height: 34px; color: var(--accent); }
 @media (max-width: 760px) {
   .workspace-layout { grid-template-columns: 1fr; }
   .workspace-list { position: static; grid-auto-flow: column; overflow-x: auto; }
@@ -1990,3 +1990,6 @@ dialog.onboarding { width: min(640px, calc(100vw - 32px)); padding: 0; }
 .trigger-bar span { display: block; height: 100%; background: var(--accent); }
 .workspace-skill-flags { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin-top: 3px; }
 .redundant-badge { display: inline-flex; align-items: center; min-height: 20px; padding: 0 7px; border-radius: var(--radius-s); font-size: .74rem; font-weight: 600; color: var(--warn); background: var(--raised); }
+
+/* Projects: umbrella-folder tip under the page intro. */
+.page-heading [data-umbrella-note] { margin-top: 6px; font-size: 13px; }

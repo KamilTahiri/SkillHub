@@ -657,7 +657,8 @@ test('workbench at desktop and docked sizes, with keyboard, themes, Markdown and
       await click('[data-make-project-only="fixture"]');
       await until(() => fixture.scopeRequests.length === 2, 'Project-only switch was not sent');
       assert.deepEqual(fixture.scopeRequests[1], { scope: 'project', names: ['fixture'] });
-      assert.doesNotMatch(await evaluate('document.querySelector("#projects-screen").textContent'), /github\/instructions/);
+      assert.doesNotMatch(await evaluate('document.querySelector("main").textContent'), /github\/instructions/);
+      assert.match(await evaluate('document.querySelector("[data-umbrella-note]")?.textContent ?? ""'), /umbrella folder once/);
 
       // Skill pack import: the review lists conflicts and scripts before anything is applied.
       await click('[data-route="explore"]');
