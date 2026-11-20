@@ -10,11 +10,11 @@ public static class BootstrapManager
         {
             Name = SyncEngine.BootstrapSkillName,
             Title = "SkillHub Bootstrap Protocol",
-            Version = "1.2.0",
+            Version = "1.3.0",
             SourceCategory = "system",
             OriginProvider = "SkillHub System",
             Description = "Mandatory protocol for creating, reading, updating, tagging, importing, or deleting AI agent skills and rules across all local AI environments (Claude, Gemini/Antigravity, OpenAI Codex, and Cursor) via the SkillHub MCP server.",
-            WhenToUse = "ALWAYS activate whenever the user asks to create a skill, update a skill, delete a skill, list skills, tag skills, search/import community skills, toggle provider sync, or modify files inside ~/.claude/skills, ~/.gemini/skills, ~/.codex/skills, ~/.agents/skills, or .cursor/rules.",
+            WhenToUse = "ALWAYS activate whenever the user asks to create, update, delete, list, tag or import skills, toggles provider sync, starts work in a Roblox, Blender or other domain-specific project, or modifies files inside ~/.claude/skills, ~/.gemini/skills, ~/.codex/skills, ~/.agents/skills, or .cursor/rules.",
             SummaryShort = "Mandatory skill management protocol: use SkillHub MCP tools (list_skills, get_skill, create_skill, update_skill, delete_skill, manage_skill_tags, prepare_skill_import, apply_skill_import) for all skill operations.",
             Tags = ["system", "skillhub", "meta-skill"],
             Targets = new SkillTargetsConfig
@@ -118,6 +118,10 @@ public static class BootstrapManager
                    - Every global skill puts its description into every chat. `get_context_budget` shows that always-loaded cost by pack. Niche packs (a game engine, a 3D tool, one client's stack) belong in **Project-only** scope: `set_skill_scope` with `scope: "project"` and `source: "<owner/repo>"` or `tag`.
                    - "Use the Roblox pack in this repo" → `set_project_skills` with the repository's absolute `path`, the `source` or `tag` (or `skills`), and `make_project_only: true`. SkillHub writes them into the project's `.claude/skills`, `.agents/skills`, `.gemini/skills` and `.cursor/rules` and, by default, keeps them out of Git via `.git/info/exclude`. `list_projects` shows what each project has.
                    - "Audit my skills" → `lint_library` (collisions, missing companion skills, over-long descriptions, budget). After changing a description, check it with `test_skill_trigger` and a realistic prompt.
+
+                8. **SUGGEST PROJECT-ONLY PROACTIVELY (one short sentence, never act without a yes):**
+                   - **After importing a domain-specific pack** (a game engine such as Roblox or Unity, a 3D tool such as Blender, game dev, one framework or client stack), or whenever `get_context_budget` reports `warning` or `over`: suggest moving the niche packs to Project-only, naming the pack and the tokens it saves, e.g. "This Roblox pack adds ~2.2k tokens to every chat. Make it Project-only so it loads only in your Roblox repos?" On a yes → `set_skill_scope` with `scope: "project"` and that `source` or `tag`. General-purpose skills (git, testing, writing, UI basics) stay global.
+                   - **When the workspace matches a Project-only pack that this project does not have yet** (e.g. `.luau`, `default.project.json` or `.rbxlx` for Roblox; `.blend` or `bpy` scripts for Blender): check `list_skills` with `scope: "project"` and `list_projects`, then offer once: "SkillHub has a Project-only Roblox pack. Attach it to this project?" On a yes → `set_project_skills` with the project's absolute `path` and the pack's `source` or `tag`. Do not ask again in the same conversation after a no.
                 """ + (continuousLearning ? ContinuousLearningSection : string.Empty)
         };
     }
@@ -126,7 +130,7 @@ public static class BootstrapManager
     public const string ContinuousLearningSection =
         """
 
-        8. **CONTINUOUS SKILL LEARNING (ON):**
+        9. **CONTINUOUS SKILL LEARNING (ON):**
            - Never judge a skill early at the start of a task, and never suggest changes on routine tasks.
            - Imported community skills (those with an `import_source`) belong to their upstream repository: do not offer to edit them; suggest a personal skill instead.
            - Only **after** you solved a non-trivial problem, hit an outdated or wrong instruction in a skill, or found a reusable project pattern or workaround that would clearly make a relevant skill better, ask **once, at the end of your reply**: "Want me to update your `<skill>` skill in SkillHub with <one-line summary>?"

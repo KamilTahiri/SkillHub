@@ -94,7 +94,7 @@ Requirements: .NET 8 SDK, Inno Setup 6.7.4 (set `SKILLHUB_ISCC` if it is not on 
 
 ```powershell
 dotnet test SkillSync.sln                 # engine, transpilers, sync safety, HTTP contracts, MCP
-node --test tests/SkillSync.Frontend/     # headless Chromium UI harness
+node --test "tests/SkillSync.Frontend/*.test.mjs"     # headless Chromium UI harness
 .\install.ps1                             # build the installer, install for this user, verify every file, launch
 ```
 

@@ -10,8 +10,8 @@ jobs:
   core:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-dotnet@v4
+      - uses: actions/checkout@v7
+      - uses: actions/setup-dotnet@v6
         with:
           dotnet-version: 8.0.x
       - run: dotnet test tests/SkillHub.Core.Tests -c Release -warnaserror
@@ -19,16 +19,16 @@ jobs:
   windows:
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-dotnet@v4
+      - uses: actions/checkout@v7
+      - uses: actions/setup-dotnet@v6
         with:
           dotnet-version: 8.0.x
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
-          node-version: 22
+          node-version: 24
       - run: dotnet build SkillSync.sln -c Release -warnaserror
       - run: dotnet test SkillSync.sln -c Release --no-build
-      - run: node --test tests/SkillSync.Frontend/
+      - run: node --test "tests/SkillSync.Frontend/*.test.mjs"
       - name: Set up the pinned installer compiler
         shell: pwsh
         run: |
@@ -45,7 +45,7 @@ jobs:
           ./build-installer.ps1
           ./build-installer.ps1 -TestPackage -OutputDirectory ./dist/setup-test
           ./tests/packaging/Smoke-Setup.ps1 -Setup ./dist/setup-test/SkillHub-Setup.exe
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: skillhub-windows-preview
           path: |

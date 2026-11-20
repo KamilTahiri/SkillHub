@@ -73,6 +73,17 @@ public sealed class LibraryScopeAndProjectsTests : IDisposable
     }
 
     [Fact]
+    public void BootstrapTellsAgentsToSuggestProjectOnlyPacks()
+    {
+        var bootstrap = BootstrapManager.CreateBootstrapSkillModel();
+        Assert.Contains("SUGGEST PROJECT-ONLY PROACTIVELY", bootstrap.InstructionsMarkdown);
+        Assert.Contains("`get_context_budget` reports `warning` or `over`", bootstrap.InstructionsMarkdown);
+        Assert.Contains("Attach it to this project?", bootstrap.InstructionsMarkdown);
+        Assert.Contains("domain-specific project", bootstrap.WhenToUse);
+        Assert.Contains("9. **CONTINUOUS SKILL LEARNING (ON):**", bootstrap.InstructionsMarkdown);
+    }
+
+    [Fact]
     public async Task ProjectOnlyScopeWithdrawsGlobalCopiesAndShrinksTheBudget()
     {
         await using var engine = new SyncEngine(new ProviderDiscoveryService(_root));
