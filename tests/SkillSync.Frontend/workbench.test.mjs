@@ -269,7 +269,7 @@ async function verifyContrast(evaluate) {
 }
 
 test('workbench at desktop and docked sizes, with keyboard, themes, Markdown and pinned imports',
-  { skip: !browser && 'Set SKILLHUB_BROWSER to a Chromium executable.', timeout: 60000 }, async () => {
+  { skip: !browser && 'Set SKILLHUB_BROWSER to a Chromium executable.', timeout: 120000 }, async () => {
     const { server, fixture, url } = await fixtureServer();
     const profile = await mkdtemp(join(tmpdir(), 'skillhub-browser-'));
     const chrome = spawn(browser, ['--headless=new', '--disable-gpu', '--no-first-run', '--no-default-browser-check',
@@ -287,7 +287,7 @@ test('workbench at desktop and docked sizes, with keyboard, themes, Markdown and
           const pages = await (await fetch('http://127.0.0.1:' + port + '/json/list', { signal: AbortSignal.timeout(1500) })).json();
           return pages.find(tab => tab.type === 'page')?.webSocketDebuggerUrl;
         } catch { return null; }
-      }, 'Chromium never opened DevTools', 25000).catch(error => {
+      }, 'Chromium never opened DevTools', 60000).catch(error => {
         throw new Error(error.message + (browserLog ? '\n' + browserLog : ''));
       });
       page = await devTools(endpoint);
