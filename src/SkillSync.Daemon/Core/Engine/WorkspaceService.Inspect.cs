@@ -162,8 +162,20 @@ public sealed partial class WorkspaceService
         return new ProjectLocation(umbrella, warnings);
     }
 
+    /// <summary>Generic containers that hold unrelated projects: never suggested as a skill umbrella.</summary>
+    private static readonly HashSet<string> GenericContainers = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "desktop", "documents", "downloads", "onedrive", "source", "repos", "repositories", "projects", "dev", "code", "src",
+        "git", "github", "gitlab", "workspace", "workspaces", "work", "sandbox", "temp", "tmp", "users", "home"
+    };
+
     private bool IsAllowedUmbrella(string folder)
     {
+        var name = Path.GetFileName(folder.TrimEnd('\\', '/'));
+        if (GenericContainers.Contains(name) || name.StartsWith("OneDrive", StringComparison.OrdinalIgnoreCase)) return false;
+        var special = new[] { Environment.SpecialFolder.Desktop, Environment.SpecialFolder.MyDocuments, Environment.SpecialFolder.UserProfile }
+            .Select(Environment.GetFolderPath).Where(path => path.Length > 0);
+        if (special.Any(path => string.Equals(Path.GetFullPath(path).TrimEnd('\\', '/'), folder.TrimEnd('\\', '/'), StringComparison.OrdinalIgnoreCase))) return false;
         try { ValidateProjectPath(folder); return true; }
         catch (Exception error) when (error is ArgumentException or IOException or UnauthorizedAccessException) { return false; }
     }

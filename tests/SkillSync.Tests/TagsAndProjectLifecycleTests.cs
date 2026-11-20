@@ -266,6 +266,18 @@ public sealed class TagsAndProjectLifecycleTests : IDisposable
     }
 
     [Fact]
+    public async Task GenericContainersAreNeverSuggestedAsUmbrellas()
+    {
+        await using var engine = await LibraryAsync();
+        var (rpc, _) = await Initialized(engine);
+        var desktop = Path.Combine(_projects, "Desktop");
+        foreach (var name in new[] { "app-one", "app-two" })
+            Directory.CreateDirectory(Path.Combine(desktop, name, ".git"));
+        var result = await Call(rpc, "inspect_project_skills", new { path = Path.Combine(desktop, "app-one") });
+        Assert.Null(result["umbrella"]);
+    }
+
+    [Fact]
     public async Task TwoProjectsInOneRepositoryKeepTheirOwnExcludeBlocks()
     {
         await using var engine = await LibraryAsync();
