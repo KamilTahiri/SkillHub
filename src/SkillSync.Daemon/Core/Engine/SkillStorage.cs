@@ -270,6 +270,30 @@ internal sealed class SkillStorage(ProviderDiscoveryService discovery)
         File.Delete(path);
     }
 
+    /// <summary>Removes a withdrawn skill folder's empty subfolders and the folder itself when nothing is left.
+    /// Folders holding any file (a user's own notes included) and reparse points are never touched.</summary>
+    public static void PruneEmptyDirectories(string directory)
+    {
+        try
+        {
+            var info = new DirectoryInfo(directory);
+            if (!info.Exists || info.Attributes.HasFlag(FileAttributes.ReparsePoint))
+            {
+                return;
+            }
+            foreach (var child in info.GetDirectories())
+            {
+                PruneEmptyDirectories(child.FullName);
+            }
+            if (!info.EnumerateFileSystemInfos().Any())
+            {
+                info.Delete();
+            }
+        }
+        catch (IOException) { }
+        catch (UnauthorizedAccessException) { }
+    }
+
     public SyncLedger ReadLedger()
     {
         SkillPaths.AssertNoReparsePoints(discovery.LedgerFilePath);

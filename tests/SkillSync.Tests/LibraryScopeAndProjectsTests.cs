@@ -77,9 +77,12 @@ public sealed class LibraryScopeAndProjectsTests : IDisposable
     {
         await using var engine = new SyncEngine(new ProviderDiscoveryService(_root));
         await engine.CreateSkillAsync(Skill("web-runtime", "Start web projects on a free port"), "test");
-        await engine.CreateSkillAsync(Skill("roblox-ui", new string('r', 600), "acme/roblox"), "test");
+        var bundled = Skill("roblox-ui", new string('r', 600), "acme/roblox");
+        bundled.SupportingFiles["references/layout.md"] = "# Layout\n";
+        await engine.CreateSkillAsync(bundled, "test");
         await engine.CreateSkillAsync(Skill("roblox-audio", new string('a', 400), "acme/roblox"), "test");
         await engine.SynchronizeAllAsync();
+        Assert.True(File.Exists(Path.Combine(_root, ".gemini", "skills", "roblox-ui", "references", "layout.md")));
         var before = ContextBudget.Calculate(engine.ListLibraryWithContents());
         Assert.Equal("acme/roblox", before.Packs[0].Pack);
         Assert.True(before.Packs[0].Tokens > 250);
@@ -88,6 +91,8 @@ public sealed class LibraryScopeAndProjectsTests : IDisposable
         var result = await engine.SetScopeAsync(engine.SelectPack(null, "acme/roblox").Select(skill => skill.Name), "project", "test");
         Assert.Equal(["roblox-audio", "roblox-ui"], result.Changed.Order().ToArray());
         Assert.False(File.Exists(GeminiCopy("roblox-ui")));
+        // No empty references/ skeleton is left behind in the provider folder.
+        Assert.False(Directory.Exists(Path.Combine(_root, ".gemini", "skills", "roblox-ui")));
         Assert.True(File.Exists(GeminiCopy("web-runtime")));
         var after = ContextBudget.Calculate(engine.ListLibraryWithContents());
         Assert.Equal(before.Tokens - before.Packs[0].Tokens, after.Tokens);

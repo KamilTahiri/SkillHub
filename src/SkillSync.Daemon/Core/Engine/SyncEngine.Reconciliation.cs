@@ -532,6 +532,10 @@ public sealed partial class SyncEngine
                 path => RegisterWithdrawal(slug, path)).ConfigureAwait(false);
         }
         SkillStorage.DeleteOwnedFile(destination.Path, target.LastWrittenRawHash, path => RegisterWithdrawal(slug, path));
+        if (destination.HasBundle)
+        {
+            SkillStorage.PruneEmptyDirectories(destination.Directory);
+        }
         target.Pending = null;
         target.LastWrittenRawHash = string.Empty;
         target.Files.Clear();

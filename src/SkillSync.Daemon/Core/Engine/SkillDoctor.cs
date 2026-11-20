@@ -73,7 +73,8 @@ public static class SkillDoctor
         ("Sends data over the network", new Regex(@"\b(requests\.(post|put)|fetch\(|curl\s+[^\n]*-d\b|Invoke-RestMethod|urllib\.request|axios\.(post|put))", RegexOptions.IgnoreCase | RegexOptions.Compiled))
     ];
 
-    private static readonly Regex MarkdownLink = new(@"\[[^\]\n]*\]\((?!https?:|mailto:|#|/)<?([^)\s>]+)>?(?:\s+""[^""]*"")?\)", RegexOptions.Compiled);
+    private static readonly Regex InlineCode = new(@"(`+)[^`]*?\1", RegexOptions.Compiled);
+    private static readonly Regex MarkdownLink =new(@"\[[^\]\n]*\]\((?!https?:|mailto:|#|/)<?([^)\s>]+)>?(?:\s+""[^""]*"")?\)", RegexOptions.Compiled);
     private static readonly Regex ShellFence = new(@"^\s*(```|~~~)\s*(bash|sh|shell|zsh|powershell|pwsh|ps1|cmd|bat|console)\b", RegexOptions.Compiled | RegexOptions.IgnoreCase | RegexOptions.Multiline);
     public static int EstimateTokens(string? text) => string.IsNullOrEmpty(text) ? 0 : (int)Math.Ceiling(text.Length / 4.0);
 
@@ -136,9 +137,19 @@ public static class SkillDoctor
         {
             var directory = file.Contains('/') ? file[..file.LastIndexOf('/')] : string.Empty;
             var lineNumber = 0;
-            foreach (var line in text.Split('\n'))
+            var inFence = false;
+            foreach (var raw in text.Split('\n'))
             {
                 lineNumber++;
+                var trimmed = raw.TrimStart();
+                if (trimmed.StartsWith("```", StringComparison.Ordinal) || trimmed.StartsWith("~~~", StringComparison.Ordinal))
+                {
+                    inFence = !inFence;
+                    continue;
+                }
+                if (inFence) continue;
+                // Link syntax shown as an example inside inline code is not a link.
+                var line = InlineCode.Replace(raw, string.Empty);
                 foreach (Match match in MarkdownLink.Matches(line))
                 {
                     var target = Uri.UnescapeDataString(match.Groups[1].Value.Split('#')[0].Split('?')[0]);
