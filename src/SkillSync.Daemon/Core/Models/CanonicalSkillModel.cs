@@ -195,7 +195,8 @@ public sealed class CanonicalSkillModel
                 Cline = new SimpleTargetConfig { Enabled = Targets.Cline.Enabled },
                 RooCode = new SimpleTargetConfig { Enabled = Targets.RooCode.Enabled }
             },
-            Passthrough = includeContents ? CopyMetadata(Passthrough) : new(StringComparer.Ordinal),
+            // Metadata is small and carries scope and import provenance, which list views need.
+            Passthrough = CopyMetadata(Passthrough),
             InstructionsMarkdown = includeContents ? InstructionsMarkdown : string.Empty,
             SupportingFiles = includeContents ? new Dictionary<string, string>(SupportingFiles, StringComparer.Ordinal) : new(StringComparer.Ordinal)
         };
@@ -212,7 +213,58 @@ public sealed class CanonicalSkillModel
         _ => value
     };
 
-    public bool IsEnabledFor(ProviderType provider) => provider switch
+    /// <summary>Metadata key that stores <see cref="Scope"/>. Absent means global, so existing skills keep their hashes.</summary>
+    public const string ScopeKey = "scope";
+    public const string ScopeGlobal = "global";
+    public const string ScopeProject = "project";
+    public const string ScopeOff = "off";
+
+    public static string NormalizeScope(string? value) => (value ?? string.Empty).Trim().ToLowerInvariant() switch
+    {
+        "" or "global" => ScopeGlobal,
+        "project" or "project-only" or "project_only" => ScopeProject,
+        "off" or "disabled" => ScopeOff,
+        _ => throw new ArgumentException("Scope must be global, project or off.")
+    };
+
+    /// <summary>
+    /// Where the skill is delivered. <c>global</c>: the tools' user folders (subject to each target's switch).
+    /// <c>project</c>: only into project workspaces that choose it, so it costs no always-loaded tokens.
+    /// <c>off</c>: nowhere. Stored in the passthrough metadata so every provider round-trip keeps it.
+    /// </summary>
+    [YamlIgnore]
+    [JsonPropertyName("scope")]
+    public string Scope
+    {
+        get
+        {
+            try { return NormalizeScope(Passthrough.GetValueOrDefault(ScopeKey)?.ToString()); }
+            catch (ArgumentException) { return ScopeGlobal; }
+        }
+        set
+        {
+            var scope = NormalizeScope(value);
+            if (scope == ScopeGlobal) Passthrough.Remove(ScopeKey);
+            else Passthrough[ScopeKey] = scope;
+        }
+    }
+
+    /// <summary>The upstream repository a community skill was imported from, or null for skills written here.</summary>
+    [YamlIgnore]
+    [JsonIgnore]
+    public string? ImportSource => Passthrough.GetValueOrDefault("import_source")?.ToString() is { Length: > 0 } source ? source : null;
+
+    /// <summary>True for skills imported from a community repository (vendor packs). Their text belongs upstream.</summary>
+    [YamlIgnore]
+    [JsonIgnore]
+    public bool IsImported => ImportSource is not null;
+
+    /// <summary>True when the skill is delivered to the tools' global folders at all.</summary>
+    [YamlIgnore]
+    [JsonIgnore]
+    public bool IsGlobal => !IsCatalogOnly && Scope == ScopeGlobal;
+
+    public bool IsEnabledFor(ProviderType provider) => provider != ProviderType.Canonical && Scope != ScopeGlobal ? false : provider switch
     {
         ProviderType.Canonical => true,
         ProviderType.Claude => Targets.Claude.Enabled,

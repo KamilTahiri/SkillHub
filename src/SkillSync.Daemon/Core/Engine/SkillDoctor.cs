@@ -75,12 +75,6 @@ public static class SkillDoctor
 
     private static readonly Regex MarkdownLink = new(@"\[[^\]\n]*\]\((?!https?:|mailto:|#|/)<?([^)\s>]+)>?(?:\s+""[^""]*"")?\)", RegexOptions.Compiled);
     private static readonly Regex ShellFence = new(@"^\s*(```|~~~)\s*(bash|sh|shell|zsh|powershell|pwsh|ps1|cmd|bat|console)\b", RegexOptions.Compiled | RegexOptions.IgnoreCase | RegexOptions.Multiline);
-    private static readonly HashSet<string> StopWords = new(StringComparer.OrdinalIgnoreCase)
-    {
-        "the", "and", "for", "with", "when", "use", "this", "that", "your", "you", "are", "from", "into", "user", "users", "asks", "skill",
-        "using", "used", "will", "should", "any", "all", "can", "also", "about", "need", "needs", "like", "such", "their", "them", "files", "file"
-    };
-
     public static int EstimateTokens(string? text) => string.IsNullOrEmpty(text) ? 0 : (int)Math.Ceiling(text.Length / 4.0);
 
     /// <summary>Lists executable files in a bundle and the risky patterns found in each.</summary>
@@ -116,6 +110,8 @@ public static class SkillDoctor
         {
             if (skill.Description.Length > DescriptionLimit)
                 findings.Add(new("description-length", "error", $"Description is {skill.Description.Length} characters; Claude and Codex truncate or reject descriptions over {DescriptionLimit}."));
+            else if (skill.Description.Trim().Length + 1 + (skill.WhenToUse ?? string.Empty).Trim().Length > DescriptionLimit && !string.IsNullOrWhiteSpace(skill.WhenToUse))
+                findings.Add(new("description-combined-length", "error", $"Description and “When to use” together are {skill.Description.Trim().Length + 1 + skill.WhenToUse.Trim().Length} characters. Codex, Gemini, Copilot and Windsurf receive them as one description and truncate or reject it over {DescriptionLimit}."));
             else if (skill.Description.Length < 40)
                 findings.Add(new("description-short", "warning", "Description is very short. Say what the skill does and when to use it so agents trigger it reliably."));
             if (!Regex.IsMatch(skill.Description + " " + skill.WhenToUse, @"\b(use|when|whenever|if)\b", RegexOptions.IgnoreCase))
@@ -157,21 +153,21 @@ public static class SkillDoctor
         foreach (var (path, content) in skill.SupportingFiles.Where(pair => pair.Key.EndsWith(".md", StringComparison.OrdinalIgnoreCase)))
             CheckLinks(path, content);
 
-        // 3. Triggers that overlap with other enabled skills.
-        var mine = TriggerWords(skill);
-        if (others is not null && mine.Count >= 4)
+        // 3. Triggers that overlap with other active skills, and references to companion skills that are not installed.
+        if (others is not null)
         {
-            foreach (var other in others)
-            {
-                if (other.Name == skill.Name || other.IsCatalogOnly || other.SourceCategory == "system") continue;
-                var theirs = TriggerWords(other);
-                if (theirs.Count < 4) continue;
-                var shared = mine.Intersect(theirs).Count();
-                var similarity = shared / (double)mine.Union(theirs).Count();
-                if (similarity >= 0.45)
-                    findings.Add(new("trigger-overlap", "warning",
-                        $"Its trigger description overlaps {similarity:P0} with “{other.GetEffectiveTitle()}” ({other.Name}); agents may load the wrong one."));
-            }
+            var library = others.Where(other => other.Name != skill.Name).ToList();
+            var active = library.Where(other => !other.IsCatalogOnly && other.SourceCategory != "system" && other.Scope != CanonicalSkillModel.ScopeOff)
+                .Append(skill).ToList();
+            var corpus = new SkillTextSignals.Corpus(active);
+            var overlapping = active.Where(other => other.Name != skill.Name)
+                .Select(other => (other.Name, Overlaps: SkillTextSignals.Overlaps(corpus, skill.Name, other.Name, out var similarity), Similarity: similarity))
+                .Where(item => item.Overlaps).OrderByDescending(item => item.Similarity).Select(item => item.Name).ToList();
+            if (overlapping.Count > 0) findings.Add(OverlapFinding(overlapping));
+            var known = library.Select(other => other.Name).Append(skill.Name).ToHashSet(StringComparer.Ordinal);
+            var families = SkillTextSignals.Families(library.Where(other => !other.IsCatalogOnly).Select(other => other.Name).Append(skill.Name));
+            var missing = SkillTextSignals.MissingReferences(skill, known, families);
+            if (missing.Count > 0) findings.Add(MissingCompanionFinding(missing));
         }
 
         // 4. Secrets in instructions or bundle files.
@@ -203,9 +199,17 @@ public static class SkillDoctor
         if (tokens["body"].Used > tokens["body"].Budget)
             findings.Add(new("body-tokens", "warning", $"Instructions are about {tokens["body"].Used} tokens. Move reference material into bundle files the agent reads on demand."));
 
-        var score = Math.Max(0, 100 - findings.Sum(finding => finding.Severity switch { "error" => 25, "warning" => 8, _ => 2 }));
-        return new DoctorReport(score, findings, scripts, tokens);
+        return new DoctorReport(ScoreOf(findings), findings, scripts, tokens);
     }
+
+    public static int ScoreOf(IEnumerable<DoctorFinding> findings) =>
+        Math.Max(0, 100 - findings.Sum(finding => finding.Severity switch { "error" => 25, "warning" => 8, _ => 2 }));
+
+    public static DoctorFinding OverlapFinding(IReadOnlyList<string> others) => new("trigger-overlap", "warning",
+        $"Its trigger competes with {string.Join(", ", others.Take(5))}{(others.Count > 5 ? $" and {others.Count - 5} more" : string.Empty)}; agents may load the wrong one. Narrow the descriptions, merge them, or make the niche ones Project-only.");
+
+    public static DoctorFinding MissingCompanionFinding(IReadOnlyList<string> missing) => new("missing-companion", "warning",
+        $"It refers to {missing.Count} skill{(missing.Count == 1 ? string.Empty : "s")} that are not in your library: {string.Join(", ", missing.Take(8))}{(missing.Count > 8 ? ", …" : string.Empty)}. Import them from the same pack or remove the references.");
 
     private static string? Resolve(string directory, string target)
     {
@@ -224,7 +228,4 @@ public static class SkillDoctor
         return parts.Count == 0 ? null : string.Join('/', parts);
     }
 
-    private static HashSet<string> TriggerWords(CanonicalSkillModel skill) =>
-        Regex.Matches((skill.Description + " " + skill.WhenToUse).ToLowerInvariant(), "[a-z][a-z0-9+#.-]{2,}")
-            .Select(match => match.Value.TrimEnd('.')).Where(word => !StopWords.Contains(word)).ToHashSet(StringComparer.Ordinal);
 }

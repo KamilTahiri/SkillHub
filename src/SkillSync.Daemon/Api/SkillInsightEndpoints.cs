@@ -5,6 +5,14 @@ using SkillSync.Daemon.Core.Models;
 namespace SkillSync.Daemon.Api;
 
 public sealed record RestoreRevisionRequest([property: JsonPropertyName("revision")] long? Revision);
+public sealed record ScopeRequest(
+    [property: JsonPropertyName("scope")] string Scope,
+    [property: JsonPropertyName("names")] IReadOnlyList<string>? Names,
+    [property: JsonPropertyName("tag")] string? Tag,
+    [property: JsonPropertyName("source")] string? Source);
+public sealed record TriggerTestRequest(
+    [property: JsonPropertyName("prompt")] string Prompt,
+    [property: JsonPropertyName("include_project_only")] bool? IncludeProjectOnly);
 public sealed record ResolveUpdateRequest(
     [property: JsonPropertyName("action")] string Action,
     [property: JsonPropertyName("revision")] string Revision);
@@ -25,6 +33,21 @@ public static class SkillInsightEndpoints
             draft.SupportingFiles ??= [];
             return Results.Ok(SkillDoctor.Lint(draft, engine.ListSkills().Where(skill => skill.Name != draft.Name)));
         });
+
+        // Always-loaded budget, scope (global / project / off), the library-wide Doctor and the trigger tester.
+        api.MapGet("/context-budget", (SyncEngine engine) => Results.Ok(ContextBudget.Calculate(engine.ListLibraryWithContents())));
+        api.MapPost("/skills/scope", async (ScopeRequest request, SyncEngine engine, CancellationToken ct) =>
+        {
+            var names = (request.Names ?? []).ToList();
+            if (!string.IsNullOrWhiteSpace(request.Tag) || !string.IsNullOrWhiteSpace(request.Source))
+                names.AddRange(engine.SelectPack(request.Tag, request.Source).Select(skill => skill.Name));
+            if (names.Count == 0) throw new ArgumentException("Choose skills, a tag or a source.");
+            var result = await engine.SetScopeAsync(names, request.Scope, "webui:scope", ct).ConfigureAwait(false);
+            return Results.Ok(new { result, budget = ContextBudget.Calculate(engine.ListLibraryWithContents()) });
+        });
+        api.MapGet("/doctor/library", (SyncEngine engine) => Results.Ok(LibraryDoctor.Audit(engine.ListLibraryWithContents())));
+        api.MapPost("/trigger-test", (TriggerTestRequest request, SyncEngine engine) =>
+            Results.Ok(TriggerTester.Rank(request.Prompt, engine.ListLibraryWithContents(), request.IncludeProjectOnly ?? false)));
 
         api.MapGet("/skills/{name}/history", (string name, SyncEngine engine) =>
             Results.Ok(new { revisions = engine.ListRevisions(name) }));

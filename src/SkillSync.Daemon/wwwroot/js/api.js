@@ -81,6 +81,10 @@ export const api = {
   updateWorkspace: (id, data) => request('/workspaces/' + encode(id), { method: 'PUT', data }),
   syncWorkspace: id => request('/workspaces/' + encode(id) + '/sync', { method: 'POST' }),
   removeWorkspace: (id, removeFiles) => request('/workspaces/' + encode(id) + '?remove_files=' + Boolean(removeFiles), { method: 'DELETE' }),
+  contextBudget: signal => request('/context-budget', { signal }),
+  setScope: ({ scope, names, tag, source }) => request('/skills/scope', { method: 'POST', data: { scope, names, tag, source } }),
+  libraryDoctor: signal => request('/doctor/library', { signal }),
+  triggerTest: (prompt, includeProjectOnly, signal) => request('/trigger-test', { method: 'POST', data: { prompt, include_project_only: Boolean(includeProjectOnly) }, signal }),
   previewPack: (fileName, data) => request('/skillpacks/preview', { method: 'POST', data: { file_name: fileName, data } }),
   applyPack: (id, choices, keepSyncSettings) => request('/skillpacks/' + encode(id) + '/apply', { method: 'POST', data: { choices, keep_sync_settings: keepSyncSettings } }),
   async exportPack(names) {

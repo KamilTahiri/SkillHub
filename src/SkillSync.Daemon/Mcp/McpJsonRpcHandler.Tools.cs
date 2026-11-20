@@ -16,7 +16,9 @@ public sealed partial class McpJsonRpcHandler
         var category = args["category"]?.GetValue<string>();
         var includeDisabled = args["include_disabled"]?.GetValue<bool>() ?? true;
 
+        var scope = args["scope"]?.GetValue<string>() is { Length: > 0 } requested ? CanonicalSkillModel.NormalizeScope(requested) : null;
         var skills = _syncEngine.ListSkills(query, tag, includeDisabled, category)
+            .Where(s => scope is null || !s.IsCatalogOnly && s.Scope == scope)
             .Select(s => new
             {
                 name = s.Name,
@@ -29,6 +31,9 @@ public sealed partial class McpJsonRpcHandler
                 when_to_use = s.WhenToUse,
                 summary_short = s.SummaryShort,
                 tags = s.Tags,
+                scope = s.Scope,
+                import_source = s.ImportSource,
+                always_loaded_tokens = ContextBudget.SkillTokens(s),
                 enabled_providers = new
                 {
                     claude = s.Targets.Claude.Enabled,
@@ -68,6 +73,9 @@ public sealed partial class McpJsonRpcHandler
             when_to_use = skill.WhenToUse,
             summary_short = skill.SummaryShort,
             tags = skill.Tags,
+            scope = skill.Scope,
+            import_source = skill.ImportSource,
+            always_loaded_tokens = ContextBudget.SkillTokens(skill),
             targets = skill.Targets,
             instructions_markdown = skill.InstructionsMarkdown,
             supporting_file_paths = skill.SupportingFiles.Keys.OrderBy(k => k, StringComparer.Ordinal).ToList(),

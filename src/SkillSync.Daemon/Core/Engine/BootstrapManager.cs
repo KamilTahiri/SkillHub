@@ -10,7 +10,7 @@ public static class BootstrapManager
         {
             Name = SyncEngine.BootstrapSkillName,
             Title = "SkillHub Bootstrap Protocol",
-            Version = "1.1.0",
+            Version = "1.2.0",
             SourceCategory = "system",
             OriginProvider = "SkillHub System",
             Description = "Mandatory protocol for creating, reading, updating, tagging, importing, or deleting AI agent skills and rules across all local AI environments (Claude, Gemini/Antigravity, OpenAI Codex, and Cursor) via the SkillHub MCP server.",
@@ -44,7 +44,14 @@ public static class BootstrapManager
                         "mcp__skillhub__set_skillhub_preferences",
                         "mcp__skillhub__propose_skill_improvement",
                         "mcp__skillhub__list_skill_proposals",
-                        "mcp__skillhub__apply_skill_proposal"
+                        "mcp__skillhub__apply_skill_proposal",
+                        "mcp__skillhub__lint_skill",
+                        "mcp__skillhub__lint_library",
+                        "mcp__skillhub__get_context_budget",
+                        "mcp__skillhub__set_skill_scope",
+                        "mcp__skillhub__test_skill_trigger",
+                        "mcp__skillhub__list_projects",
+                        "mcp__skillhub__set_project_skills"
                     ]
                 },
                 Gemini = new GeminiTargetConfig { Enabled = true },
@@ -106,6 +113,11 @@ public static class BootstrapManager
                    - "Is SkillHub up to date?" → `check_skillhub_update`. Install only when the user agrees → `apply_skillhub_update` (SkillHub restarts).
                    - "Turn continuous skill learning on/off" → `set_skillhub_preferences` with `continuous_learning`.
                    - Importing a community skill: `import_community_skill` syncs to the detected AI tools by default. If it reports scripts, show the user the script list with the repository's stars and installs, and only call it again with `confirm_scripts: true` after the user agrees.
+
+                7. **SCOPE, PROJECTS AND LIBRARY HEALTH:**
+                   - Every global skill puts its description into every chat. `get_context_budget` shows that always-loaded cost by pack. Niche packs (a game engine, a 3D tool, one client's stack) belong in **Project-only** scope: `set_skill_scope` with `scope: "project"` and `source: "<owner/repo>"` or `tag`.
+                   - "Use the Roblox pack in this repo" → `set_project_skills` with the repository's absolute `path`, the `source` or `tag` (or `skills`), and `make_project_only: true`. SkillHub writes them into the project's `.claude/skills`, `.agents/skills`, `.gemini/skills` and `.cursor/rules` and, by default, keeps them out of Git via `.git/info/exclude`. `list_projects` shows what each project has.
+                   - "Audit my skills" → `lint_library` (collisions, missing companion skills, over-long descriptions, budget). After changing a description, check it with `test_skill_trigger` and a realistic prompt.
                 """ + (continuousLearning ? ContinuousLearningSection : string.Empty)
         };
     }
@@ -114,8 +126,9 @@ public static class BootstrapManager
     public const string ContinuousLearningSection =
         """
 
-        7. **CONTINUOUS SKILL LEARNING (ON):**
+        8. **CONTINUOUS SKILL LEARNING (ON):**
            - Never judge a skill early at the start of a task, and never suggest changes on routine tasks.
+           - Imported community skills (those with an `import_source`) belong to their upstream repository: do not offer to edit them; suggest a personal skill instead.
            - Only **after** you solved a non-trivial problem, hit an outdated or wrong instruction in a skill, or found a reusable project pattern or workaround that would clearly make a relevant skill better, ask **once, at the end of your reply**: "Want me to update your `<skill>` skill in SkillHub with <one-line summary>?"
            - When the user says yes, apply it right away with `update_skill` (SkillHub keeps the previous version in History and syncs every AI tool).
            - When the user says "save it for later", call `propose_skill_improvement`. Saved proposals are reviewed with `list_skill_proposals` and applied with `apply_skill_proposal` (or in the SkillHub app).

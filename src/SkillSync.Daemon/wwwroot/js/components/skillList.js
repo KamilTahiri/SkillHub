@@ -4,6 +4,7 @@ import { icon, PROVIDER_NAMES } from '../icons.js';
 import { highlighted } from '../markdown.js';
 import { h, button, field, select, modal, confirmAction, errorText, notify, busy, copy, bundleBadge, autoLoadMore, responsivePlaceholder } from '../ui.js';
 import { copySkillPrompt, reviewUpdate } from './skillInsights.js';
+import { createBudgetMeter, showLibraryAudit, showTriggerTester, scopeBadge, applyScope, SCOPES } from './libraryHealth.js';
 
 const STATUSES = { synced: 'Synced', issue: 'Needs attention', disabled: 'Disabled', pending: 'Pending or undeployed', catalog: 'Catalog' };
 const EMPTY_FILTERS = { tags: [], tagMode: 'all', origin: '', provider: '', status: '' };
@@ -110,11 +111,15 @@ export function createLibrary(root, app) {
   const summary = h('div', { class: 'sync-summary', hidden: true });
   const collectionView = h('div', { class: 'stack library-view' }, summary, results);
   collectionView.addEventListener('animationend', () => collectionView.classList.remove('collection-enter'));
+  const budget = createBudgetMeter(app);
+  const healthRow = h('div', { class: 'library-health-row', role: 'group', 'aria-label': 'Library health' }, budget.element,
+    button([icon('check'), 'Run Library Audit'], () => showLibraryAudit(app), 'small', { id: 'library-audit' }),
+    button([icon('search'), 'Test triggers'], () => showTriggerTester(app), 'small', { id: 'trigger-tester' }));
   root.append(h('div', { class: 'stack library-body' }, count,
     h('div', { class: 'library-search-row', role: 'search', 'aria-label': 'Library' },
       h('div', { class: 'search-field' }, search), filtersButton, sorter, densityButton,
       button([icon('plus'), 'New skill'], () => app.newSkill(), 'primary', { id: 'new-skill' })),
-    navigation, filterPanel, active, collectionView));
+    healthRow, navigation, filterPanel, active, collectionView));
 
   function toggleFilters() {
     filterPanel.hidden = !filterPanel.hidden;
@@ -325,7 +330,7 @@ export function createLibrary(root, app) {
           h('span', { class: 'result-description' }, highlighted(skill.instruction_match ?? skill.description ?? '', query)),
           h('span', { class: 'result-files' }, bundleBadge(skill.file_count ?? Object.keys(skill.supporting_files ?? {}).length,
             { paths: skill.supporting_paths ?? Object.keys(skill.supporting_files ?? {}) })),
-          !syncView && h('span', { class: 'chips' }, origin && !['My Skill', 'Personal', 'SkillHub'].includes(origin) &&
+          !syncView && h('span', { class: 'chips' }, scopeBadge(skill), origin && !['My Skill', 'Personal', 'SkillHub'].includes(origin) &&
             h('span', { class: 'result-meta', title: origin }, origin),
             tags.slice(0, 2).map(tag => h('span', { class: 'chip' }, '#' + tag)),
             tags.length > 2 && h('span', { class: 'chip', title: tags.slice(2).join(', ') }, '+' + (tags.length - 2))));
@@ -348,7 +353,12 @@ export function createLibrary(root, app) {
           h('div', { class: 'action-menu-list' },
             button([icon('copy'), 'Copy instructions only'], event => { menu.open = false; detailThen(event.currentTarget, detail => copy(detail.skill.instructions_markdown)); }, 'quiet small'),
             button([icon('copy'), 'Copy name'], () => { menu.open = false; copy(skill.name); }, 'quiet small'),
-            issues[0] && button([icon('sync'), 'Review ' + issues[0].label], () => { menu.open = false; app.review(skill.name, issues[0]); }, 'quiet small')));
+            issues[0] && button([icon('sync'), 'Review ' + issues[0].label], () => { menu.open = false; app.review(skill.name, issues[0]); }, 'quiet small'),
+            !readOnly && !skill.is_catalog_only && Object.entries(SCOPES).filter(([scope]) => scope !== (skill.scope ?? 'global')).map(([scope, label]) =>
+              button([icon(scope === 'project' ? 'projects' : scope === 'off' ? 'close' : 'sync'), 'Scope: ' + label], event => {
+                menu.open = false;
+                busy(event.currentTarget, () => applyScope(app, { names: [skill.name] }, scope));
+              }, 'quiet small', { 'data-scope-action': scope }))));
         menu.addEventListener('focusout', event => { if (!menu.contains(event.relatedTarget)) menu.open = false; });
         menu.addEventListener('keydown', event => {
           if (event.key === 'Escape' && menu.open) { event.stopPropagation(); menu.open = false; menu.firstElementChild.focus(); }
@@ -384,6 +394,7 @@ export function createLibrary(root, app) {
   return {
     update(data) {
       snapshot = data;
+      budget.refresh();
       installed = installedProviders(data.providers);
       health = new WeakMap();
       if (filters.provider && !installed.includes(filters.provider)) filters.provider = '';

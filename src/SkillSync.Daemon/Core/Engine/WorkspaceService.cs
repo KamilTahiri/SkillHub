@@ -41,6 +41,11 @@ public sealed class WorkspaceRecord
     [JsonPropertyName("targets")] public List<string> Targets { get; set; } = [.. WorkspaceTargets.Defaults];
     /// <summary>Files SkillHub wrote, by project-relative path, with the normalized hash it wrote.</summary>
     [JsonPropertyName("owned")] public Dictionary<string, string> Owned { get; set; } = new(StringComparer.OrdinalIgnoreCase);
+    /// <summary>
+    /// Keep the generated skill folders out of Git by listing them in <c>.git/info/exclude</c> (never committed).
+    /// Null means the default: on. Turn it off to commit the skills so a team shares them.
+    /// </summary>
+    [JsonPropertyName("keep_local")] public bool? KeepLocal { get; set; }
     [JsonPropertyName("created_at")] public DateTimeOffset CreatedAt { get; set; } = DateTimeOffset.UtcNow;
     [JsonPropertyName("last_synced_at")] public DateTimeOffset? LastSyncedAt { get; set; }
 }
@@ -59,11 +64,15 @@ public sealed record WorkspaceStatus(
     [property: JsonPropertyName("file_count")] int FileCount,
     [property: JsonPropertyName("last_synced_at")] DateTimeOffset? LastSyncedAt,
     [property: JsonPropertyName("issues")] IReadOnlyList<WorkspaceIssue> Issues,
-    [property: JsonPropertyName("missing_skills")] IReadOnlyList<string> MissingSkills);
+    [property: JsonPropertyName("missing_skills")] IReadOnlyList<string> MissingSkills,
+    [property: JsonPropertyName("keep_local")] bool KeepLocal = true,
+    [property: JsonPropertyName("git_repo")] bool GitRepo = false,
+    [property: JsonPropertyName("also_global")] IReadOnlyList<string>? AlsoGlobal = null,
+    [property: JsonPropertyName("off_skills")] IReadOnlyList<string>? OffSkills = null);
 
 /// <summary>
 /// Projects chosen library skills into a project's own AI folders (<c>.claude/skills</c>, <c>.agents/skills</c>,
-/// <c>.gemini/skills</c>, <c>.cursor/rules</c>, <c>.github/instructions</c>). Projection is one way: SkillHub stays the
+/// <c>.gemini/skills</c>, <c>.cursor/rules</c>, optionally <c>.github/skills</c> and others). Projection is one way: SkillHub stays the
 /// source of truth. Like the provider ledger, a workspace only overwrites or deletes files whose content still matches
 /// what SkillHub wrote, so files a person created or edited in the project are never lost. Records live as JSON files
 /// in <c>~/.skillhub/workspaces/</c>.
@@ -113,6 +122,35 @@ public sealed class WorkspaceService : IDisposable
 
     public WorkspaceStatus Get(string id) => Status(Read(id));
 
+    /// <summary>The workspace registered for this folder, or null.</summary>
+    public WorkspaceStatus? FindByPath(string path)
+    {
+        if (string.IsNullOrWhiteSpace(path)) throw new ArgumentException("Choose a project folder.");
+        var full = Path.GetFullPath(path.Trim().Trim('"')).TrimEnd('\\', '/');
+        var record = ReadAll().FirstOrDefault(item =>
+            string.Equals(Path.GetFullPath(item.Path).TrimEnd('\\', '/'), full, StringComparison.OrdinalIgnoreCase));
+        return record is null ? null : Status(record);
+    }
+
+    /// <summary>
+    /// Chooses skills for the project at <paramref name="path"/>, registering it first when needed. <paramref name="mode"/>
+    /// is add (default), remove or replace. Returns the workspace after its files were written.
+    /// </summary>
+    public async Task<WorkspaceStatus> SetSkillsByPathAsync(string path, IReadOnlyList<string> skills, string? mode,
+        IReadOnlyList<string>? targets, bool? keepLocal, CancellationToken ct = default)
+    {
+        var existing = FindByPath(path) ?? await RegisterAsync(path, null, ct).ConfigureAwait(false);
+        var current = existing.Skills.ToList();
+        var chosen = (mode ?? "add").Trim().ToLowerInvariant() switch
+        {
+            "add" => current.Concat(skills).ToList(),
+            "remove" => current.Where(skill => !skills.Contains(skill, StringComparer.OrdinalIgnoreCase)).ToList(),
+            "replace" => skills.ToList(),
+            _ => throw new ArgumentException("mode must be add, remove or replace.")
+        };
+        return await UpdateAsync(existing.Id, chosen, targets, null, ct, keepLocal).ConfigureAwait(false);
+    }
+
     public async Task<WorkspaceStatus> RegisterAsync(string path, string? name, CancellationToken ct = default)
     {
         var full = ValidateProjectPath(path);
@@ -134,7 +172,7 @@ public sealed class WorkspaceService : IDisposable
     }
 
     public async Task<WorkspaceStatus> UpdateAsync(string id, IReadOnlyList<string>? skills, IReadOnlyList<string>? targets, string? name,
-        CancellationToken ct = default)
+        CancellationToken ct = default, bool? keepLocal = null)
     {
         await _gate.WaitAsync(ct).ConfigureAwait(false);
         try
@@ -150,6 +188,7 @@ public sealed class WorkspaceService : IDisposable
                 record.Targets = targets.Distinct().ToList();
             }
             if (!string.IsNullOrWhiteSpace(name)) record.Name = name.Trim();
+            if (keepLocal is not null) record.KeepLocal = keepLocal;
             await ProjectAsync(record, ct).ConfigureAwait(false);
             return Status(record);
         }
@@ -182,6 +221,11 @@ public sealed class WorkspaceService : IDisposable
                 await ProjectAsync(record, ct).ConfigureAwait(false);
                 kept.AddRange(_issues.GetValueOrDefault(record.Id) ?? []);
             }
+            if (Directory.Exists(record.Path))
+            {
+                try { GitExclude.Write(record.Path, []); }
+                catch (Exception error) when (error is IOException or UnauthorizedAccessException) { kept.Add(new(".git/info/exclude", error.Message)); }
+            }
             File.Delete(RecordPath(record.Id));
             _issues.Remove(record.Id);
             return kept;
@@ -199,6 +243,11 @@ public sealed class WorkspaceService : IDisposable
             // Keys are library names, or catalog ids for built-ins whose name exists in several tools.
             var model = _engine.GetSkill(key);
             if (model is null) { missing.Add(key); continue; }
+            if (model.Scope == CanonicalSkillModel.ScopeOff)
+            {
+                notes?.Add(new(key, "This skill is turned Off in SkillHub, so it was not written. Set it to Project-only or Global to use it here."));
+                continue;
+            }
             var slug = ProviderDiscoveryService.NormalizeSlug(model.Name);
             if (slug.Length == 0 || !names.Add(slug))
             {
@@ -315,6 +364,14 @@ public sealed class WorkspaceService : IDisposable
                 issues.Add(new(relative, "Removed from the workspace, but the file was edited in the project, so SkillHub left it in place."));
             }
         }
+        try
+        {
+            GitExclude.Write(record.Path, record.KeepLocal != false ? GitExclude.EntriesFor(record.Owned.Keys) : []);
+        }
+        catch (Exception error) when (error is IOException or UnauthorizedAccessException)
+        {
+            issues.Add(new(".git/info/exclude", "Could not keep the skill folders out of Git: " + error.Message));
+        }
         record.LastSyncedAt = DateTimeOffset.UtcNow;
         _issues[record.Id] = issues;
         await WriteAsync(record).ConfigureAwait(false);
@@ -361,9 +418,15 @@ public sealed class WorkspaceService : IDisposable
     private WorkspaceStatus Status(WorkspaceRecord record)
     {
         var issues = _issues.GetValueOrDefault(record.Id) ?? [];
-        var missing = record.Skills.Where(key => _engine.GetSkill(key) is null).ToArray();
-        return new WorkspaceStatus(record.Id, record.Name, record.Path, Directory.Exists(record.Path), record.Skills, record.Targets,
-            record.Owned.Count, record.LastSyncedAt, issues, missing);
+        var models = record.Skills.Select(key => (Key: key, Model: _engine.GetSkill(key))).ToArray();
+        var missing = models.Where(item => item.Model is null).Select(item => item.Key).ToArray();
+        // Chosen here and also delivered to the tools' global folders: the tools see two copies.
+        var alsoGlobal = models.Where(item => item.Model is { } model && ContextBudget.SkillTokens(model) > 0).Select(item => item.Key).ToArray();
+        var off = models.Where(item => item.Model?.Scope == CanonicalSkillModel.ScopeOff).Select(item => item.Key).ToArray();
+        var exists = Directory.Exists(record.Path);
+        return new WorkspaceStatus(record.Id, record.Name, record.Path, exists, record.Skills, record.Targets,
+            record.Owned.Count, record.LastSyncedAt, issues, missing, record.KeepLocal != false,
+            exists && GitExclude.FindRepository(record.Path) is not null, alsoGlobal, off);
     }
 
     private string RecordPath(string id)
@@ -404,5 +467,76 @@ public sealed class WorkspaceService : IDisposable
         _engine.SkillChanged -= OnSkillChanged;
         _debounce.Dispose();
         _gate.Dispose();
+    }
+}
+
+/// <summary>
+/// Keeps SkillHub's generated project skill folders out of Git through the repository's <c>info/exclude</c> file, which
+/// works like .gitignore but is never committed. SkillHub only edits its own marked block.
+/// </summary>
+public static class GitExclude
+{
+    public const string Begin = "# >>> SkillHub project skills (managed by SkillHub; edit in the Projects tab) >>>";
+    public const string End = "# <<< SkillHub project skills <<<";
+
+    /// <summary>One entry per generated skill folder or rule file, relative to the project folder.</summary>
+    public static IReadOnlyList<string> EntriesFor(IEnumerable<string> ownedFiles)
+    {
+        var entries = new SortedSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var file in ownedFiles)
+        {
+            var parts = file.Replace('\\', '/').Split('/', StringSplitOptions.RemoveEmptyEntries);
+            var skills = Array.FindIndex(parts, part => part.Equals("skills", StringComparison.OrdinalIgnoreCase));
+            entries.Add(skills >= 0 && skills + 1 < parts.Length - 1 ? string.Join('/', parts[..(skills + 2)]) + "/" : string.Join('/', parts));
+        }
+        return [.. entries];
+    }
+
+    /// <summary>The repository root and the exclude file for a folder inside a Git work tree, or null.</summary>
+    public static (string Root, string ExcludePath)? FindRepository(string folder)
+    {
+        for (var current = new DirectoryInfo(Path.GetFullPath(folder)); current is not null; current = current.Parent)
+        {
+            var dotGit = Path.Combine(current.FullName, ".git");
+            if (Directory.Exists(dotGit)) return (current.FullName, Path.Combine(dotGit, "info", "exclude"));
+            if (!File.Exists(dotGit)) continue;
+            // A linked worktree or submodule: ".git" is a file that points at the real Git directory.
+            var line = File.ReadLines(dotGit).FirstOrDefault(text => text.StartsWith("gitdir:", StringComparison.OrdinalIgnoreCase));
+            if (line is null) return null;
+            var gitDir = Path.GetFullPath(Path.Combine(current.FullName, line["gitdir:".Length..].Trim()));
+            var common = Path.Combine(gitDir, "commondir");
+            if (File.Exists(common)) gitDir = Path.GetFullPath(Path.Combine(gitDir, File.ReadAllText(common).Trim()));
+            return (current.FullName, Path.Combine(gitDir, "info", "exclude"));
+        }
+        return null;
+    }
+
+    /// <summary>Replaces SkillHub's block with <paramref name="entries"/>; an empty list removes it. Outside Git: nothing to do.</summary>
+    public static void Write(string projectFolder, IReadOnlyList<string> entries)
+    {
+        if (FindRepository(projectFolder) is not { } repository) return;
+        var prefix = Path.GetRelativePath(repository.Root, Path.GetFullPath(projectFolder)).Replace('\\', '/');
+        prefix = prefix == "." ? string.Empty : prefix.TrimEnd('/') + "/";
+        var existing = File.Exists(repository.ExcludePath) ? File.ReadAllText(repository.ExcludePath) : string.Empty;
+        var kept = new List<string>();
+        var inside = false;
+        foreach (var line in existing.Replace("\r\n", "\n").Split('\n'))
+        {
+            if (line == Begin) { inside = true; continue; }
+            if (line == End) { inside = false; continue; }
+            if (!inside) kept.Add(line);
+        }
+        while (kept.Count > 0 && kept[^1].Length == 0) kept.RemoveAt(kept.Count - 1);
+        if (entries.Count > 0)
+        {
+            if (kept.Count > 0) kept.Add(string.Empty);
+            kept.Add(Begin);
+            kept.AddRange(entries.Select(entry => "/" + prefix + entry.TrimStart('/')));
+            kept.Add(End);
+        }
+        var next = kept.Count == 0 ? string.Empty : string.Join('\n', kept) + "\n";
+        if (next == existing.Replace("\r\n", "\n") || next.Length == 0 && !File.Exists(repository.ExcludePath)) return;
+        Directory.CreateDirectory(Path.GetDirectoryName(repository.ExcludePath)!);
+        AtomicFileWriter.WriteTextAtomicallyAsync(repository.ExcludePath, next).GetAwaiter().GetResult();
     }
 }

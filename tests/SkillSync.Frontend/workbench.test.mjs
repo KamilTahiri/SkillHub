@@ -18,6 +18,7 @@ const sample = {
   description: 'A test skill', tags: ['one', 'two', 'three', 'four', 'five', 'system'],
   targets: { codex: { enabled: false }, claude: { enabled: false }, gemini: { enabled: false }, cursor: { enabled: false } },
   destinations: [], supporting_files: { 'references/notes.md': 'Supporting notes' }, x_passthrough: { external: 'retained' },
+  scope: 'global', always_loaded_tokens: 40,
   instructions_markdown: '# Fixture\n\n#### Fourth\n##### Fifth\n###### Sixth\n\n| A | B |\n| --- | --- |\n| 1 | 2 |\n\n- Parent\n  - Child\n\n[Search here](https://example.com/?q=fixture&mode=2)'
 };
 const installed = [
@@ -44,7 +45,7 @@ const item = name => ({ slug: name.toLowerCase(), title: name, description: name
 async function fixtureServer() {
   let releaseSlow;
   const slowPreview = new Promise(resolve => { releaseSlow = resolve; });
-  const fixture = { learning: true, proposalApplied: null, updateApplied: false, onboarded: true, workspaces: [], workspaceUpdate: null, packUpload: null, packApply: null, releaseSlow, slowFinished: false, theme: 'dark', tray: true, startup: true, reviewed: null, applied: null, preparing: new Map(), prefetched: new Map(), events: null, reads: 0 };
+  const fixture = { scopeRequests: [], triggerPrompts: [], learning: true, proposalApplied: null, updateApplied: false, onboarded: true, workspaces: [], workspaceUpdate: null, packUpload: null, packApply: null, releaseSlow, slowFinished: false, theme: 'dark', tray: true, startup: true, reviewed: null, applied: null, preparing: new Map(), prefetched: new Map(), events: null, reads: 0 };
   const server = createServer(async (req, res) => {
     const url = new URL(req.url, 'http://localhost');
     const send = (value, status = 200) => {
@@ -76,6 +77,31 @@ async function fixtureServer() {
         return send({ issue: { title: 'Conflicted' }, reason: 'different', version: 'review-hash',
           files: [{ path: 'SKILL.md', change: 'Different', skill_hub: '---\nname: skill\n---\nOld body',
             provider: '---\nname: skill\n---\nNew body' }], actions: ['keep', 'accept', 'copy', 'leave'] });
+      }
+      if (route === '/context-budget') return send({ tokens: 6000, characters: 24000, always_loaded_bodies_tokens: 0, global_skills: 40,
+        project_only_skills: 0, off_skills: 0, safe_tokens: 2000, limit_tokens: 4000, state: 'over',
+        message: 'About 6.0k tokens of skill descriptions load into every chat.',
+        packs: [{ pack: 'acme/roblox', label: 'acme/roblox', kind: 'imported', tokens: 3000, global_skills: 2, project_only_skills: 0, off_skills: 0,
+          skills: [{ name: 'roblox-ui', title: 'Roblox UI', tokens: 1600, scope: 'global' }, { name: 'roblox-audio', title: 'Roblox Audio', tokens: 1400, scope: 'global' }] },
+        { pack: 'personal', label: 'Personal skills', kind: 'personal', tokens: 1500, global_skills: 1, project_only_skills: 0, off_skills: 0,
+          skills: [{ name: 'fixture', title: 'Fixture', tokens: 1500, scope: 'global' }] }] });
+      if (route === '/skills/scope' && req.method === 'POST') {
+        fixture.scopeRequests.push(data);
+        return send({ result: { scope: data.scope, changed: data.names ?? ['roblox-ui', 'roblox-audio'], unchanged: [], skipped: [] },
+          budget: { tokens: 1500, state: 'ok' } });
+      }
+      if (route === '/doctor/library') return send({ score: 71, skills_checked: 3, errors: 1, warnings: 2,
+        budget: { tokens: 6000, state: 'over', message: 'Too many tokens.' },
+        collisions: [{ skills: ['game-ui-ux', 'roblox-ui', 'roblox-ui-layout'], shared_terms: ['hud', 'ui'], max_similarity: 0.41, all_global: true }],
+        missing_references: [{ skill: 'roblox-ui-layout', missing: ['roblox-ui-genre-scifi'] }],
+        skills: [{ name: 'roblox-ui-layout', title: 'Roblox UI Layout', scope: 'global', pack: 'acme/roblox', score: 59,
+          findings: [{ code: 'description-length', severity: 'error', message: 'Description is 1042 characters.' }] }] });
+      if (route === '/trigger-test' && req.method === 'POST') {
+        fixture.triggerPrompts.push(data);
+        return send({ prompt: data.prompt, collision: true, project_only_matches: [],
+          summary: 'Collision: roblox-ui and game-ui-ux score within 15% of each other, so the agent may load any of them.',
+          candidates: [{ name: 'roblox-ui', title: 'Roblox UI', scope: 'global', score: 4.2, relative: 1, verdict: 'tie', matched_terms: ['roblox', 'hud'] },
+            { name: 'game-ui-ux', title: 'Game UI UX', scope: 'global', score: 3.9, relative: 0.93, verdict: 'tie', matched_terms: ['hud'] }] });
       }
       if (route === '/tags') return send(['one', 'system', 'skillhub', 'meta-skill'].map(tag => ({ tag, skill_count: 1 })));
       if (route === '/providers') return send(installed);
@@ -114,14 +140,15 @@ async function fixtureServer() {
         targets: ['claude', 'codex', 'gemini', 'cursor', 'copilot'].map(id => ({ id, label: id + ' folder' })) });
       if (route === '/workspaces' && req.method === 'POST') {
         const created = { id: 'ws1', name: data.name ?? data.path.split('/').at(-1), path: data.path, exists: true, skills: [],
-          targets: ['claude', 'codex', 'gemini', 'cursor'], file_count: 0, last_synced_at: null, issues: [], missing_skills: [] };
+          targets: ['claude', 'codex', 'gemini', 'cursor'], file_count: 0, last_synced_at: null, issues: [], missing_skills: [],
+          keep_local: true, git_repo: true, also_global: [], off_skills: [] };
         fixture.workspaces.push(created);
         return send(created);
       }
       if (route === '/workspaces/ws1' && req.method === 'PUT') {
         const current = fixture.workspaces[0];
         Object.assign(current, { skills: data.skills, targets: data.targets, file_count: data.skills.length * data.targets.length,
-          last_synced_at: '2026-11-15T10:00:00Z' });
+          last_synced_at: '2026-11-15T10:00:00Z', keep_local: data.keep_local, also_global: data.skills.filter(name => name === 'fixture') });
         fixture.workspaceUpdate = data;
         return send(current);
       }
@@ -579,6 +606,35 @@ test('workbench at desktop and docked sizes, with keyboard, themes, Markdown and
       await wait('!document.querySelector("dialog.onboarding")');
       await until(() => fixture.onboarded === true, 'Onboarding was not marked complete');
 
+      // Library health: the always-loaded meter, pack scope, library audit and trigger tester.
+      await click('[data-route="library"]');
+      await wait('document.querySelector("#context-budget-meter")?.dataset.state === "over"', 'Budget meter did not load');
+      assert.match(await evaluate('document.querySelector("#context-budget-meter").textContent'), /Always-loaded: ~6\.0k tokens \/ chat/);
+      await click('#context-budget-meter');
+      await wait('document.querySelector("dialog[open] .budget-pack[data-pack=\'acme/roblox\'] [data-pack-action=project]")');
+      assert.match(await evaluate('document.querySelector("dialog[open] .budget-summary").textContent'), /6\.0k tokens in every chat/);
+      await click('dialog[open] .budget-pack[data-pack="acme/roblox"] [data-pack-action=project]');
+      await until(() => fixture.scopeRequests.length === 1, 'Pack scope was not sent');
+      assert.deepEqual(fixture.scopeRequests[0], { scope: 'project', source: 'acme/roblox' });
+      await evaluate('document.querySelector("dialog[open]").close()');
+      await wait('!document.querySelector("dialog[open]")');
+      await click('#library-audit');
+      await wait('document.querySelector("dialog[open] .audit-score")');
+      const audit = await evaluate('document.querySelector("dialog[open]").textContent');
+      assert.match(audit, /71\/100/);
+      assert.match(audit, /game-ui-ux[\s\S]*roblox-ui-layout/);
+      assert.match(audit, /refers to roblox-ui-genre-scifi/);
+      await evaluate('document.querySelector("dialog[open]").close()');
+      await wait('!document.querySelector("dialog[open]")');
+      await click('#trigger-tester');
+      await wait('document.querySelector("dialog[open] input[type=search]")');
+      await evaluate('const prompt = document.querySelector("dialog[open] input[type=search]"); prompt.value = "Make a Roblox HUD"; prompt.dispatchEvent(new Event("input"));');
+      await wait('document.querySelectorAll("dialog[open] .trigger-results li[data-verdict=tie]").length === 2', 'Trigger tester did not show the tie');
+      assert.equal(fixture.triggerPrompts.at(-1).prompt, 'Make a Roblox HUD');
+      assert.match(await evaluate('document.querySelector("dialog[open] .trigger-summary").textContent'), /Collision/);
+      await evaluate('document.querySelector("dialog[open]").close()');
+      await wait('!document.querySelector("dialog[open]")');
+
       // Projects: add a folder, choose skills and targets, save.
       await click('[data-route="projects"]');
       await wait('document.querySelector("#projects-screen .workspaces-empty")');
@@ -592,8 +648,16 @@ test('workbench at desktop and docked sizes, with keyboard, themes, Markdown and
       await click('.workspace-targets input[data-target="copilot"]');
       await click('.workspace-foot .primary');
       await until(() => fixture.workspaceUpdate, 'Workspace update was not sent');
-      assert.deepEqual(fixture.workspaceUpdate, { skills: ['fixture'], targets: ['claude', 'codex', 'gemini', 'cursor', 'copilot'] });
+      assert.deepEqual(fixture.workspaceUpdate, { skills: ['fixture'], targets: ['claude', 'codex', 'gemini', 'cursor', 'copilot'], keep_local: true });
       await wait('document.querySelector(".workspace-detail")?.textContent.includes("5 files written")');
+      // The chosen skill is also global: flagged, with a one-click switch to Project-only.
+      await wait('document.querySelector(".workspace-skill-flags [data-redundant=fixture]")', 'Redundant badge missing');
+      assert.match(await evaluate('document.querySelector("[data-redundant-summary]").textContent'), /1 skill is also synced globally/);
+      assert.equal(await evaluate('document.querySelector("[data-keep-local]").checked'), true);
+      await click('[data-make-project-only="fixture"]');
+      await until(() => fixture.scopeRequests.length === 2, 'Project-only switch was not sent');
+      assert.deepEqual(fixture.scopeRequests[1], { scope: 'project', names: ['fixture'] });
+      assert.doesNotMatch(await evaluate('document.querySelector("#projects-screen").textContent'), /github\/instructions/);
 
       // Skill pack import: the review lists conflicts and scripts before anything is applied.
       await click('[data-route="explore"]');

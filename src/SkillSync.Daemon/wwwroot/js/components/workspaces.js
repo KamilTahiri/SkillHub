@@ -2,10 +2,12 @@ import { api } from '../api.js';
 import { Latest, skillKey } from '../state.js';
 import { icon } from '../icons.js';
 import { h, button, heading, field, modal, busy, notify, errorText, confirmAction, copy, fill, relativeTime } from '../ui.js';
+import { applyScope, scopeBadge } from './libraryHealth.js';
 
 /**
  * Projects: give a repository its own skill set. SkillHub writes the chosen skills into the project's
- * .claude/skills, .agents/skills, .gemini/skills, .cursor/rules and .github/instructions folders and keeps them current.
+ * .claude/skills, .agents/skills, .gemini/skills and .cursor/rules folders (plus .github/skills, .windsurf/skills, .clinerules
+ * or .roo/rules when chosen) and keeps them current.
  */
 export function createWorkspaces(root, app) {
   const jobs = new Latest();
@@ -37,7 +39,8 @@ export function createWorkspaces(root, app) {
       body.replaceChildren(h('div', { class: 'empty workspaces-empty' }, icon('library'),
         h('h2', {}, 'No projects yet'),
         h('p', { class: 'muted' }, 'Add a project folder, choose the skills it needs, and SkillHub writes them into ' +
-          '.claude/skills, .agents/skills, .gemini/skills, .cursor/rules and .github/instructions inside that project.'),
+          '.claude/skills, .agents/skills, .gemini/skills and .cursor/rules inside that project (.github/skills and others are optional). ' +
+          'Niche packs work best as Project-only skills: they stay out of your other chats and appear only here.'),
         button([icon('plus'), 'Add your first project'], () => addProject(), 'primary')));
       return;
     }
@@ -56,11 +59,14 @@ export function createWorkspaces(root, app) {
       .sort((a, b) => (a.title || a.name).localeCompare(b.title || b.name));
     const chosen = new Set(workspace.skills);
     const targets = new Set(workspace.targets);
+    let keepLocal = workspace.keep_local !== false;
+    const isGlobal = skill => (skill.always_loaded_tokens ?? 0) > 0;
     const search = h('input', { class: 'input', type: 'search', placeholder: 'Filter skills', 'aria-label': 'Filter skills for ' + workspace.name });
     const count = h('span', { class: 'muted workspace-count' });
     const skillList = h('ul', { class: 'workspace-skills' });
     const dirty = () => {
-      const changed = [...chosen].sort().join() !== [...workspace.skills].sort().join() || [...targets].sort().join() !== [...workspace.targets].sort().join();
+      const changed = [...chosen].sort().join() !== [...workspace.skills].sort().join() || [...targets].sort().join() !== [...workspace.targets].sort().join() ||
+        keepLocal !== (workspace.keep_local !== false);
       save.disabled = !changed;
       count.textContent = chosen.size + (chosen.size === 1 ? ' skill selected' : ' skills selected');
     };
@@ -73,10 +79,31 @@ export function createWorkspaces(root, app) {
             onchange: event => { if (event.target.checked) chosen.add(skillKey(skill)); else chosen.delete(skillKey(skill)); dirty(); } }),
           h('span', { class: 'workspace-skill-text' }, h('strong', {}, skill.title || skill.name,
             skill.is_catalog_only && h('small', { class: 'muted' }, ' · ' + (skill.origin_provider || 'Built-in'))),
-            h('small', { class: 'muted' }, skill.description ?? ''))))));
+            h('small', { class: 'muted' }, skill.description ?? ''))),
+        flags(skill))));
       for (const missing of workspace.missing_skills) if (!query) skillList.append(h('li', { class: 'warning' }, missing + ' is no longer in your library.'));
       // Chosen skills first, so a project's set is visible without scrolling.
       skillList.replaceChildren(...[...skillList.children].sort((a, b) => Number(Boolean(b.querySelector('input:checked'))) - Number(Boolean(a.querySelector('input:checked')))));
+    }
+    // A skill chosen here that is also synced globally reaches the tools twice; offer the one-click fix.
+    function flags(skill) {
+      const key = skillKey(skill);
+      const redundant = chosen.has(key) && !skill.is_catalog_only && isGlobal(skill);
+      const off = chosen.has(key) && skill.scope === 'off';
+      const badge = scopeBadge(skill);
+      if (!redundant && !off && !badge) return null;
+      return h('div', { class: 'workspace-skill-flags' }, badge,
+        redundant && h('span', { class: 'redundant-badge', 'data-redundant': skill.name,
+          title: 'Also synced to the tools\u2019 global folders: the AI sees it twice and pays its description tokens in every chat.' }, 'Also global \u2014 redundant here'),
+        redundant && button('Switch to Project-only', event => busy(event.currentTarget, async () => {
+          await applyScope(app, { names: [skill.name] }, 'project');
+          await load(workspace.id);
+        }), 'small', { 'data-make-project-only': skill.name }),
+        off && h('span', { class: 'redundant-badge' }, 'Off \u2014 not written'),
+        off && button('Set to Project-only', event => busy(event.currentTarget, async () => {
+          await applyScope(app, { names: [skill.name] }, 'project');
+          await load(workspace.id);
+        }), 'small'));
     }
     search.addEventListener('input', renderSkills);
     renderSkills();
@@ -85,8 +112,15 @@ export function createWorkspaces(root, app) {
         h('input', { type: 'checkbox', checked: targets.has(target.id), 'data-target': target.id,
           onchange: event => { if (event.target.checked) targets.add(target.id); else targets.delete(target.id); dirty(); } }),
         target.label, target.experimental && h('span', { class: 'tier-badge-inline', title: 'Experimental: documented path, not yet verified against an installed copy' }, ' · experimental'))));
+    const redundantAll = library.filter(skill => (workspace.also_global ?? []).includes(skillKey(skill)) && !skill.is_catalog_only);
+    const fixAll = redundantAll.length > 1 && button('Switch all ' + redundantAll.length + ' to Project-only', event => busy(event.currentTarget, async () => {
+      await applyScope(app, { names: redundantAll.map(skill => skill.name) }, 'project');
+      await load(workspace.id);
+    }), 'small primary', { 'data-fix-all-redundant': '' });
+    const keepLocalBox = h('input', { type: 'checkbox', checked: keepLocal, disabled: !workspace.git_repo, 'data-keep-local': '',
+      onchange: event => { keepLocal = event.target.checked; dirty(); } });
     const save = button([icon('check'), 'Save & sync project'], () => busy(save, async () => {
-      const next = await api.updateWorkspace(workspace.id, { skills: [...chosen], targets: [...targets] });
+      const next = await api.updateWorkspace(workspace.id, { skills: [...chosen], targets: [...targets], keep_local: keepLocal });
       notify('Synced ' + next.skills.length + (next.skills.length === 1 ? ' skill' : ' skills') + ' to ' + next.name + '.', { tone: 'success' });
       await load(workspace.id);
     }, error => feedback.replaceChildren(errorText(error.message))), 'primary');
@@ -116,8 +150,17 @@ export function createWorkspaces(root, app) {
         h('div', { class: 'actions' }, sync, remove)),
       workspace.issues.length > 0 && h('div', { class: 'workspace-issues' }, h('strong', {}, 'Needs attention'),
         h('ul', {}, workspace.issues.map(issue => h('li', {}, h('code', { class: 'path' }, issue.path), ' — ', issue.problem)))),
+      redundantAll.length > 0 && h('div', { class: 'workspace-issues', 'data-redundant-summary': '' },
+        h('strong', {}, redundantAll.length + (redundantAll.length === 1 ? ' skill is' : ' skills are') + ' also synced globally'),
+        h('p', { class: 'muted' }, 'The AI tools load them from your global folders and from this project. Make them Project-only so they appear only in projects that choose them.'),
+        fixAll || ''),
       h('div', { class: 'settings-group' }, h('h3', {}, 'Write skills to'), targetBoxes,
         h('small', { class: 'field-help' }, 'Claude, Codex/Antigravity, Gemini and Cursor are written by default. Copilot, Windsurf, Cline and Roo Code are experimental and opt-in; Cline and Roo Code load every rule into every task.')),
+      h('div', { class: 'settings-group' }, h('h3', {}, 'Git'),
+        h('label', { class: 'checkbox-row' }, keepLocalBox, ' Keep local (add generated skill folders to .git/info/exclude)'),
+        h('small', { class: 'field-help' }, workspace.git_repo
+          ? 'On: the generated folders stay out of git status and commits, which suits solo work. Off: commit them so everyone who clones the repository gets the skills.'
+          : 'This folder is not a Git repository, so there is nothing to exclude.')),
       h('div', { class: 'settings-group' }, h('div', { class: 'spread' }, h('h3', {}, 'Skills for this project'), count), search, skillList),
       h('footer', { class: 'workspace-foot' }, feedback, save,
         h('small', { class: 'field-help' }, 'Edit skills in SkillHub; project copies update automatically. Copies edited inside the project are never overwritten.')));

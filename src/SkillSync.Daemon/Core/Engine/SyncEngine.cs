@@ -102,14 +102,21 @@ public sealed partial class SyncEngine : IAsyncDisposable
     private static readonly HashSet<ProviderType> SkillFolderProviders =
         [ProviderType.Claude, ProviderType.Gemini, ProviderType.Codex, ProviderType.Copilot, ProviderType.Windsurf];
 
-    /// <summary>What a provider destination receives: the transpiled skill, plus the learning note for personal skills.</summary>
+    /// <summary>
+    /// What a provider destination receives: the transpiled skill, plus the learning note for skills the user wrote.
+    /// Imported community skills never get the note: their text belongs upstream, and local edits would make the update
+    /// inbox's upstream and local fingerprints diverge. A resync rewrites copies that still carry an old note.
+    /// </summary>
     private string Outbound(ProviderType provider, CanonicalSkillModel model, string? directory)
     {
         var markdown = _transpilers[provider].TranspileOutbound(model, directory);
-        return ContinuousLearning && SkillFolderProviders.Contains(provider) &&
-            string.Equals(model.SourceCategory, "user", StringComparison.OrdinalIgnoreCase)
+        return ContinuousLearning && SkillFolderProviders.Contains(provider) && IsUserAuthored(model)
             ? LearningFooter.Append(markdown, model.Name) : markdown;
     }
+
+    /// <summary>A personal skill written by the user (or created for them over MCP), not an imported vendor skill.</summary>
+    public static bool IsUserAuthored(CanonicalSkillModel model) =>
+        string.Equals(model.SourceCategory, "user", StringComparison.OrdinalIgnoreCase) && !model.IsImported;
 
     /// <summary>The exact file a provider receives for this skill, as written by its transpiler.</summary>
     public string RenderForProvider(ProviderType provider, CanonicalSkillModel model) =>
@@ -219,7 +226,8 @@ public sealed partial class SyncEngine : IAsyncDisposable
             return new SkillSummary(metadata.Name, metadata.Title, metadata.Version, metadata.Description,
                 metadata.WhenToUse, metadata.SummaryShort, metadata.SourceCategory, metadata.OriginProvider,
                 metadata.IsCatalogOnly, metadata.CatalogId, metadata.Revision, metadata.Tags, metadata.Targets, metadata.Destinations,
-                FindInstructionExcerpt(skill.InstructionsMarkdown, query), files.Count, files);
+                FindInstructionExcerpt(skill.InstructionsMarkdown, query), files.Count, files,
+                metadata.Scope, metadata.ImportSource, ContextBudget.SkillTokens(metadata));
         }).ToList();
 
     public IReadOnlyDictionary<string, int> CountSkills() => SelectSkills(null, null, true, null)
@@ -361,6 +369,45 @@ public sealed partial class SyncEngine : IAsyncDisposable
             throw new ArgumentException("An external provider is required.");
         }
         return EditSkillAsync(name, model => model.SetEnabledFor(provider, enabled), originator, ct);
+    }
+
+    /// <summary>
+    /// Sets the scope (global, project or off) of every listed skill. Skills already in that scope are skipped, so the
+    /// call is idempotent. Built-in catalog entries and the SkillHub system skill cannot change scope.
+    /// </summary>
+    public async Task<ScopeChangeResult> SetScopeAsync(IEnumerable<string> names, string scope, string originator, CancellationToken ct = default)
+    {
+        var target = CanonicalSkillModel.NormalizeScope(scope);
+        var changed = new List<string>();
+        var unchanged = new List<string>();
+        var skipped = new List<ScopeSkip>();
+        foreach (var name in names.Select(ProviderDiscoveryService.NormalizeSlug).Where(name => name.Length > 0).Distinct(StringComparer.OrdinalIgnoreCase))
+        {
+            ct.ThrowIfCancellationRequested();
+            var current = GetSkill(name);
+            if (current is null) { skipped.Add(new(name, "not in your library")); continue; }
+            if (current.IsCatalogOnly) { skipped.Add(new(name, "a built-in template; activate or clone it first")); continue; }
+            if (current.SourceCategory == "system") { skipped.Add(new(name, "the SkillHub system skill stays global")); continue; }
+            if (current.Scope == target) { unchanged.Add(name); continue; }
+            await EditSkillAsync(name, model => model.Scope = target, originator, ct).ConfigureAwait(false);
+            changed.Add(name);
+        }
+        return new ScopeChangeResult(target, changed, unchanged, skipped);
+    }
+
+    /// <summary>Every skill SkillHub knows; managed skills include their instructions (catalog entries stay metadata only).</summary>
+    public IReadOnlyList<CanonicalSkillModel> ListLibraryWithContents() =>
+        ListSkills().Select(skill => skill.IsCatalogOnly ? skill : GetSkill(skill.Name) ?? skill).ToList();
+
+    /// <summary>Managed library skills matching a tag and/or an import source (owner/repo, or "personal" for skills written here).</summary>
+    public IReadOnlyList<CanonicalSkillModel> SelectPack(string? tag, string? source)
+    {
+        if (string.IsNullOrWhiteSpace(tag) && string.IsNullOrWhiteSpace(source))
+            throw new ArgumentException("Choose a tag or a source.");
+        return ListSkills().Where(skill => !skill.IsCatalogOnly && skill.SourceCategory != "system" &&
+            (string.IsNullOrWhiteSpace(tag) || skill.Tags.Contains(NormalizeTag(tag), StringComparer.OrdinalIgnoreCase)) &&
+            (string.IsNullOrWhiteSpace(source) || string.Equals(ContextBudget.PackOf(skill), source.Trim(), StringComparison.OrdinalIgnoreCase)))
+            .ToList();
     }
 
     public Task<CanonicalSkillModel> MaterializeCatalogSkillAsync(string id, CanonicalSkillModel? draft, bool activate,

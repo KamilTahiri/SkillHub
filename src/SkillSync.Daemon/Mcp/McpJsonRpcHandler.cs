@@ -27,13 +27,20 @@ public sealed partial class McpJsonRpcHandler
     public McpJsonRpcHandler(
         SyncEngine syncEngine,
         SkillImporterService? importer = null,
-        ProviderDiscoveryService? discovery = null)
+        ProviderDiscoveryService? discovery = null,
+        WorkspaceService? workspaces = null)
     {
         _syncEngine = syncEngine;
         _importer = importer ?? new SkillImporterService(syncEngine);
         _discovery = discovery ?? syncEngine.Discovery;
         _proposals = new SkillProposalService(syncEngine);
+        _workspaceService = workspaces;
     }
+
+    private WorkspaceService? _workspaceService;
+
+    /// <summary>Project workspaces; the host passes its shared instance, tests get their own.</summary>
+    private WorkspaceService Workspaces => _workspaceService ??= new WorkspaceService(_syncEngine, _discovery);
 
     private readonly SkillProposalService _proposals;
 
@@ -185,7 +192,7 @@ public sealed partial class McpJsonRpcHandler
                 ["name"] = "skillhub",
                 ["version"] = ProductVersion.Current
             },
-            ["instructions"] = "Use SkillHub MCP tools (list_skills, get_skill, create_skill, update_skill, delete_skill, manage_skill_tags, toggle_skill_provider, search_community_skills, browse_community_repo, preview_community_skill, prepare_skill_import, apply_skill_import, lint_skill, get_sync_status) as the Single Source of Truth whenever managing AI skills across Claude, Gemini/Antigravity, OpenAI Codex, and Cursor."
+            ["instructions"] = "Use SkillHub MCP tools (list_skills, get_skill, create_skill, update_skill, delete_skill, manage_skill_tags, toggle_skill_provider, search_community_skills, browse_community_repo, preview_community_skill, prepare_skill_import, apply_skill_import, lint_skill, lint_library, test_skill_trigger, get_context_budget, set_skill_scope, list_projects, set_project_skills, get_sync_status) as the Single Source of Truth whenever managing AI skills across Claude, Gemini/Antigravity, OpenAI Codex, and Cursor. Niche skill packs belong in Project-only scope, enabled per repository with set_project_skills."
         };
 
         return SerializeResult(idNode, result);
@@ -246,6 +253,12 @@ public sealed partial class McpJsonRpcHandler
                 "list_skill_proposals" => JsonSerializer.Serialize(new { proposals = _proposals.List(arguments["skill"]?.GetValue<string>()) }, IndentedJson),
                 "apply_skill_proposal" => await ExecuteApplyProposalAsync(arguments, ct).ConfigureAwait(false),
                 "lint_skill" => ExecuteLintSkill(arguments),
+                "lint_library" => ExecuteLintLibrary(arguments),
+                "get_context_budget" => ExecuteGetContextBudget(),
+                "set_skill_scope" => await ExecuteSetSkillScopeAsync(arguments, ct).ConfigureAwait(false),
+                "test_skill_trigger" => ExecuteTestSkillTrigger(arguments),
+                "list_projects" => ExecuteListProjects(),
+                "set_project_skills" => await ExecuteSetProjectSkillsAsync(arguments, ct).ConfigureAwait(false),
                 _ => throw new ArgumentException($"Unknown tool '{toolName}'.")
             };
 

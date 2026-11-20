@@ -91,6 +91,11 @@ public static class McpToolDefinitions
                       "type": "string",
                       "description": "Optional tag filter."
                     },
+                    "scope": {
+                      "type": "string",
+                      "enum": ["global", "project", "off"],
+                      "description": "Optional scope filter: global (synced to the tools' user folders), project (Project-only) or off."
+                    },
                     "category": {
                       "type": "string",
                       "enum": ["all", "user", "synced", "template", "system", "plugin"],
@@ -515,6 +520,75 @@ public static class McpToolDefinitions
                     "name": { "type": "string", "description": "The skill name (slug)." }
                   },
                   "required": ["name"],
+                  "additionalProperties": false
+                }
+              },
+              {
+                "name": "lint_library",
+                "description": "Runs Skill Doctor across the whole library in one call: per-skill findings, trigger collisions (groups of skills that compete for the same requests), references to companion skills that are not installed, descriptions over the 1,024-character limit, and the always-loaded token budget. Returns a library score.",
+                "inputSchema": {
+                  "type": "object",
+                  "properties": {
+                    "include_clean_skills": { "type": "boolean", "description": "Also list skills without findings (default false)." }
+                  },
+                  "additionalProperties": false
+                }
+              },
+              {
+                "name": "get_context_budget",
+                "description": "Returns the always-loaded token budget: how many tokens of skill names and descriptions every chat receives from globally synced skills, broken down by pack (personal skills, each imported repository, SkillHub), with a warning state when tools such as Claude Code start dropping descriptions.",
+                "inputSchema": { "type": "object", "properties": {}, "additionalProperties": false }
+              },
+              {
+                "name": "set_skill_scope",
+                "description": "Sets where skills are delivered, for named skills and/or a whole pack. global: the tools' user folders (costs always-loaded tokens in every chat). project: Project-only, written only into project workspaces that choose it (0 global tokens). off: nowhere. Use source (owner/repo or 'personal') or tag to move a pack in one call.",
+                "inputSchema": {
+                  "type": "object",
+                  "properties": {
+                    "scope": { "type": "string", "enum": ["global", "project", "off"] },
+                    "names": { "type": "array", "items": { "type": "string" }, "description": "Skill names (slugs)." },
+                    "tag": { "type": "string", "description": "Every library skill with this tag." },
+                    "source": { "type": "string", "description": "Every skill imported from this repository (owner/repo), or 'personal' for skills written in SkillHub." }
+                  },
+                  "required": ["scope"],
+                  "additionalProperties": false
+                }
+              },
+              {
+                "name": "test_skill_trigger",
+                "description": "Trigger tester: ranks which skills an agent would most likely load for a sample prompt (lexical match on names, descriptions, when-to-use and tags) and flags ties where several skills compete. Use it after editing descriptions to check that the right skill wins.",
+                "inputSchema": {
+                  "type": "object",
+                  "properties": {
+                    "prompt": { "type": "string", "minLength": 1, "description": "A request a user might type, e.g. 'Make a Roblox HUD'." },
+                    "include_project_only": { "type": "boolean", "description": "Rank Project-only skills too, as inside a project that enables them (default false)." },
+                    "limit": { "type": "integer", "minimum": 1, "maximum": 20, "description": "How many candidates to return (default 5)." }
+                  },
+                  "required": ["prompt"],
+                  "additionalProperties": false
+                }
+              },
+              {
+                "name": "list_projects",
+                "description": "Lists project workspaces: each project folder, the skills SkillHub writes into its own .claude/.agents/.gemini/.cursor folders, whether those are kept out of Git, and chosen skills that are also synced globally (duplicates).",
+                "inputSchema": { "type": "object", "properties": {}, "additionalProperties": false }
+              },
+              {
+                "name": "set_project_skills",
+                "description": "Chooses skills for a project folder (registered automatically on first use) and writes them into the project's AI folders. Name skills and/or a whole pack by tag or source. make_project_only: true also moves those skills off global sync so they cost no tokens in other chats. Use for requests like 'use the Roblox pack in this repo'.",
+                "inputSchema": {
+                  "type": "object",
+                  "properties": {
+                    "path": { "type": "string", "minLength": 1, "description": "Absolute path of the project folder (the repository root)." },
+                    "skills": { "type": "array", "items": { "type": "string" }, "description": "Skill names (slugs)." },
+                    "tag": { "type": "string", "description": "Add every library skill with this tag." },
+                    "source": { "type": "string", "description": "Add every skill imported from this repository (owner/repo), or 'personal'." },
+                    "mode": { "type": "string", "enum": ["add", "remove", "replace"], "description": "add (default) keeps the project's other skills; remove takes these out; replace sets exactly these." },
+                    "make_project_only": { "type": "boolean", "description": "Also set these skills to Project-only scope (removes them from global sync)." },
+                    "targets": { "type": "array", "items": { "type": "string", "enum": ["claude", "codex", "gemini", "cursor", "copilot", "windsurf", "cline", "roocode"] }, "description": "Project folders to write (default claude, codex, gemini, cursor)." },
+                    "keep_local": { "type": "boolean", "description": "Keep the generated folders out of Git via .git/info/exclude (default true). false: commit them for a team." }
+                  },
+                  "required": ["path"],
                   "additionalProperties": false
                 }
               },
