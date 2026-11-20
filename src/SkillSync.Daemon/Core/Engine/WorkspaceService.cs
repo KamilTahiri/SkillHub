@@ -77,7 +77,7 @@ public sealed record WorkspaceStatus(
 /// what SkillHub wrote, so files a person created or edited in the project are never lost. Records live as JSON files
 /// in <c>~/.skillhub/workspaces/</c>.
 /// </summary>
-public sealed class WorkspaceService : IDisposable
+public sealed partial class WorkspaceService : IDisposable
 {
     private static readonly JsonSerializerOptions Json = new() { WriteIndented = true };
     private readonly SyncEngine _engine;
@@ -398,11 +398,11 @@ public sealed class WorkspaceService : IDisposable
         catch (Exception error) when (error is IOException or UnauthorizedAccessException) { return "unreadable"; }
     }
 
-    private string ValidateProjectPath(string path)
+    private string ValidateProjectPath(string path, bool mustExist = true)
     {
         if (string.IsNullOrWhiteSpace(path)) throw new ArgumentException("Choose a project folder.");
         var full = Path.GetFullPath(path.Trim().Trim('"')).TrimEnd('\\', '/');
-        if (!Directory.Exists(full)) throw new ArgumentException("That folder does not exist: " + full);
+        if (mustExist && !Directory.Exists(full)) throw new ArgumentException("That folder does not exist: " + full);
         if (Path.GetPathRoot(full)?.TrimEnd('\\', '/') == full) throw new ArgumentException("Choose a project folder, not a whole drive.");
         var home = Path.GetFullPath(_discovery.UserHomeRoot).TrimEnd('\\', '/');
         // The user folder holds the global AI folders; projecting there would fight the global sync.
@@ -511,28 +511,48 @@ public static class GitExclude
         return null;
     }
 
-    /// <summary>Replaces SkillHub's block with <paramref name="entries"/>; an empty list removes it. Outside Git: nothing to do.</summary>
+    /// <summary>The marker lines of one project's block. A project in a subfolder of the repository gets its own block,
+    /// so several SkillHub projects inside one repository (a monorepo, an umbrella repo) never erase each other's entries.</summary>
+    public static (string Begin, string End) MarkersFor(string prefix) =>
+        prefix.Length == 0 ? (Begin, End) : (Begin + " /" + prefix.TrimEnd('/'), End + " /" + prefix.TrimEnd('/'));
+
+    /// <summary>Replaces this project's block with <paramref name="entries"/>; an empty list removes it. Outside Git: nothing to do.</summary>
     public static void Write(string projectFolder, IReadOnlyList<string> entries)
     {
         if (FindRepository(projectFolder) is not { } repository) return;
         var prefix = Path.GetRelativePath(repository.Root, Path.GetFullPath(projectFolder)).Replace('\\', '/');
         prefix = prefix == "." ? string.Empty : prefix.TrimEnd('/') + "/";
+        var (begin, end) = MarkersFor(prefix);
         var existing = File.Exists(repository.ExcludePath) ? File.ReadAllText(repository.ExcludePath) : string.Empty;
         var kept = new List<string>();
-        var inside = false;
+        List<string>? block = null;
+        var blockIsOurs = false;
         foreach (var line in existing.Replace("\r\n", "\n").Split('\n'))
         {
-            if (line == Begin) { inside = true; continue; }
-            if (line == End) { inside = false; continue; }
-            if (!inside) kept.Add(line);
+            if (block is null && (line == begin || line.StartsWith(Begin, StringComparison.Ordinal)))
+            {
+                block = [line];
+                blockIsOurs = line == begin;
+                continue;
+            }
+            if (block is null) { kept.Add(line); continue; }
+            block.Add(line);
+            if (!line.StartsWith(End, StringComparison.Ordinal)) continue;
+            // A block written before per-project markers (1.5.x) belongs to this project when all its entries do.
+            var body = block.Skip(1).Take(block.Count - 2).Where(entry => entry.Length > 0).ToList();
+            var legacyOurs = block[0] == Begin && prefix.Length > 0 && body.Count > 0 &&
+                body.All(entry => entry.StartsWith("/" + prefix, StringComparison.OrdinalIgnoreCase));
+            if (!blockIsOurs && !legacyOurs) kept.AddRange(block);
+            block = null;
         }
+        if (block is not null && !blockIsOurs) kept.AddRange(block);
         while (kept.Count > 0 && kept[^1].Length == 0) kept.RemoveAt(kept.Count - 1);
         if (entries.Count > 0)
         {
             if (kept.Count > 0) kept.Add(string.Empty);
-            kept.Add(Begin);
+            kept.Add(begin);
             kept.AddRange(entries.Select(entry => "/" + prefix + entry.TrimStart('/')));
-            kept.Add(End);
+            kept.Add(end);
         }
         var next = kept.Count == 0 ? string.Empty : string.Join('\n', kept) + "\n";
         if (next == existing.Replace("\r\n", "\n") || next.Length == 0 && !File.Exists(repository.ExcludePath)) return;

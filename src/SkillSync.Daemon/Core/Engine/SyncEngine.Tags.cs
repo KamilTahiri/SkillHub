@@ -6,6 +6,7 @@ namespace SkillSync.Daemon.Core.Engine;
 
 public sealed record SkillTag(string Tag, int SkillCount, bool IsCustom);
 public sealed record TagMutation(int UpdatedSkills, Guid? UndoId);
+public sealed record TagBatchResult(IReadOnlyList<string> Changed, IReadOnlyList<string> Unchanged, IReadOnlyList<ScopeSkip> Skipped);
 
 public sealed partial class SyncEngine
 {
@@ -143,6 +144,41 @@ public sealed partial class SyncEngine
         PublishActivity(string.Empty, "tags", "updated", $"Restored tags on {models.Count} skills.");
         return models.Count;
     }, ct);
+
+    /// <summary>Metadata-only tag report for the library (tags, per-skill tags, hygiene findings).</summary>
+    public TagReport TagReport() => TagHygiene.Analyze(ListSkills(), Volatile.Read(ref _customTags));
+
+    /// <summary>
+    /// Adds and removes tags on several skills in one call. Each changed skill is saved once (one History revision and
+    /// one sync); skills whose tags would not change are left untouched. System and catalog-only skills are skipped.
+    /// </summary>
+    public async Task<TagBatchResult> EditTagsAsync(IEnumerable<string> skills, IReadOnlyList<string> add, IReadOnlyList<string> remove,
+        string originator, CancellationToken ct = default)
+    {
+        var adding = add.Select(NormalizeTag).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+        var removing = remove.Select(NormalizeTag).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+        if (adding.Count + removing.Count == 0) throw new ArgumentException("Give at least one tag to add or remove.");
+        var changed = new List<string>();
+        var unchanged = new List<string>();
+        var skipped = new List<ScopeSkip>();
+        foreach (var name in skills.Select(ProviderDiscoveryService.NormalizeSlug).Distinct(StringComparer.OrdinalIgnoreCase))
+        {
+            var skill = GetSkill(name);
+            if (skill is null) { skipped.Add(new(name, "not in the library")); continue; }
+            if (skill.SourceCategory == "system") { skipped.Add(new(name, "system skill")); continue; }
+            if (skill.IsCatalogOnly) { skipped.Add(new(name, "built-in that is not active; activate it first")); continue; }
+            var current = skill.Tags.Select(ProviderDiscoveryService.NormalizeSlug).ToList();
+            var next = current.Where(tag => !removing.Contains(tag, StringComparer.OrdinalIgnoreCase))
+                .Concat(adding).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+            if (next.SequenceEqual(current, StringComparer.OrdinalIgnoreCase) &&
+                skill.Tags.SequenceEqual(current, StringComparer.Ordinal)) { unchanged.Add(skill.Name); continue; }
+            await EditSkillAsync(skill.Name, model => model.Tags = next, originator, ct).ConfigureAwait(false);
+            changed.Add(skill.Name);
+        }
+        if (changed.Count > 0)
+            PublishActivity(string.Empty, "tags", "updated", $"Updated tags on {changed.Count} skills.");
+        return new TagBatchResult(changed, unchanged, skipped);
+    }
 
     public Task<CanonicalSkillModel> SetSkillTagsAsync(string name, string tag, bool add, CancellationToken ct = default)
     {

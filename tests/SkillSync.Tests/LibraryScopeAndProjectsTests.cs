@@ -80,7 +80,7 @@ public sealed class LibraryScopeAndProjectsTests : IDisposable
         Assert.Contains("`get_context_budget` reports `warning` or `over`", bootstrap.InstructionsMarkdown);
         Assert.Contains("Attach it to this project?", bootstrap.InstructionsMarkdown);
         Assert.Contains("domain-specific project", bootstrap.WhenToUse);
-        Assert.Contains("9. **CONTINUOUS SKILL LEARNING (ON):**", bootstrap.InstructionsMarkdown);
+        Assert.Contains("11. **CONTINUOUS SKILL LEARNING (ON):**", bootstrap.InstructionsMarkdown);
     }
 
     [Fact]

@@ -16,7 +16,9 @@ export function createWorkspaces(root, app) {
   const body = h('div', { class: 'stack' });
   const add = button([icon('plus'), 'Add project'], () => addProject(), 'primary');
   root.append(heading('Projects', h('div', { class: 'actions' }, add),
-    h('p', { class: 'muted' }, 'Give a project folder its own set of skills. SkillHub copies them into the project’s AI folders, so everyone who opens the repository gets them.')),
+    h('p', { class: 'muted' }, 'Give a project folder its own set of skills. SkillHub copies them into the project’s AI folders, so everyone who opens the repository gets them.'),
+    h('p', { class: 'muted', 'data-umbrella-note': '' }, 'Tip: for a folder that groups several projects (such as Roblox Games), add the umbrella folder once instead of every project. ' +
+      'Claude Code reads parent folders; IDE tools opened on a project that has its own .git may stop there, so add that repository too if you work on it in Cursor, Copilot, Windsurf or Antigravity.')),
   body);
 
   async function load(focusId) {

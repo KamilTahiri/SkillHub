@@ -192,7 +192,7 @@ public sealed partial class McpJsonRpcHandler
                 ["name"] = "skillhub",
                 ["version"] = ProductVersion.Current
             },
-            ["instructions"] = "Use SkillHub MCP tools (list_skills, get_skill, create_skill, update_skill, delete_skill, manage_skill_tags, toggle_skill_provider, search_community_skills, browse_community_repo, preview_community_skill, prepare_skill_import, apply_skill_import, lint_skill, lint_library, test_skill_trigger, get_context_budget, set_skill_scope, list_projects, set_project_skills, get_sync_status) as the Single Source of Truth whenever managing AI skills across Claude, Gemini/Antigravity, OpenAI Codex, and Cursor. Niche skill packs belong in Project-only scope, enabled per repository with set_project_skills. After importing a domain-specific pack, or when get_context_budget reports warning or over, suggest in one sentence making that pack Project-only. When the current workspace matches a Project-only pack it does not have yet (for example Roblox or Blender files), offer once to attach it with set_project_skills."
+            ["instructions"] = "Use SkillHub MCP tools (list_skills, get_skill, create_skill, update_skill, delete_skill, manage_skill_tags, toggle_skill_provider, search_community_skills, browse_community_repo, preview_community_skill, prepare_skill_import, apply_skill_import, list_tags, manage_tags, lint_skill, lint_library, test_skill_trigger, get_context_budget, set_skill_scope, list_projects, create_project, inspect_project_skills, set_project_skills, get_sync_status) as the Single Source of Truth whenever managing AI skills across Claude, Gemini/Antigravity, OpenAI Codex, and Cursor. Niche skill packs belong in Project-only scope, enabled per repository with set_project_skills. After importing a domain-specific pack, or when get_context_budget reports warning or over, suggest in one sentence making that pack Project-only. When the current workspace matches a Project-only pack it does not have yet (for example Roblox or Blender files), offer once to attach it with set_project_skills. Prefer an umbrella folder that groups related projects (create_project and inspect_project_skills return an umbrella hint), but if those projects have their own .git, warn that IDE tools such as Cursor, Copilot, Windsurf and Antigravity IDE may stop at that boundary and let the user choose. Audit tags with list_tags and project skills with inspect_project_skills instead of reading skill files, and when unsure whether a skill belongs to a project or a tag should change, ask the user about those specific items before changing anything."
         };
 
         return SerializeResult(idNode, result);
@@ -259,6 +259,10 @@ public sealed partial class McpJsonRpcHandler
                 "test_skill_trigger" => ExecuteTestSkillTrigger(arguments),
                 "list_projects" => ExecuteListProjects(),
                 "set_project_skills" => await ExecuteSetProjectSkillsAsync(arguments, ct).ConfigureAwait(false),
+                "list_tags" => ExecuteListTags(arguments),
+                "manage_tags" => await ExecuteManageTagsAsync(arguments, ct).ConfigureAwait(false),
+                "create_project" => await ExecuteCreateProjectAsync(arguments, ct).ConfigureAwait(false),
+                "inspect_project_skills" => ExecuteInspectProjectSkills(arguments),
                 _ => throw new ArgumentException($"Unknown tool '{toolName}'.")
             };
 

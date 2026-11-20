@@ -593,6 +593,66 @@ public static class McpToolDefinitions
                 }
               },
               {
+                "name": "list_tags",
+                "description": "Token-efficient tag audit. Returns every tag with its skill count and skill slugs, each skill's {slug, name, scope, source, tags} (never bodies or companion files), and hygiene issues: untagged skills, near-duplicate tags (spelling, separator, plural, typo, narrower), single-use and unused tags. Fix them with manage_tags.",
+                "inputSchema": {
+                  "type": "object",
+                  "properties": {
+                    "tag": { "type": "string", "description": "Only this tag and the skills that carry it." },
+                    "include_skills": { "type": "boolean", "description": "Include the per-skill list (default true). false returns tags and issues only." }
+                  },
+                  "additionalProperties": false
+                }
+              },
+              {
+                "name": "manage_tags",
+                "description": "Batch tag edits without resending skill Markdown. add/remove: tags on several skills (skills and/or a source pack). rename: one tag to a new name across the library. merge: one or more tags into another (e.g. from ['3d-art'] into '3d'). delete: remove a tag from every skill. Each changed skill is saved once (History keeps the previous version) and synced. Ask the user first when a merge or delete is not clearly right.",
+                "inputSchema": {
+                  "type": "object",
+                  "properties": {
+                    "action": { "type": "string", "enum": ["add", "remove", "rename", "merge", "delete"] },
+                    "skills": { "type": "array", "items": { "type": "string" }, "description": "add/remove: skill slugs." },
+                    "source": { "type": "string", "description": "add/remove: also every skill imported from this owner/repo, or 'personal'." },
+                    "tags": { "type": "array", "items": { "type": "string" }, "description": "add/remove: the tags." },
+                    "tag": { "type": "string", "description": "delete: the tag. add/remove: a single tag. rename/merge: the tag to replace." },
+                    "from": { "type": "array", "items": { "type": "string" }, "description": "rename/merge: the tag(s) to replace." },
+                    "to": { "type": "string", "description": "rename: the new name (an existing tag makes it a merge)." },
+                    "into": { "type": "string", "description": "merge: the tag to keep." }
+                  },
+                  "required": ["action"],
+                  "additionalProperties": false
+                }
+              },
+              {
+                "name": "create_project",
+                "description": "Registers a folder as a SkillHub project (idempotent: an existing project is returned as is), optionally creating the folder and choosing skills. Defaults: Claude, Codex, Gemini and Cursor folders, and Keep local on (generated folders listed in .git/info/exclude). Also returns an umbrella hint when the folder sits next to sibling projects, and .git boundary warnings.",
+                "inputSchema": {
+                  "type": "object",
+                  "properties": {
+                    "path": { "type": "string", "minLength": 1, "description": "Absolute path of the project or umbrella folder." },
+                    "name": { "type": "string", "description": "Display name (default: the folder name)." },
+                    "skills": { "type": "array", "items": { "type": "string" } },
+                    "tag": { "type": "string", "description": "Also add every library skill with this tag." },
+                    "source": { "type": "string", "description": "Also add every skill imported from this owner/repo, or 'personal'." },
+                    "targets": { "type": "array", "items": { "type": "string", "enum": ["claude", "codex", "gemini", "cursor", "copilot", "windsurf", "cline", "roocode"] } },
+                    "keep_local": { "type": "boolean", "description": "Keep generated folders out of Git (default true)." },
+                    "create_folder": { "type": "boolean", "description": "Create the folder when it does not exist yet." }
+                  },
+                  "required": ["path"],
+                  "additionalProperties": false
+                }
+              },
+              {
+                "name": "inspect_project_skills",
+                "description": "Shows which skills reach the AI tools in a folder: skills of a SkillHub project registered for this folder or inherited from a registered parent (umbrella) folder, with compact metadata {slug, description, tags, scope, via, also_global}, skill files found on disk (managed or not), the global skill names, the Git root, umbrella hints and .git boundary warnings. Use it to judge which skills are relevant or redundant without reading skill files.",
+                "inputSchema": {
+                  "type": "object",
+                  "properties": { "path": { "type": "string", "minLength": 1, "description": "Absolute path of the folder you are working in." } },
+                  "required": ["path"],
+                  "additionalProperties": false
+                }
+              },
+              {
                 "name": "check_skillhub_update",
                 "description": "Checks whether a newer SkillHub is available (GitHub Release, or origin/main on a developer checkout). Returns the current and latest version and commit and whether an update is available.",
                 "inputSchema": { "type": "object", "properties": {}, "additionalProperties": false }
