@@ -269,27 +269,55 @@ async function verifyContrast(evaluate) {
 }
 
 test('workbench at desktop and docked sizes, with keyboard, themes, Markdown and pinned imports',
-  { skip: !browser && 'Set SKILLHUB_BROWSER to a Chromium executable.', timeout: 120000 }, async () => {
+  { skip: !browser && 'Set SKILLHUB_BROWSER to a Chromium executable.', timeout: 180000 }, async () => {
     const { server, fixture, url } = await fixtureServer();
-    const profile = await mkdtemp(join(tmpdir(), 'skillhub-browser-'));
-    const chrome = spawn(browser, ['--headless=new', '--disable-gpu', '--no-first-run', '--no-default-browser-check',
-      '--remote-debugging-port=0', '--user-data-dir=' + profile, url], { windowsHide: true, stdio: ['ignore', 'ignore', 'pipe'] });
-    let startupError = '';
-    let browserLog = '';
-    chrome.once('error', error => { startupError = error.message; });
-    chrome.stderr.setEncoding('utf8').on('data', chunk => { browserLog = (browserLog + chunk).slice(-2000); });
+    let chrome;
+    let profile;
     let page;
-    try {
-      const endpoint = await until(async () => {
+    const stopBrowser = async () => {
+      if (chrome && chrome.exitCode === null && chrome.signalCode === null && chrome.pid) {
+        const closed = once(chrome, 'exit');
+        chrome.kill();
+        await closed;
+      }
+      if (profile) await rm(profile, { recursive: true, force: true, maxRetries: 8, retryDelay: 150 });
+    };
+    // A fresh headless Chromium on a CI runner occasionally hangs before DevTools is up (component updates, first-run
+    // work). Background work is switched off, and a stalled launch is retried with a new profile.
+    const launch = async () => {
+      profile = await mkdtemp(join(tmpdir(), 'skillhub-browser-'));
+      chrome = spawn(browser, ['--headless=new', '--disable-gpu', '--no-first-run', '--no-default-browser-check',
+        '--disable-background-networking', '--disable-component-update', '--disable-sync', '--disable-extensions',
+        '--disable-features=Translate,OptimizationHints,MediaRouter', '--enable-logging=stderr', '--v=0',
+        '--remote-debugging-port=0', '--user-data-dir=' + profile, url], { windowsHide: true, stdio: ['ignore', 'ignore', 'pipe'] });
+      let startupError = '';
+      let browserLog = '';
+      let stage = 'waiting for DevToolsActivePort';
+      chrome.once('error', error => { startupError = error.message; });
+      chrome.stderr.setEncoding('utf8').on('data', chunk => { browserLog = (browserLog + chunk).slice(-2000); });
+      return until(async () => {
         if (startupError || chrome.exitCode !== null) throw new Error(startupError || 'Chromium exited with code ' + chrome.exitCode);
         try {
           const port = (await readFile(join(profile, 'DevToolsActivePort'), 'utf8')).split('\n')[0];
+          stage = 'DevTools on port ' + port + ', waiting for the page target';
           const pages = await (await fetch('http://127.0.0.1:' + port + '/json/list', { signal: AbortSignal.timeout(1500) })).json();
+          stage = 'targets: ' + pages.map(tab => tab.type + ' ' + tab.url).join(', ');
           return pages.find(tab => tab.type === 'page')?.webSocketDebuggerUrl;
         } catch { return null; }
-      }, 'Chromium never opened DevTools', 60000).catch(error => {
-        throw new Error(error.message + (browserLog ? '\n' + browserLog : ''));
+      }, 'Chromium never opened DevTools', 25000).catch(error => {
+        throw new Error(error.message + ' (' + stage + ')' + (browserLog ? '\n' + browserLog : ''));
       });
+    };
+    try {
+      let endpoint;
+      for (let attempt = 1; !endpoint; attempt++) {
+        try { endpoint = await launch(); }
+        catch (error) {
+          await stopBrowser();
+          if (attempt === 3) throw error;
+          console.log('# Chromium launch ' + attempt + ' stalled, retrying: ' + error.message.split('\n')[0]);
+        }
+      }
       page = await devTools(endpoint);
       const { send, evaluate } = page;
       const wait = (expression, label = expression) => until(() => evaluate("Boolean(" + expression + ")"), label);
@@ -694,14 +722,9 @@ test('workbench at desktop and docked sizes, with keyboard, themes, Markdown and
     } finally {
       fixture.releaseSlow();
       page?.socket.close();
-      if (chrome.exitCode === null && chrome.signalCode === null && chrome.pid) {
-        const closed = once(chrome, 'exit');
-        chrome.kill();
-        await closed;
-      }
+      await stopBrowser();
       fixture.events?.end();
       server.closeAllConnections();
       server.close();
-      await rm(profile, { recursive: true, force: true, maxRetries: 8, retryDelay: 150 });
     }
   });
