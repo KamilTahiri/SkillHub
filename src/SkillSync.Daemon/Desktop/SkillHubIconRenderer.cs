@@ -10,7 +10,7 @@ public static class SkillHubIconRenderer
     private static readonly int[] StandardIconSizes = [16, 32, 48, 64, 256];
 
     /// <summary>
-    /// Creates a multi-resolution native Windows Icon containing the SkillHub isometric layered prism emblem.
+    /// Creates a multi-resolution native Windows Icon containing the SkillHub hub mark.
     /// </summary>
     public static Icon CreateAppIcon(int preferredSize = 64)
     {
@@ -28,8 +28,7 @@ public static class SkillHubIconRenderer
     }
 
     /// <summary>
-    /// Renders the custom SkillHub isometric layered prism emblem at the requested pixel size
-    /// and returns a native Windows Icon.
+    /// Renders the SkillHub hub mark at the requested pixel size and returns a native Windows Icon.
     /// </summary>
     public static Icon CreateHubIcon(int size = 64)
     {
@@ -106,6 +105,7 @@ public static class SkillHubIconRenderer
         }
     }
 
+    /// <summary>Draws <see cref="SkillHubBrand"/> (the same geometry as <c>skillhub-logo.svg</c>) at the requested pixel size.</summary>
     public static Bitmap RenderHubBitmap(int size)
     {
         var bmp = new Bitmap(size, size, PixelFormat.Format32bppArgb);
@@ -115,69 +115,41 @@ public static class SkillHubIconRenderer
         g.PixelOffsetMode = PixelOffsetMode.HighQuality;
         g.Clear(Color.Transparent);
 
-        var pad = size * 0.04f;
-        var rect = new RectangleF(pad, pad, size - pad * 2, size - pad * 2);
-        var radius = size * 0.24f;
+        var scale = size / SkillHubBrand.ViewBox;
+        float S(float value) => value * scale;
+        var inset = S(SkillHubBrand.TileInset);
+        var rect = new RectangleF(inset, inset, size - inset * 2, size - inset * 2);
 
-        // 1. Rich Indigo -> Violet Squircle Background
-        using (var path = CreateRoundedRectPath(rect, radius))
-        using (var bgBrush = new LinearGradientBrush(
-            rect,
-            Color.FromArgb(255, 67, 56, 202),  // #4338CA Deep Indigo
-            Color.FromArgb(255, 109, 40, 217), // #6D28D9 Rich Violet
-            LinearGradientMode.ForwardDiagonal))
+        using (var path = CreateRoundedRectPath(rect, S(SkillHubBrand.TileRadius)))
+        using (var tile = new LinearGradientBrush(rect, ColorTranslator.FromHtml(SkillHubBrand.GradientStart),
+            ColorTranslator.FromHtml(SkillHubBrand.GradientEnd), LinearGradientMode.ForwardDiagonal))
         {
-            g.FillPath(bgBrush, path);
+            g.FillPath(tile, path);
         }
 
-        var strokeWidth = Math.Max(1.5f, size * 0.068f);
+        var center = S(SkillHubBrand.Center);
+        var orbit = S(SkillHubBrand.OrbitRadius);
+        using (var ring = new Pen(Color.FromArgb((int)MathF.Round(255 * SkillHubBrand.OrbitOpacity), 255, 255, 255), S(SkillHubBrand.OrbitStroke)))
+        {
+            g.DrawEllipse(ring, center - orbit, center - orbit, orbit * 2, orbit * 2);
+        }
 
-        // 2. Bottom & Middle Isometric Stack Chevrons (multi-provider skill layers)
-        using (var bottomPen = new Pen(Color.FromArgb(185, 199, 210, 254), strokeWidth)
+        using var white = new SolidBrush(Color.White);
+        using (var spoke = new Pen(Color.White, S(SkillHubBrand.SpokeStroke)) { StartCap = LineCap.Round, EndCap = LineCap.Round })
         {
-            StartCap = LineCap.Round,
-            EndCap = LineCap.Round,
-            LineJoin = LineJoin.Round
-        })
-        {
-            var bottomChevron = new PointF[]
+            for (var index = 0; index < SkillHubBrand.NodeAngles.Length; index++)
             {
-                new(size * 0.21f, size * 0.67f),
-                new(size * 0.50f, size * 0.81f),
-                new(size * 0.79f, size * 0.67f)
-            };
-            g.DrawLines(bottomPen, bottomChevron);
+                var (x, y) = SkillHubBrand.Node(index);
+                g.DrawLine(spoke, center, center, S(x), S(y));
+            }
         }
 
-        using (var midPen = new Pen(Color.FromArgb(230, 224, 231, 255), strokeWidth)
+        void Dot(float x, float y, float radius) => g.FillEllipse(white, S(x - radius), S(y - radius), S(radius * 2), S(radius * 2));
+        Dot(SkillHubBrand.Center, SkillHubBrand.Center, SkillHubBrand.HubRadius);
+        for (var index = 0; index < SkillHubBrand.NodeAngles.Length; index++)
         {
-            StartCap = LineCap.Round,
-            EndCap = LineCap.Round,
-            LineJoin = LineJoin.Round
-        })
-        {
-            var midChevron = new PointF[]
-            {
-                new(size * 0.21f, size * 0.52f),
-                new(size * 0.50f, size * 0.66f),
-                new(size * 0.79f, size * 0.52f)
-            };
-            g.DrawLines(midPen, midChevron);
-        }
-
-        // 3. Top Isometric Diamond Plane (Filled Crisp White)
-        var topDiamond = new PointF[]
-        {
-            new(size * 0.50f, size * 0.20f),
-            new(size * 0.79f, size * 0.355f),
-            new(size * 0.50f, size * 0.51f),
-            new(size * 0.21f, size * 0.355f)
-        };
-        using (var topBrush = new SolidBrush(Color.White))
-        using (var topPen = new Pen(Color.White, Math.Max(1.0f, size * 0.03f)) { LineJoin = LineJoin.Round })
-        {
-            g.FillPolygon(topBrush, topDiamond);
-            g.DrawPolygon(topPen, topDiamond);
+            var (x, y) = SkillHubBrand.Node(index);
+            Dot(x, y, SkillHubBrand.NodeRadius);
         }
 
         return bmp;

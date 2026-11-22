@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="SkillHub">
+  <defs><linearGradient id="skillhub-tile" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#4338CA"/><stop offset="1" stop-color="#6D28D9"/></linearGradient></defs>
+  <rect x="2" y="2" width="60" height="60" rx="15" fill="url(#skillhub-tile)"/>
+  <circle cx="32" cy="32" r="18" fill="none" stroke="#fff" stroke-opacity="0.42" stroke-width="3"/>
+  <path d="M32 32L32 14M32 32L47.59 41M32 32L16.41 41" stroke="#fff" stroke-width="4" stroke-linecap="round"/>
+  <circle cx="32" cy="32" r="8" fill="#fff"/>
+  <circle cx="32" cy="14" r="6" fill="#fff"/>
+  <circle cx="47.59" cy="41" r="6" fill="#fff"/>
+  <circle cx="16.41" cy="41" r="6" fill="#fff"/>
+</svg>

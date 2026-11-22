@@ -17,27 +17,14 @@ body { min-height: 100vh; }
   white-space: nowrap;
 }
 .brand-label { white-space: nowrap; }
-.brand-mark {
-  position: relative;
-  width: 21px;
-  height: 21px;
-  border-radius: 6px;
-  background: var(--accent);
-  display: inline-block;
+/* The brand mark is the same SVG as the window, tray and installer icon (generated from SkillHubBrand.cs). */
+.brand-logo {
+  width: 24px;
+  height: 24px;
   flex: none;
+  display: block;
+  user-select: none;
 }
-.brand-mark::before, .brand-mark::after {
-  position: absolute;
-  content: "";
-  width: 8px;
-  height: 8px;
-  border: 1.5px solid var(--accent-text);
-  border-radius: 1.5px;
-  transform: rotate(45deg);
-  left: 6.5px;
-}
-.brand-mark::before { top: 4px; background: var(--accent-text); }
-.brand-mark::after { top: 8px; border-top-color: transparent; border-left-color: transparent; }
 /* The nav is the only part of the bar that may shrink: it scrolls sideways instead of pushing the tools off-screen. */
 .app-bar nav {
   display: flex;
@@ -95,6 +82,20 @@ body { min-height: 100vh; }
   animation: none;
 }
 .provider-overview-icons { display: flex; align-items: center; gap: 4px; }
+/* Icons are shown up to three; the total count only appears where the icons are hidden (narrow windows). */
+.provider-overview-count { display: none; }
+.provider-overview-more {
+  display: inline-grid;
+  place-items: center;
+  min-width: 22px;
+  height: 18px;
+  padding: 0 5px;
+  border-radius: 5px;
+  background: var(--raised);
+  color: var(--secondary);
+  font-size: .72rem;
+  font-weight: 700;
+}
 .provider-overview.offline .provider-overview-icons { opacity: .65; }
 .sr-only {
   position: absolute;
@@ -179,7 +180,7 @@ body { min-height: 100vh; }
 }
 @media (width >= 768px) {
   #explore-screen {
-    height: calc(100dvh - var(--app-bar-height));
+    height: calc(100dvh - var(--app-bar-height) - var(--update-strip-height, 0px));
     overflow: hidden;
     display: flex;
     flex-direction: column;
@@ -252,7 +253,7 @@ body { min-height: 100vh; }
   .palette-trigger { padding: 5px 9px; }
   .app-bar nav button { padding: 0 9px; }
 }
-/* Compact header: only the prism remains of the brand so it can never collide with the tabs. */
+/* Compact header: only the logo remains of the brand so it can never collide with the tabs. */
 @media (max-width: 720px) {
   .brand-label { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
   .app-bar { gap: 10px; }
@@ -264,6 +265,7 @@ body { min-height: 100vh; }
 }
 @media (max-width: 560px) {
   .provider-overview-icons { display: none; }
+  .provider-overview-count { display: inline; }
   .app-tools { gap: 4px; }
 }
 .screen:not([hidden]) { animation: screen-in 200ms var(--ease); }

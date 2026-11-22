@@ -23,6 +23,20 @@ public static class Program
             return 0;
         }
 
+        // Writes the brand mark everywhere it is checked in: the .ico and the SVG used by the window, README and docs.
+        if (subcommand == "generate-brand" && args.Length > 1)
+        {
+            var repository = Path.GetFullPath(args[1]);
+            var daemon = Path.Combine(repository, "src", "SkillSync.Daemon");
+            SkillHubIconRenderer.SaveIconFile(Path.Combine(daemon, "skillhub-v2.ico"));
+            foreach (var svg in new[] { Path.Combine(daemon, "wwwroot", "img", "skillhub-logo.svg"), Path.Combine(repository, "docs", "brand", "skillhub-logo.svg") })
+            {
+                Directory.CreateDirectory(Path.GetDirectoryName(svg)!);
+                File.WriteAllText(svg, SkillHubBrand.Svg());
+            }
+            return 0;
+        }
+
         if (subcommand == "mcp-stdio")
         {
             using var cts = new CancellationTokenSource();
@@ -312,6 +326,7 @@ public static class Program
         builder.Services.AddSingleton<IClaudeDesktopProcesses, WindowsClaudeDesktopProcesses>();
         builder.Services.AddSingleton<ClaudeDesktopController>();
         builder.Services.AddSingleton<SkillProposalService>();
+        builder.Services.AddSingleton<SkillAppearanceService>();
         builder.Services.AddSingleton(sp => new UpdateService(
             new HttpClient { Timeout = TimeSpan.FromMinutes(10) }, new ProcessCommandRunner(), AppContext.BaseDirectory,
             Path.Combine(sp.GetRequiredService<ProviderDiscoveryService>().SkillHubRoot, "cache")));

@@ -89,5 +89,5 @@ textarea { resize: vertical; }
 .skip-link:focus { transform: translateY(0); }
 @media (forced-colors: active) {
   :focus-visible { outline-color: Highlight; }
-  .brand-mark { forced-color-adjust: none; }
+  .brand-logo { forced-color-adjust: none; }
 }

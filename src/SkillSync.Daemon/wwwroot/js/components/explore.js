@@ -84,7 +84,8 @@ export function createExplore(root, app) {
       button('← Back to results', () => resetPreview(true), 'quiet small explore-back'), preview));
   const toolbar = h('div', { class: 'explore-toolbar', role: 'search', 'aria-label': 'Explore skills' },
     h('div', { class: 'search-field' }, search), field('Source', sourceChooser), field('Topic', topicChooser),
-    button([icon('plus'), 'Import from link or file'], directImport));
+    button([icon('plus'), 'Import from URL / File'], directImport, '', { 'data-control': 'direct-import',
+      title: 'Add a skill from a GitHub link, an owner/repo path, a SKILL.md file or a .skillpack.zip backup' }));
   root.dataset.detail = 'false';
   root.append(toolbar, layout);
 
@@ -356,7 +357,8 @@ export function createExplore(root, app) {
     if (batchBar.hidden) { batchBar.replaceChildren(); return; }
     const deploy = deployChips();
     const status = h('div', { class: 'batch-status', role: 'status' });
-    const run = button([icon('download'), 'Import ' + chosen.size], () => busy(run, async () => {
+    const count = chosen.size + (chosen.size === 1 ? ' selected skill' : ' selected skills');
+    const run = button([icon('download'), 'Import ' + count], () => busy(run, async () => {
       isApplying = true;
       const picked = [...chosen.values()];
       const taken = new Set(app.snapshot.skills.filter(skill => !skill.is_catalog_only).map(skill => skill.name));
@@ -382,10 +384,12 @@ export function createExplore(root, app) {
         : 'No skills were imported.', failed.length ? { tone: 'warning' } : {});
       if (failed.length) status.replaceChildren(errorText(failed.join(' · ')));
       await load();
-    }, error => status.replaceChildren(errorText(error.message))), 'primary small');
+    }, error => status.replaceChildren(errorText(error.message))), 'primary small', {
+      'data-control': 'import-selected', title: 'Copy the ' + count + ' into My Skills and sync to the AI tools checked above' });
     batchBar.replaceChildren(
       h('div', { class: 'batch-head' }, h('strong', {}, chosen.size + ' selected'),
-        button('Clear', () => { chosen.clear(); showList(); }, 'quiet small')),
+        button(chosen.size === 1 ? 'Deselect' : 'Deselect all', () => { chosen.clear(); showList(); }, 'quiet small',
+          { 'data-control': 'deselect-all', title: 'Uncheck the selected skills (nothing is imported)' })),
       deploy.node, h('div', { class: 'batch-actions' }, status, run));
   }
 
@@ -666,7 +670,7 @@ export function createExplore(root, app) {
       dialog.close();
       openPreview(selection);
     }, error => feedback.replaceChildren(errorText(error.message))), 'primary');
-    const dialog = modal('Import from link or file', [field('Link', input),
+    const dialog = modal('Import from URL / File', [field('Link: GitHub URL, owner/repo or skills.sh', input),
       field('Markdown file or skill pack', file, 'A SKILL.md, .mdc or .md file, or a .skillpack.zip exported from SkillHub.'), feedback], review);
   }
 

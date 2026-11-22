@@ -35,6 +35,10 @@ const healthy = { ...sample, name: 'mirrored', title: 'Mirrored', tags: ['two', 
     destination('gemini', 'synced'), destination('claude', 'missing'), destination('cursor', 'conflict')] };
 const needsAttention = { ...healthy, name: 'conflicted', title: 'Conflicted', tags: ['three'],
   destinations: [destination('codex', 'synced'), destination('gemini', 'conflict')] };
+const allProviders = ['codex', 'gemini', 'claude', 'cursor', 'copilot', 'windsurf', 'cline', 'roocode'];
+const everyProvider = [{ provider: 'canonical', is_installed: true }, ...allProviders.map(provider => ({ provider, is_installed: true, skills_root: '/' + provider }))];
+const everywhere = { ...sample, name: 'everywhere', title: 'Everywhere', tags: [],
+  targets: Object.fromEntries(allProviders.map(id => [id, { enabled: true }])), destinations: allProviders.map(id => destination(id, 'synced')) };
 const template = { ...sample, name: 'template', catalog_id: 'fixture-template', source_category: 'template',
   is_catalog_only: true, tags: ['workflow'] };
 const system = { ...sample, name: 'bootstrap', source_category: 'system', tags: ['system', 'skillhub', 'meta-skill'] };
@@ -45,7 +49,7 @@ const item = name => ({ slug: name.toLowerCase(), title: name, description: name
 async function fixtureServer() {
   let releaseSlow;
   const slowPreview = new Promise(resolve => { releaseSlow = resolve; });
-  const fixture = { scopeRequests: [], triggerPrompts: [], learning: true, proposalApplied: null, updateApplied: false, onboarded: true, workspaces: [], workspaceUpdate: null, packUpload: null, packApply: null, releaseSlow, slowFinished: false, theme: 'dark', tray: true, startup: true, reviewed: null, applied: null, preparing: new Map(), prefetched: new Map(), events: null, reads: 0 };
+  const fixture = { appearance: {}, appearanceRequests: [], manyProviders: false, scopeRequests: [], triggerPrompts: [], learning: true, proposalApplied: null, updateApplied: false, onboarded: true, workspaces: [], workspaceUpdate: null, packUpload: null, packApply: null, releaseSlow, slowFinished: false, theme: 'dark', tray: true, startup: true, reviewed: null, applied: null, preparing: new Map(), prefetched: new Map(), events: null, reads: 0 };
   const server = createServer(async (req, res) => {
     const url = new URL(req.url, 'http://localhost');
     const send = (value, status = 200) => {
@@ -65,8 +69,15 @@ async function fixtureServer() {
       const data = body ? JSON.parse(body) : {};
       if (route === '/skills') {
         fixture.reads++;
-        return send([sample, healthy, needsAttention, template, system]);
+        return send([sample, healthy, needsAttention, template, system, ...(fixture.manyProviders ? [everywhere] : [])]);
       }
+      if (route === '/skill-appearance' && req.method === 'POST') {
+        fixture.appearanceRequests.push(data);
+        if (data.reset) delete fixture.appearance[data.key];
+        else fixture.appearance[data.key] = data.image ? { image: data.image } : { icon: data.icon };
+        return send({ key: data.key });
+      }
+      if (route === '/skill-appearance') return send({ skills: fixture.appearance });
       if (route === '/skills/fixture') return send({ skill: sample });
       if (route === '/skills/conflicted') return send({ skill: needsAttention });
       if (route === '/skills/conflicted/destination-review') {
@@ -104,7 +115,7 @@ async function fixtureServer() {
             { name: 'game-ui-ux', title: 'Game UI UX', scope: 'global', score: 3.9, relative: 0.93, verdict: 'tie', matched_terms: ['hud'] }] });
       }
       if (route === '/tags') return send(['one', 'system', 'skillhub', 'meta-skill'].map(tag => ({ tag, skill_count: 1 })));
-      if (route === '/providers') return send(installed);
+      if (route === '/providers') return send(fixture.manyProviders ? everyProvider : installed);
       if (route === '/preferences/theme' && req.method === 'PATCH') {
         fixture.theme = data.theme;
         return send({ theme: fixture.theme });
@@ -189,7 +200,7 @@ async function fixtureServer() {
       return send({ error: 'Unexpected request ' + route }, 404);
     }
     const path = url.pathname === '/' ? 'index.html' : url.pathname.slice(1);
-    const mime = path.endsWith('.js') ? 'text/javascript' : path.endsWith('.css') ? 'text/css' : 'text/html';
+    const mime = path.endsWith('.js') ? 'text/javascript' : path.endsWith('.css') ? 'text/css' : path.endsWith('.svg') ? 'image/svg+xml' : 'text/html';
     try {
       const file = await readFile(new URL(path, root));
       res.writeHead(200, { 'Content-Type': mime });
@@ -338,6 +349,11 @@ test('workbench at desktop and docked sizes, with keyboard, themes, Markdown and
         .catch(error => { throw new Error(error.message + '\\n' + page.pageErrors.join('\\n')); });
       assert.ok(await evaluate('document.documentElement.scrollWidth <= innerWidth'));
       assert.ok(await evaluate('document.querySelector(".result-button").getBoundingClientRect().top < innerHeight'));
+      // One brand mark everywhere: the header logo and the favicon are the same SVG the .ico is generated from.
+      await wait('document.querySelector(".brand-logo").complete && document.querySelector(".brand-logo").naturalWidth > 0', 'brand logo did not load');
+      assert.deepEqual(await evaluate('[new URL(document.querySelector(".brand-logo").src).pathname, new URL(document.querySelector("link[rel=icon]").href).pathname]'),
+        ['/img/skillhub-logo.svg', '/img/skillhub-logo.svg']);
+      assert.equal(await evaluate('document.querySelector(".brand-mark")'), null);
       // Header at every width: tools stay inside the window, the brand never touches the tabs, the tabs never touch the tools.
       for (const width of [460, 540, 640, 720, 768, 850, 900, 1024, 1280, 1440]) {
         await size(width, 800, 1);
@@ -451,6 +467,44 @@ test('workbench at desktop and docked sizes, with keyboard, themes, Markdown and
       await wait('document.querySelector("dialog[open] input") === document.activeElement');
       await key('Escape');
       await wait('!document.querySelector("dialog[open]")');
+      // Skill icon: initials by default, then a built-in icon, an uploaded image (resized to 128 px) and back to initials.
+      assert.equal(await evaluate('document.querySelector("#reader-screen .skill-badge-button .skill-glyph").dataset.badge'), 'initials');
+      assert.equal(await evaluate('document.querySelector("#reader-screen .skill-badge-button .skill-glyph").textContent'), 'F');
+      await click('#reader-screen .skill-badge-button');
+      await wait('document.querySelector("dialog.icon-picker[open]")');
+      assert.ok(await evaluate('document.querySelectorAll("dialog.icon-picker .icon-choice").length >= 30'));
+      assert.equal(await evaluate('document.querySelector("[data-control=save-icon]").disabled'), true);
+      await click('dialog.icon-picker [data-icon="terminal"]');
+      assert.equal(await evaluate('document.querySelector("dialog.icon-picker [data-icon=terminal]").getAttribute("aria-pressed")'), 'true');
+      await click('[data-control=save-icon]');
+      await until(() => fixture.appearanceRequests.length === 1, 'Icon choice was not saved');
+      assert.deepEqual(fixture.appearanceRequests[0], { key: 'fixture', icon: 'terminal' });
+      await wait('document.querySelector("#reader-screen .skill-badge-button .skill-glyph")?.dataset.badge === "icon"', 'reader badge did not show the icon');
+      await wait('document.querySelector("#library-screen [data-control=row-fixture] .skill-glyph")?.dataset.badge === "icon"', 'library badge did not show the icon');
+      await click('#reader-screen .skill-badge-button');
+      await wait('document.querySelector("dialog.icon-picker[open]")');
+      await evaluate(`(async () => {
+        const canvas = document.createElement('canvas'); canvas.width = 400; canvas.height = 300;
+        const context = canvas.getContext('2d'); context.fillStyle = '#e4572e'; context.fillRect(0, 0, 400, 300);
+        const blob = await new Promise(resolve => canvas.toBlob(resolve, 'image/png'));
+        const input = document.querySelector('dialog.icon-picker input[type=file]');
+        const transfer = new DataTransfer(); transfer.items.add(new File([blob], 'logo.png', { type: 'image/png' }));
+        input.files = transfer.files; input.dispatchEvent(new Event('change'));
+      })()`);
+      await wait('document.querySelector("dialog.icon-picker .icon-picker-preview img")', 'uploaded image was not previewed');
+      assert.deepEqual(await evaluate(`new Promise(resolve => { const image = new Image(); image.onload = () => resolve([image.width, image.height]);
+        image.src = document.querySelector("dialog.icon-picker .icon-picker-preview img").src; })`), [128, 128]);
+      await click('[data-control=save-icon]');
+      await until(() => fixture.appearanceRequests.length === 2, 'Image was not saved');
+      assert.match(fixture.appearanceRequests[1].image, /^data:image\/(webp|png);base64,/);
+      await wait('document.querySelector("#reader-screen .skill-badge-button .skill-glyph")?.dataset.badge === "image"', 'reader badge did not show the image');
+      await click('#reader-screen .skill-badge-button');
+      await wait('document.querySelector("dialog.icon-picker[open]")');
+      await click('[data-control=reset-initials]');
+      await click('[data-control=save-icon]');
+      await until(() => fixture.appearanceRequests.length === 3, 'Reset was not saved');
+      assert.deepEqual(fixture.appearanceRequests[2], { key: 'fixture', reset: true });
+      await wait('document.querySelector("#reader-screen .skill-badge-button .skill-glyph")?.dataset.badge === "initials"', 'reader badge did not return to initials');
       assert.ok(await evaluate('[...document.querySelectorAll("#reader-screen button")].some(b => b.textContent.includes("Copy skill prompt"))'));
       await textButton('Edit skill');
       // Editor 2.0: write pane with toolbar and budget meters beside the live preview.
@@ -509,9 +563,12 @@ test('workbench at desktop and docked sizes, with keyboard, themes, Markdown and
       assert.ok(pinned.position === 'sticky' && pinned.scrolled > 0 && Math.abs(pinned.offset) <= 4 && pinned.height > 0,
         'the result count stays visible while scrolling ' + JSON.stringify(pinned));
       await evaluate('document.querySelector(".explore-results").scrollTop = 0');
+      assert.equal(await evaluate('document.querySelector("[data-control=direct-import]").textContent'), 'Import from URL / File');
       await evaluate('for (const box of [...document.querySelectorAll(".result-pick")].slice(3, 5)) box.click()');
       await wait('!document.querySelector(".batch-bar").hidden && document.querySelector(".batch-bar").textContent.includes("2 selected")');
-      await textButton('Clear');
+      assert.equal(await evaluate('document.querySelector("[data-control=import-selected]").textContent'), 'Import 2 selected skills');
+      assert.equal(await evaluate('document.querySelector("[data-control=deselect-all]").textContent'), 'Deselect all');
+      await textButton('Deselect all');
       await wait('document.querySelector(".batch-bar").hidden');
       await wait('document.querySelector("#explore-screen .result-row:nth-child(2) .result-title")?.textContent === "Fast review"');
       assert.equal(fixture.preparing.size, 0);
@@ -609,13 +666,33 @@ test('workbench at desktop and docked sizes, with keyboard, themes, Markdown and
       await evaluate('[...document.querySelectorAll("#settings-screen label")].find(l => l.textContent.includes("Let AI tools offer skill improvements")).querySelector("input").click()');
       await until(() => fixture.learning === false, 'Learning preference was not saved');
       await wait('document.querySelector("#settings-screen").textContent.includes("SkillHub 1.4.1 is available")');
-      await wait('!document.querySelector("#update-button").hidden');
-      assert.equal(await evaluate('document.querySelector("#update-button .update-label").textContent'), 'Update available (v1.4.1) — Update & Restart');
-      await click('#update-button');
+      // The update notice is a slim strip under the header (not a dot in the crowded header) that stays tinted on hover.
+      await wait('!document.querySelector("#update-banner").hidden');
+      assert.match(await evaluate('document.querySelector("#update-banner").textContent'), /Update available: v1\.4\.1 · You have v1\.4\.0/);
+      assert.ok(await evaluate('document.querySelector("#update-banner").getBoundingClientRect().top >= document.querySelector(".app-bar").getBoundingClientRect().bottom - 1'));
+      assert.equal(await evaluate('document.querySelector(".app-tools [data-update-action]")'), null);
+      const stripBefore = await evaluate('getComputedStyle(document.querySelector("#update-banner")).backgroundColor');
+      { const box = await evaluate('(({ x, y, width, height }) => ({ x, y, width, height }))(document.querySelector(".update-strip-text").getBoundingClientRect())');
+        await send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: box.x + box.width / 2, y: box.y + box.height / 2 }); }
+      assert.equal(await evaluate('getComputedStyle(document.querySelector("#update-banner")).backgroundColor'), stripBefore, 'the strip must not change on hover');
+      assert.notEqual(stripBefore, await evaluate('getComputedStyle(document.querySelector("#update-banner [data-update-action=apply]")).backgroundColor'));
+      // Explore fills the window below the header and the strip without a page scrollbar.
+      await size(1280, 820, 1);
+      await click('[data-route="explore"]');
+      await wait('innerWidth === 1280 && document.querySelector("#explore-screen .result-button")');
+      await wait('document.documentElement.scrollHeight === innerHeight', 'Explore overflows the window while the update strip is shown');
+      await size(480, 600, 1);
+      await click('[data-route="settings"]');
+      await wait('innerWidth === 480 && !document.querySelector("#settings-screen").hidden');
+      await click('#update-banner [data-update-action=apply]');
       await wait('document.querySelector("dialog[open]")?.textContent.includes("Update & Restart")');
       await evaluate('[...document.querySelectorAll("dialog[open] button")].find(b => b.textContent === "Update & Restart").click()');
       await until(() => fixture.updateApplied, 'Update was not applied');
       await wait('!document.querySelector("dialog[open]")');
+      await click('#update-banner [data-update-action=dismiss]');
+      await wait('document.querySelector("#update-banner").hidden');
+      assert.equal(await evaluate('localStorage.getItem("skillhub_dismissed_update")'), 'v1.4.1');
+      await evaluate('localStorage.removeItem("skillhub_dismissed_update")');
 
       // Welcome guide: three steps, opened from Settings, marks onboarding done when closed.
       fixture.onboarded = false;
@@ -638,6 +715,26 @@ test('workbench at desktop and docked sizes, with keyboard, themes, Markdown and
       await click('[data-route="library"]');
       await wait('document.querySelector("#context-budget-meter")?.dataset.state === "over"', 'Budget meter did not load');
       assert.match(await evaluate('document.querySelector("#context-budget-meter").textContent'), /Always-loaded: ~6\.0k tokens \/ chat/);
+      // Modals lock the page behind them: no wheel scrolling, and a click on the dimmed backdrop closes them.
+      await size(480, 360, 1);
+      await wait('innerHeight === 360 && document.documentElement.scrollHeight > innerHeight + 100');
+      await evaluate('window.scrollTo(0, 0)');
+      const wheel = () => send('Input.dispatchMouseEvent', { type: 'mouseWheel', x: 12, y: 300, deltaX: 0, deltaY: 400 });
+      await wheel();
+      await wait('scrollY > 0', 'the page itself should scroll without a dialog');
+      await evaluate('window.scrollTo(0, 0)');
+      await click('#context-budget-meter');
+      await wait('document.querySelector("dialog[open] .budget-summary")');
+      assert.equal(await evaluate('getComputedStyle(document.documentElement).overflowY'), 'hidden');
+      for (let turn = 0; turn < 3; turn++) await wheel();
+      await delay(200);
+      assert.equal(await evaluate('scrollY'), 0, 'background scrolled behind the budget dialog');
+      await send('Input.dispatchMouseEvent', { type: 'mousePressed', x: 4, y: 354, button: 'left', clickCount: 1 });
+      await send('Input.dispatchMouseEvent', { type: 'mouseReleased', x: 4, y: 354, button: 'left', clickCount: 1 });
+      await wait('!document.querySelector("dialog[open]")', 'a backdrop click did not close the dialog');
+      assert.notEqual(await evaluate('getComputedStyle(document.documentElement).overflowY'), 'hidden');
+      await size(480, 600, 1);
+      await wait('innerHeight === 600');
       await click('#context-budget-meter');
       await wait('document.querySelector("dialog[open] .budget-pack[data-pack=\'acme/roblox\'] [data-pack-action=project]")');
       assert.match(await evaluate('document.querySelector("dialog[open] .budget-summary").textContent'), /6\.0k tokens in every chat/);
@@ -719,6 +816,40 @@ test('workbench at desktop and docked sizes, with keyboard, themes, Markdown and
       await delay(250);
       assert.equal(fixture.reads, baseline + 1);
       await assertNoSerializedElements();
+
+      // Eight AI tools: the header and each row show three logos plus "+5"; the popover lists all eight and stays on screen.
+      fixture.manyProviders = true;
+      await click('[data-route="library"]');
+      fixture.events.write('id: 9\nevent: activity\ndata: {}\n\n');
+      await wait('document.querySelector("[data-control=row-everywhere]")', 'the eight-provider skill did not appear');
+      for (const width of [460, 768, 1440]) {
+        await size(width, 800, 1);
+        await wait('innerWidth === ' + width);
+        const overflow = await evaluate(`(() => {
+          const pill = document.querySelector('#provider-overview');
+          const status = document.querySelector('[data-control=row-everywhere] + div');
+          return { headerIcons: pill.querySelectorAll('.provider-overview-icons svg').length, headerMore: pill.querySelector('.provider-overview-more')?.textContent,
+            count: pill.querySelector('.provider-overview-count').textContent, rowIcons: status.querySelectorAll('[data-synced-provider]').length,
+            rowMore: status.querySelector('.overflow-more-button')?.textContent, pillInside: pill.getBoundingClientRect().right <= innerWidth,
+            noPageOverflow: document.documentElement.scrollWidth <= innerWidth };
+        })()`);
+        assert.deepEqual(overflow, { headerIcons: 3, headerMore: '+5', count: '8', rowIcons: 3, rowMore: '+5', pillInside: true, noPageOverflow: true }, 'overflow at ' + width);
+        await click('[data-control=row-everywhere] + div .overflow-more-button');
+        const pop = await evaluate(`(() => {
+          const pop = document.querySelector('[data-control=row-everywhere] + div .overflow-pop');
+          const box = pop.getBoundingClientRect();
+          return { shown: getComputedStyle(pop).display !== 'none', items: pop.querySelectorAll('.overflow-pop-item').length,
+            inside: box.left >= 0 && box.right <= innerWidth, text: pop.textContent };
+        })()`);
+        assert.equal(pop.shown && pop.inside, true, 'popover at ' + width + ' ' + JSON.stringify(pop));
+        assert.equal(pop.items, 8);
+        assert.match(pop.text, /Synced to · 8[\s\S]*Roo Code/);
+        await evaluate('document.querySelector("[data-control=row-everywhere] + div .overflow-more-button").focus()');
+        await key('Escape');
+        await wait('document.querySelector("[data-control=row-everywhere] + div .overflow-more-button").getAttribute("aria-expanded") === "false"');
+        await evaluate('document.activeElement.blur()');
+      }
+      assert.match(await evaluate('document.querySelector("#provider-overview").title'), /8 AI Providers Connected: .*Roo Code/);
     } finally {
       fixture.releaseSlow();
       page?.socket.close();

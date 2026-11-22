@@ -298,7 +298,7 @@ export function createSettings(root, app) {
         h('p', { class: 'field-help' }, 'When on, the bootstrap skill and a short note in your synced skills ask AI tools to offer an improvement only after they solved something non-trivial, never on routine tasks. You can also say “turn continuous skill learning off” in chat.')),
       updatesSection(),
       h('section', { class: 'settings-group' }, h('h2', {}, 'Backup & skill packs'),
-        h('p', { class: 'muted' }, 'A .skillpack.zip holds each SKILL.md, every companion file and a manifest. Import one from Explore › Import from link or file.'),
+        h('p', { class: 'muted' }, 'A .skillpack.zip holds each SKILL.md, every companion file and a manifest. Import one from Explore › Import from URL / File.'),
         h('div', { class: 'actions wrap' },
           backup,
           button('Export selected skills…', () => exportPicker(app)),

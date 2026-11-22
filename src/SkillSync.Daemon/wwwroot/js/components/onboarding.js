@@ -1,6 +1,6 @@
 import { api } from '../api.js';
 import { icon } from '../icons.js';
-import { h, button, busy, notify, errorText, copy } from '../ui.js';
+import { h, button, busy, notify, errorText, copy, dismissible } from '../ui.js';
 
 const PROVIDER_LABELS = { codex: 'ChatGPT / Codex', gemini: 'Gemini & Antigravity', claude: 'Claude', cursor: 'Cursor',
   copilot: 'GitHub Copilot', windsurf: 'Windsurf', cline: 'Cline', roocode: 'Roo Code' };
@@ -26,7 +26,7 @@ export async function showOnboarding(app) {
   const back = button('Back', () => go(step - 1), 'quiet');
   const next = button('Next', undefined, 'primary');
   const skip = button('Skip guide', () => dialog.close(), 'quiet');
-  dialog.append(h('header', { class: 'onboarding-head' }, h('span', { class: 'brand-mark', 'aria-hidden': 'true' }), title, skip),
+  dialog.append(h('header', { class: 'onboarding-head' }, h('img', { class: 'brand-logo', src: '/img/skillhub-logo.svg', alt: '', width: 28, height: 28 }), title, skip),
     dots, content, h('footer', { class: 'onboarding-foot' }, back, next));
   dialog.addEventListener('close', () => {
     dialog.remove();
@@ -111,7 +111,7 @@ export async function showOnboarding(app) {
     title.focus({ preventScroll: true });
   }
 
-  document.body.append(dialog);
+  document.body.append(dismissible(dialog));
   dialog.showModal();
   go(0);
   return dialog;

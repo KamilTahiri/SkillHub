@@ -6,6 +6,7 @@ import { showProviderPreview } from './transpilerPreview.js';
 import { copySkillPrompt, doctorPanel, historySection, updateBanner, proposalsBanner } from './skillInsights.js';
 import { icon } from '../icons.js';
 import { exportPack } from './skillPacks.js';
+import { appearanceFor, skillBadge, showIconPicker } from '../skillBadge.js';
 
 export function createReader(root, app) {
   let modelKey;
@@ -30,7 +31,8 @@ export function createReader(root, app) {
     const id = skillKey(skill);
     const identity = JSON.stringify([id, skill.revision, skill.title, skill.description, skill.when_to_use,
       skill.tags, skill.targets, skill.destinations, skill.is_catalog_only, query, snapshot.providers,
-      skill.is_catalog_only ? skill.instructions_markdown : undefined, app.updates?.get(skill.name)?.latest_revision]);
+      skill.is_catalog_only ? skill.instructions_markdown : undefined, app.updates?.get(skill.name)?.latest_revision,
+      appearanceFor(skill, snapshot.appearance)]);
     if (identity === lastRender) return;
     const sameSkill = modelKey === id;
     const scroll = window.scrollY;
@@ -56,6 +58,12 @@ export function createReader(root, app) {
       h('p', { class: 'result-count' }, skill.origin_provider || 'Personal', ' · ',
         h('span', { class: 'muted' }, sync.key === 'issue' ? 'Managed skill' : sync.label), ' · ',
         bundleBadge(Object.keys(files).length, { paths: Object.keys(files).sort(), verbose: true })));
+    // The badge doubles as the "change icon" control; the choice lives in SkillHub only, never in the skill files.
+    title.classList.add('with-badge');
+    title.prepend(h('button', { type: 'button', class: 'skill-badge-button', 'data-focus-key': 'skill-icon',
+      title: 'Change icon', 'aria-label': 'Change icon for ' + (skill.title || skill.name), onclick: () => showIconPicker(app, skill) },
+      skillBadge(skill, appearanceFor(skill, snapshot.appearance), { tint: sync.synced[0] ?? (skill.is_catalog_only ? 'catalog' : skill.source_category), className: 'large' }),
+      h('span', { class: 'skill-badge-edit', 'aria-hidden': 'true' }, icon('edit'))));
 
     const tags = h('div', { class: 'chips', 'aria-label': 'Skill tags' },
       ...(skill.tags ?? []).map(tag => readOnly ? h('span', { class: 'chip' }, '#' + tag)

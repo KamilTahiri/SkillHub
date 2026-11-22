@@ -119,6 +119,30 @@ export const select = (entries, value, attrs = {}) => {
 };
 export const optionPairs = object => Object.entries(object);
 
+/**
+ * Shows at most `max` items, then a compact "+N" badge whose popover lists every item (on hover, focus or click), so
+ * rows with many AI tools never crowd the layout. `render(item)` draws an inline item, `detail(item)` a popover line.
+ */
+let overflowNumber = 0;
+export function cappedList(items, { max = 3, render, detail, title = 'All', noun = 'more' }) {
+  if (items.length <= max) return items.map(render);
+  const hidden = items.length - max;
+  const id = 'overflow-pop-' + (++overflowNumber);
+  const pop = h('span', { class: 'overflow-pop', id, role: 'tooltip' },
+    h('span', { class: 'overflow-pop-title' }, title + ' · ' + items.length),
+    h('span', { class: 'overflow-pop-list' }, items.map(item => h('span', { class: 'overflow-pop-item' }, detail(item)))));
+  const trigger = h('button', { type: 'button', class: 'overflow-more-button', 'aria-expanded': 'false', 'aria-describedby': id,
+    'aria-label': '+' + hidden + ' ' + noun + '. ' + title + ': ' + items.length }, '+' + hidden);
+  const wrap = h('span', { class: 'overflow-more', 'data-overflow-count': hidden }, trigger, pop);
+  const setOpen = open => trigger.setAttribute('aria-expanded', String(open));
+  trigger.addEventListener('click', event => { event.stopPropagation(); setOpen(trigger.getAttribute('aria-expanded') !== 'true'); });
+  wrap.addEventListener('focusout', event => { if (!wrap.contains(event.relatedTarget)) setOpen(false); });
+  wrap.addEventListener('keydown', event => {
+    if (event.key === 'Escape' && trigger.getAttribute('aria-expanded') === 'true') { event.stopPropagation(); event.preventDefault(); setOpen(false); }
+  });
+  return [...items.slice(0, max).map(render), wrap];
+}
+
 const MAX_TOASTS = 3;
 
 /**
@@ -155,6 +179,32 @@ export function notify(message, options = {}) {
   return dismiss;
 }
 
+/**
+ * Shared modal behaviour: Escape always closes (Chromium can skip the native "cancel" after repeated use), and a click
+ * that starts and ends on the dimmed backdrop closes too. Background scrolling is locked in CSS for every open dialog.
+ */
+export function dismissible(dialog) {
+  let pressedOutside = false;
+  const outside = event => {
+    if (event.target !== dialog) return false;
+    const box = dialog.getBoundingClientRect();
+    return event.clientX < box.left || event.clientX > box.right || event.clientY < box.top || event.clientY > box.bottom;
+  };
+  dialog.addEventListener('pointerdown', event => { pressedOutside = outside(event); });
+  dialog.addEventListener('click', event => {
+    if (pressedOutside && outside(event)) dialog.close();
+    pressedOutside = false;
+  });
+  dialog.addEventListener('cancel', event => { event.preventDefault(); dialog.close(); });
+  dialog.addEventListener('keydown', event => {
+    if ((event.key === 'Escape' || event.key === 'Esc') && !event.defaultPrevented) {
+      event.preventDefault();
+      dialog.close();
+    }
+  });
+  return dialog;
+}
+
 let dialogNumber = 0;
 export function modal(title, body, footer) {
   const opener = document.activeElement;
@@ -168,7 +218,7 @@ export function modal(title, body, footer) {
     dialog.remove();
     if (opener?.isConnected) opener.focus({ preventScroll: true });
   }, { once: true });
-  document.body.append(dialog);
+  document.body.append(dismissible(dialog));
   dialog.showModal();
   return dialog;
 }

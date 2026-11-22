@@ -19,7 +19,7 @@ const status = document.getElementById('connection-status');
 const providerNames = { ...PROVIDERS, codex: 'ChatGPT / Codex', gemini: 'Gemini & Antigravity' };
 const providerButton = document.getElementById('provider-overview');
 const themeButton = document.getElementById('quick-theme');
-const updateButton = document.getElementById('update-button');
+const updateBanner = document.getElementById('update-banner');
 let online = false;
 for (const tab of nav.querySelectorAll('button')) { tab.prepend(icon(tab.dataset.route)); tab.title = tab.textContent.trim(); }
 const snapshotJob = new Latest();
@@ -32,7 +32,7 @@ let selectedKey;
 let refreshTimer;
 let guardPending = false;
 let loaded = false;
-let snapshot = { skills: [], tags: [], providers: [] };
+let snapshot = { skills: [], tags: [], providers: [], appearance: {} };
 let resolveFirstSnapshot;
 const firstSnapshot = new Promise(resolve => { resolveFirstSnapshot = resolve; });
 let lastEvent = 0;
@@ -59,31 +59,46 @@ const app = {
   applyUpdate
 };
 
-// Self-update: checked a few seconds after start and every six hours; the button appears only when there is something newer.
+// Self-update: checked a few seconds after start and every six hours. A slim strip under the header names the new
+// version; "Later" hides it until a newer one appears (Settings › Updates and the command palette still offer it).
 let updateInfo;
+const DISMISSED_UPDATE = 'skillhub_dismissed_update';
+const updateVersion = info => info?.latest_version ? 'v' + info.latest_version : (info?.latest_commit ?? '').slice(0, 7);
+function dismissedUpdate() { try { return localStorage.getItem(DISMISSED_UPDATE); } catch { return null; } }
 function showUpdate(info) {
-  updateInfo = info;
-  updateButton.hidden = !info?.update_available;
-  if (!info?.update_available) return;
-  const version = info.latest_version ? 'v' + info.latest_version : (info.latest_commit ?? '').slice(0, 7);
-  updateButton.querySelector('.update-label').textContent = 'Update available (' + version + ') — Update & Restart';
-  updateButton.title = info.summary;
-  updateButton.setAttribute('aria-label', 'Update available (' + version + '). Update and restart SkillHub');
+  updateInfo = info?.update_available ? info : undefined;
+  const version = updateVersion(updateInfo);
+  updateBanner.hidden = !updateInfo || dismissedUpdate() === version;
+  if (updateBanner.hidden) { updateBanner.replaceChildren(); return; }
+  const apply = button([icon('download'), 'Update & Restart'], () => applyUpdate(), 'primary small',
+    { 'data-update-action': 'apply', title: 'Install ' + version + ' and reopen SkillHub' });
+  const later = button([icon('close')], () => {
+    try { localStorage.setItem(DISMISSED_UPDATE, version); } catch { /* Storage blocked: hide for this session only. */ }
+    updateBanner.hidden = true;
+    document.getElementById('workspace').focus({ preventScroll: true });
+  }, 'quiet small icon-only', { 'data-update-action': 'dismiss', 'aria-label': 'Hide this update notice until the next version', title: 'Later' });
+  updateBanner.replaceChildren(h('div', { class: 'update-strip-inner' },
+    h('span', { class: 'update-strip-icon', 'aria-hidden': 'true' }, icon('sync')),
+    h('p', { class: 'update-strip-text' }, h('strong', {}, 'Update available: ' + version),
+      info.current_version && h('span', { class: 'muted' }, ' · You have v' + info.current_version)),
+    h('div', { class: 'update-strip-actions' }, apply, later)));
 }
+// Full-height screens (Explore) subtract the strip, so showing it never adds a page scrollbar.
+new ResizeObserver(() => document.documentElement.style.setProperty('--update-strip-height', updateBanner.offsetHeight + 'px')).observe(updateBanner);
 async function checkSkillHubUpdate(refresh) {
   try { showUpdate(await api.updateStatus(refresh)); } catch { /* Offline: try again later. */ }
 }
 async function applyUpdate(info = updateInfo) {
   if (!await confirmAction('Update SkillHub', (info?.summary ?? 'A newer SkillHub is available.') + ' SkillHub closes, installs the update and opens again.', 'Update & Restart', false)) return;
-  updateButton.disabled = true;
+  const apply = updateBanner.querySelector('[data-update-action=apply]');
+  if (apply) apply.disabled = true;
   try {
     const result = await api.applyUpdate();
     notify(result.message, { tone: result.started ? 'success' : 'warning', duration: 12000 });
   } catch (error) {
     notify(error.message, { tone: 'error' });
-  } finally { updateButton.disabled = false; }
+  } finally { if (apply) apply.disabled = false; }
 }
-updateButton.addEventListener('click', () => applyUpdate());
 setTimeout(() => checkSkillHubUpdate(true), 5000);
 setInterval(() => checkSkillHubUpdate(true), 6 * 60 * 60_000);
 const library = createLibrary(views.library, app);
@@ -200,9 +215,11 @@ app.checkUpdates = checkUpdates;
 async function refresh() {
   const job = snapshotJob.begin();
   try {
-    const [skills, tags, providers] = await Promise.all([api.skills('', job.signal), api.tags(job.signal), api.providers(job.signal)]);
+    // Badges are cosmetic: if they cannot load, skills still show their initials.
+    const [skills, tags, providers, appearance] = await Promise.all([api.skills('', job.signal), api.tags(job.signal), api.providers(job.signal),
+      api.appearance(job.signal).then(result => result.skills ?? {}, error => { if (error.name === 'AbortError') throw error; return snapshot.appearance ?? {}; })]);
     if (!job.current()) return;
-    snapshot = { skills, tags, providers };
+    snapshot = { skills, tags, providers, appearance };
     const firstLoad = !loaded;
     loaded = true;
     if (firstLoad) resolveFirstSnapshot();
@@ -240,7 +257,11 @@ function renderProviderButton() {
   providerButton.classList.toggle('no-providers', !count);
   providerButton.classList.toggle('has-issues', online && count > 0 && issues > 0);
   providerButton.setAttribute('aria-label', tooltip);
-  providerButton.querySelector('.provider-overview-icons').replaceChildren(...providers.map(icon));
+  // At most three logos in the header; the rest collapse into "+N" (the tooltip and the dialog list every provider).
+  const shown = providers.length > 3 ? providers.slice(0, 3) : providers;
+  providerButton.querySelector('.provider-overview-icons').replaceChildren(...shown.map(icon),
+    ...(providers.length > shown.length ? [h('span', { class: 'provider-overview-more' }, '+' + (providers.length - shown.length))] : []));
+  providerButton.classList.toggle('has-overflow', providers.length > shown.length);
   providerButton.querySelector('.provider-overview-count').textContent = loaded ? count : '–';
   providerButton.title = tooltip;
 }
@@ -311,8 +332,9 @@ document.getElementById('brand-home').addEventListener('click', () => navigate('
 function paletteCommands() {
   const dark = document.documentElement.dataset.theme === 'dark';
   return [
+    updateInfo && { group: 'Actions', label: 'Update SkillHub to ' + updateVersion(updateInfo), hint: 'Install the new version and restart', icon: 'download', run: () => applyUpdate() },
     { group: 'Actions', label: 'New skill', icon: 'plus', run: () => app.newSkill() },
-    { group: 'Actions', label: 'Import from link or file', icon: 'download', run: () => navigate('explore').then(done => done && explore.directImport()) },
+    { group: 'Actions', label: 'Import from URL / File', hint: 'GitHub link, owner/repo, SKILL.md or .skillpack.zip', icon: 'download', run: () => navigate('explore').then(done => done && explore.directImport()) },
     { group: 'Actions', label: 'Search the library', icon: 'search', shortcut: '/', run: () => navigate('library', { focusSearch: true }) },
     { group: 'Actions', label: dark ? 'Switch to light theme' : 'Switch to dark theme', icon: dark ? 'sun' : 'moon', run: () => themeButton.click() },
     { group: 'Actions', label: 'Verify & Sync All Folders', hint: 'Check every AI tool folder and repair missing copies', icon: 'sync', run: reconcile },
@@ -328,7 +350,7 @@ function paletteCommands() {
     { group: 'Go to', label: 'Settings › Connections', icon: 'settings', run: () => navigate('settings', { section: 'Connections' }) },
     { group: 'Go to', label: 'Settings › Appearance & Startup', icon: 'settings', run: () => navigate('settings', { section: 'Appearance & Startup' }) },
     { group: 'Go to', label: 'Settings › Diagnostics', icon: 'settings', run: () => navigate('settings', { section: 'Diagnostics' }) }
-  ];
+  ].filter(Boolean);
 }
 
 async function reconcile() {

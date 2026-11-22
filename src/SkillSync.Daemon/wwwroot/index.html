@@ -5,6 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="color-scheme" content="dark light">
   <title>SkillHub</title>
+  <link rel="icon" type="image/svg+xml" href="/img/skillhub-logo.svg">
   <link rel="stylesheet" href="/css/base.css">
   <link rel="stylesheet" href="/css/layout.css">
   <link rel="stylesheet" href="/css/components.css">
@@ -12,7 +13,7 @@
 <body>
   <a class="skip-link" href="#workspace">Skip to workspace</a>
   <header class="app-bar">
-    <button class="brand" type="button" id="brand-home" aria-label="SkillHub home"><span class="brand-mark" aria-hidden="true"></span><span class="brand-label">SkillHub</span></button>
+    <button class="brand" type="button" id="brand-home" aria-label="SkillHub home"><img class="brand-logo" src="/img/skillhub-logo.svg" alt="" width="24" height="24" draggable="false"><span class="brand-label">SkillHub</span></button>
     <nav id="primary-nav" aria-label="Main navigation">
       <button type="button" data-route="library" aria-current="page"><span>Library</span></button>
       <button type="button" data-route="explore"><span>Explore</span></button>
@@ -24,7 +25,6 @@
         <svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="m20 20-4-4"/></svg>
         <span class="palette-trigger-label">Search</span><kbd>Ctrl K</kbd>
       </button>
-      <button id="update-button" class="update-button" type="button" hidden><span class="update-dot" aria-hidden="true"></span><span class="update-label"></span></button>
       <button id="provider-overview" class="provider-overview" type="button" aria-haspopup="dialog" aria-label="Checking providers" disabled>
         <span class="provider-overview-dot" aria-hidden="true"></span><span class="provider-overview-icons" aria-hidden="true"></span><span class="provider-overview-count" aria-hidden="true">–</span>
       </button>
@@ -32,6 +32,7 @@
       <span id="connection-status" class="sr-only" role="status"></span>
     </div>
   </header>
+  <div id="update-banner" class="update-strip" role="region" aria-label="SkillHub update" hidden></div>
   <main id="workspace" tabindex="-1">
     <section id="library-screen" class="screen" aria-label="Library"></section>
     <section id="reader-screen" class="screen" aria-label="Skill" hidden></section>

@@ -24,6 +24,8 @@ export const api = {
   status: signal => request('/status', { signal }),
   providers: signal => request('/providers', { signal }),
   tags: signal => request('/tags', { signal }),
+  appearance: signal => request('/skill-appearance', { signal }),
+  setAppearance: data => request('/skill-appearance', { method: 'POST', data }),
   skills: (query, signal) => request('/skills' + (query ? '?query=' + encode(query) : ''), { signal }),
   detail: (name, signal) => request(pathFor(name), { signal }),
   save: (draft, cloneId) => request(cloneId ? '/catalog/' + encode(cloneId) + '/clone'

@@ -2,7 +2,8 @@ import { api } from '../api.js';
 import { COLLECTIONS, PROVIDERS, Latest, deployment, installedProviders, matchesFilters, inCollection, skillKey, targetIssues, slugify, tagSlug } from '../state.js';
 import { icon, PROVIDER_NAMES } from '../icons.js';
 import { highlighted } from '../markdown.js';
-import { h, button, field, select, modal, confirmAction, errorText, notify, busy, copy, bundleBadge, autoLoadMore, responsivePlaceholder } from '../ui.js';
+import { appearanceFor, skillBadge } from '../skillBadge.js';
+import { h, button, field, select, modal, confirmAction, errorText, notify, busy, copy, bundleBadge, autoLoadMore, responsivePlaceholder, cappedList } from '../ui.js';
 import { copySkillPrompt, reviewUpdate } from './skillInsights.js';
 import { createBudgetMeter, showLibraryAudit, showTriggerTester, scopeBadge, applyScope, SCOPES } from './libraryHealth.js';
 
@@ -324,8 +325,8 @@ export function createLibrary(root, app) {
             savedScroll = window.scrollY;
             app.read(key);
           } },
-          h('span', { class: 'skill-glyph', 'data-provider': sync.synced[0] ?? (skill.is_catalog_only ? 'catalog' : skill.source_category),
-            'aria-hidden': 'true' }, glyphText(skill.title || skill.name)),
+          skillBadge(skill, appearanceFor(skill, snapshot.appearance),
+            { tint: sync.synced[0] ?? (skill.is_catalog_only ? 'catalog' : skill.source_category) }),
           h('span', { class: 'result-title' }, highlighted(skill.title || skill.name, query)),
           h('span', { class: 'result-description' }, highlighted(skill.instruction_match ?? skill.description ?? '', query)),
           h('span', { class: 'result-files' }, bundleBadge(skill.file_count ?? Object.keys(skill.supporting_files ?? {}).length,
@@ -334,15 +335,14 @@ export function createLibrary(root, app) {
             h('span', { class: 'result-meta', title: origin }, origin),
             tags.slice(0, 2).map(tag => h('span', { class: 'chip' }, '#' + tag)),
             tags.length > 2 && h('span', { class: 'chip', title: tags.slice(2).join(', ') }, '+' + (tags.length - 2))));
+        const syncLabel = id => (sync.issues.includes(id) ? 'Partially synced to ' : 'Synced to ') + SYNC_NAMES[id];
         const providers = h('div', { class: 'result-providers' },
-          sync.synced.map(id => {
-            const partial = sync.issues.includes(id);
-            const label = (partial ? 'Partially synced to ' : 'Synced to ') + SYNC_NAMES[id];
-            return h('span', { class: 'provider-badge' + (syncView ? ' sync-pill' + (partial ? ' partial' : '') : ''), title: label,
-              'aria-label': label, 'data-synced-provider': id },
+          cappedList(sync.synced, { max: 3, title: 'Synced to', noun: 'more AI tools',
+            render: id => h('span', { class: 'provider-badge' + (syncView ? ' sync-pill' + (sync.issues.includes(id) ? ' partial' : '') : ''),
+              title: syncLabel(id), 'aria-label': syncLabel(id), 'data-synced-provider': id },
               syncView ? h('span', { class: 'sync-dot', 'aria-hidden': 'true' }) : icon(id),
-              h('span', { class: syncView ? '' : 'sr-only' }, PROVIDER_NAMES[id]));
-          }),
+              h('span', { class: syncView ? '' : 'sr-only' }, PROVIDER_NAMES[id])),
+            detail: id => [icon(id), h('span', {}, SYNC_NAMES[id]), sync.issues.includes(id) && h('span', { class: 'warning' }, ' · needs review')] }),
           !sync.synced.length && !issues.length && h('span', { class: 'result-status muted' }, sync.label));
         const exceptions = issues.map(issue => button(issue.label + (issue.state === 'missing' ? ' copy missing' : ' needs review') + ' →',
           () => app.review(skill.name, issue), 'quiet small warning', { 'data-control': 'review-' + issue.path }));
@@ -411,10 +411,6 @@ export function createLibrary(root, app) {
   };
 }
 
-function glyphText(title) {
-  const words = String(title).replace(/[^\p{L}\p{Nd}\s-]/gu, ' ').split(/[\s-]+/).filter(Boolean);
-  return ((words[0]?.[0] ?? '?') + (words[1]?.[0] ?? '')).toUpperCase();
-}
 
 function showTagManager(app, initialTags, onUsage) {
   const body = h('div', { class: 'stack' });

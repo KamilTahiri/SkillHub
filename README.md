@@ -1,5 +1,7 @@
 <div align="center">
 
+<img src="docs/brand/skillhub-logo.svg" alt="SkillHub logo" width="96" height="96">
+
 # SkillHub
 
 **One library of AI agent skills, kept in sync across every AI tool on your PC.**

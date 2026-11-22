@@ -49,6 +49,7 @@ public sealed class LocalContractTests : IAsyncLifetime
         builder.Services.AddSingleton<WorkspaceService>();
         builder.Services.AddSingleton<SkillPackService>();
         builder.Services.AddSingleton<SkillProposalService>();
+        builder.Services.AddSingleton<SkillAppearanceService>();
         builder.Services.AddSingleton(new UpdateService(new HttpClient(), new ProcessCommandRunner(), _home, Path.Combine(_home, "update-cache")));
         _app = builder.Build();
         _app.Use(_access.InvokeAsync);
@@ -372,6 +373,29 @@ public sealed class LocalContractTests : IAsyncLifetime
         Assert.True(settings.RootElement.GetProperty("auto_start").GetBoolean());
         Assert.True(settings.RootElement.GetProperty("close_to_tray").GetBoolean());
         Assert.Equal(bounds, saved.Bounds);
+    }
+
+    [Fact]
+    public async Task SkillAppearance_SavesIconsRejectsNonImagesAndResets()
+    {
+        async Task<HttpResponseMessage> Post(object body)
+        {
+            using var request = Desktop(HttpMethod.Post, "/api/v1/skill-appearance");
+            request.Content = JsonContent.Create(body);
+            return await _client.SendAsync(request);
+        }
+        using (var saved = await Post(new { key = "fixture", icon = "terminal" })) Assert.Equal(HttpStatusCode.OK, saved.StatusCode);
+        using (var rejected = await Post(new { key = "fixture", image = "data:image/svg+xml;base64,PHN2Zz48L3N2Zz4=" }))
+            Assert.Equal(HttpStatusCode.BadRequest, rejected.StatusCode);
+        using (var request = Desktop(HttpMethod.Get, "/api/v1/skill-appearance"))
+        using (var response = await _client.SendAsync(request))
+        using (var listed = JsonDocument.Parse(await response.Content.ReadAsStringAsync()))
+            Assert.Equal("terminal", listed.RootElement.GetProperty("skills").GetProperty("fixture").GetProperty("icon").GetString());
+        using (var reset = await Post(new { key = "fixture", reset = true })) Assert.Equal(HttpStatusCode.OK, reset.StatusCode);
+        using (var request = Desktop(HttpMethod.Get, "/api/v1/skill-appearance"))
+        using (var response = await _client.SendAsync(request))
+        using (var listed = JsonDocument.Parse(await response.Content.ReadAsStringAsync()))
+            Assert.Empty(listed.RootElement.GetProperty("skills").EnumerateObject());
     }
 
     [Fact]

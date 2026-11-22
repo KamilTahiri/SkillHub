@@ -75,6 +75,15 @@ public static class SkillRestEndpoints
             return Results.Ok(new { enabled });
         });
         // Saved skill improvements (continuous learning).
+        // Skill badges (built-in icon, uploaded image or initials): SkillHub-only side files, never synced to AI tools.
+        api.MapGet("/skill-appearance", (SkillAppearanceService appearance) => Results.Json(new { skills = appearance.List() }, WebJsonOptions));
+        api.MapPost("/skill-appearance", (SkillAppearanceRequest request, SkillAppearanceService appearance) =>
+        {
+            if (request.Reset == true) return Results.Json(new { key = request.Key, reset = appearance.Reset(request.Key) }, WebJsonOptions);
+            if (!string.IsNullOrWhiteSpace(request.Image)) return Results.Json(new { key = request.Key, appearance = appearance.SetImage(request.Key, request.Image) }, WebJsonOptions);
+            if (!string.IsNullOrWhiteSpace(request.Icon)) return Results.Json(new { key = request.Key, appearance = appearance.SetIcon(request.Key, request.Icon) }, WebJsonOptions);
+            throw new ArgumentException("Choose an icon, upload an image or reset to initials.");
+        });
         api.MapGet("/proposals", (string? skill, SkillProposalService proposals) => Results.Json(new { proposals = proposals.List(skill) }, WebJsonOptions));
         api.MapPost("/proposals/{id}/apply", async (string id, SkillProposalService proposals, SyncEngine engine, CancellationToken ct) =>
             SkillResult(engine, await proposals.ApplyAsync(id, ct).ConfigureAwait(false)));
@@ -704,6 +713,7 @@ public static class SkillRestEndpoints
 }
 
 public sealed record ProviderToggleRequest(bool Enabled);
+public sealed record SkillAppearanceRequest(string Key, string? Icon, string? Image, bool? Reset);
 public sealed record ClientConfigurationRequest(string Action);
 public sealed record ConflictRecoveryRequest(string Id, string Revision);
 public sealed record FolderOpenRequest(string Path);
