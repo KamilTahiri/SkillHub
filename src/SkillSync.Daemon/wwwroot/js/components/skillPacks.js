@@ -92,7 +92,7 @@ export async function reviewPack(file, app) {
   const dialog = modal('Review skill pack', h('div', { class: 'stack pack-review' },
     h('p', { class: 'muted' }, preview.file_name + ' · ' + preview.skills.length + (preview.skills.length === 1 ? ' skill' : ' skills') +
       (preview.created_by ? ' · made with ' + preview.created_by : '') +
-      (preview.created_at ? ' · ' + new Date(preview.created_at).toLocaleDateString() : '')),
+      (preview.created_at ? ' · ' + new Date(preview.created_at).toLocaleDateString('en-US') : '')),
     h('ul', { class: 'pack-skills' }, rows),
     preview.skipped.length > 0 && h('details', { class: 'disclosure' }, h('summary', {}, preview.skipped.length + ' entries will not be imported'),
       h('ul', {}, preview.skipped.map(item => h('li', { class: 'path' }, item)))),

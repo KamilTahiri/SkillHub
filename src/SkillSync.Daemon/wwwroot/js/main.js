@@ -262,7 +262,7 @@ function renderProviderButton() {
   providerButton.querySelector('.provider-overview-icons').replaceChildren(...shown.map(icon),
     ...(providers.length > shown.length ? [h('span', { class: 'provider-overview-more' }, '+' + (providers.length - shown.length))] : []));
   providerButton.classList.toggle('has-overflow', providers.length > shown.length);
-  providerButton.querySelector('.provider-overview-count').textContent = loaded ? count : '–';
+  providerButton.querySelector('.provider-overview-count').textContent = loaded ? count + (count === 1 ? ' tool' : ' tools') : '–';
   providerButton.title = tooltip;
 }
 function connection(connected) {

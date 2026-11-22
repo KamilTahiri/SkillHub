@@ -159,7 +159,8 @@ async function fixtureServer() {
       if (route === '/workspaces/ws1' && req.method === 'PUT') {
         const current = fixture.workspaces[0];
         Object.assign(current, { skills: data.skills, targets: data.targets, file_count: data.skills.length * data.targets.length,
-          last_synced_at: '2026-11-15T10:00:00Z', keep_local: data.keep_local, also_global: data.skills.filter(name => name === 'fixture') });
+          last_synced_at: '2026-11-15T10:00:00Z', keep_local: data.keep_local, also_global: data.skills.filter(name => name === 'fixture'),
+          umbrella: data.umbrella === true, children: data.umbrella ? ['obby', 'tycoon'] : null });
         fixture.workspaceUpdate = data;
         return send(current);
       }
@@ -358,7 +359,14 @@ test('workbench at desktop and docked sizes, with keyboard, themes, Markdown and
       for (const width of [460, 540, 640, 720, 768, 850, 900, 1024, 1280, 1440]) {
         await size(width, 800, 1);
         await wait('innerWidth === ' + width);
-        const expectedPlaceholder = width <= 720 ? 'Search skills… (/)' : 'Search skills, tags, and instructions';
+        // The full placeholder only while it fits the field itself; otherwise the short one (never a clipped sentence).
+        const fullFits = await evaluate(`(() => {
+          const search = document.querySelector("#library-search"), style = getComputedStyle(search);
+          const context = document.createElement("canvas").getContext("2d");
+          context.font = style.font;
+          return context.measureText("Search skills, tags, and instructions").width <= search.clientWidth - parseFloat(style.paddingLeft) - parseFloat(style.paddingRight) - 8;
+        })()`);
+        const expectedPlaceholder = fullFits ? 'Search skills, tags, and instructions' : 'Search skills… (/)';
         await wait('document.querySelector("#library-search").placeholder === ' + JSON.stringify(expectedPlaceholder), 'placeholder at ' + width);
         const header = await evaluate(`(() => {
           const rect = selector => document.querySelector(selector).getBoundingClientRect();
@@ -379,7 +387,7 @@ test('workbench at desktop and docked sizes, with keyboard, themes, Markdown and
         })()`);
         const compact = width <= 720;
         assert.deepEqual(header, { themeInside: true, pillInside: true, brandBeforeNav: true, navBeforeTools: true, noPageOverflow: true, navNotClipped: true,
-          brandLabel: compact, placeholder: compact ? 'Search skills… (/)' : 'Search skills, tags, and instructions', ellipsis: 'ellipsis' },
+          brandLabel: compact, placeholder: expectedPlaceholder, ellipsis: 'ellipsis' },
           'header at ' + width + 'px');
       }
       await size(480, 600, 1.5);
@@ -394,7 +402,7 @@ test('workbench at desktop and docked sizes, with keyboard, themes, Markdown and
       assert.equal(await evaluate('document.querySelectorAll(".collections button").length'), 4);
       assert.ok(await evaluate('[...document.querySelectorAll(".collections button")].every(tab => tab.getBoundingClientRect().width > 0)'));
       assert.equal(await evaluate('document.querySelectorAll("[data-route] svg").length'), 4);
-      assert.equal(await evaluate('document.querySelector("#provider-overview .provider-overview-count").textContent'), '2');
+      assert.equal(await evaluate('document.querySelector("#provider-overview .provider-overview-count").textContent'), '2 tools');
       assert.match(await evaluate('document.querySelector("#provider-overview").title'), /2 AI Providers Connected: ChatGPT \/ Codex, Gemini & Antigravity/);
       assert.deepEqual(await evaluate('[...document.querySelectorAll(".collection-count")].map(tab => tab.textContent)'), ['3', '2', '1', '1']);
       assert.equal(await evaluate('document.querySelectorAll("#provider-overview svg").length'), 2);
@@ -473,6 +481,11 @@ test('workbench at desktop and docked sizes, with keyboard, themes, Markdown and
       await click('#reader-screen .skill-badge-button');
       await wait('document.querySelector("dialog.icon-picker[open]")');
       assert.ok(await evaluate('document.querySelectorAll("dialog.icon-picker .icon-choice").length >= 30'));
+      await evaluate('{ const iconFilter = document.querySelector("[data-control=icon-filter]"); iconFilter.value = "termin"; iconFilter.dispatchEvent(new Event("input")); }');
+      assert.deepEqual(await evaluate('[...document.querySelectorAll("dialog.icon-picker .icon-choice")].filter(choice => !choice.hidden).map(choice => choice.dataset.icon)'), ['terminal']);
+      await evaluate('{ const iconFilter = document.querySelector("[data-control=icon-filter]"); iconFilter.value = "zzz"; iconFilter.dispatchEvent(new Event("input")); }');
+      assert.equal(await evaluate('document.querySelector(".icon-picker-empty").hidden'), false);
+      await evaluate('{ const iconFilter = document.querySelector("[data-control=icon-filter]"); iconFilter.value = ""; iconFilter.dispatchEvent(new Event("input")); }');
       assert.equal(await evaluate('document.querySelector("[data-control=save-icon]").disabled'), true);
       await click('dialog.icon-picker [data-icon="terminal"]');
       assert.equal(await evaluate('document.querySelector("dialog.icon-picker [data-icon=terminal]").getAttribute("aria-pressed")'), 'true');
@@ -481,6 +494,13 @@ test('workbench at desktop and docked sizes, with keyboard, themes, Markdown and
       assert.deepEqual(fixture.appearanceRequests[0], { key: 'fixture', icon: 'terminal' });
       await wait('document.querySelector("#reader-screen .skill-badge-button .skill-glyph")?.dataset.badge === "icon"', 'reader badge did not show the icon');
       await wait('document.querySelector("#library-screen [data-control=row-fixture] .skill-glyph")?.dataset.badge === "icon"', 'library badge did not show the icon');
+      // The custom icon also reaches the Ctrl+K palette.
+      await key('k', 2, 'KeyK');
+      await wait('document.querySelector("dialog.palette[open]")');
+      await evaluate('{ const paletteSkill = document.querySelector(".palette-input"); paletteSkill.value = "Fixture"; paletteSkill.dispatchEvent(new Event("input")); }');
+      await wait('document.querySelector(".palette-item .skill-glyph[data-badge=icon]")', 'palette did not show the custom icon');
+      await key('Escape');
+      await wait('!document.querySelector("dialog.palette")');
       await click('#reader-screen .skill-badge-button');
       await wait('document.querySelector("dialog.icon-picker[open]")');
       await evaluate(`(async () => {
@@ -564,6 +584,8 @@ test('workbench at desktop and docked sizes, with keyboard, themes, Markdown and
         'the result count stays visible while scrolling ' + JSON.stringify(pinned));
       await evaluate('document.querySelector(".explore-results").scrollTop = 0');
       assert.equal(await evaluate('document.querySelector("[data-control=direct-import]").textContent'), 'Import from URL / File');
+      // Selection checkboxes are real 24 px targets.
+      assert.equal(await evaluate('[...document.querySelectorAll(".result-pick")].filter(box => box.offsetParent).map(box => { const r = box.getBoundingClientRect(); return Math.min(r.width, r.height); }).filter(size => size < 23.5).join() || true'), true);
       await evaluate('for (const box of [...document.querySelectorAll(".result-pick")].slice(3, 5)) box.click()');
       await wait('!document.querySelector(".batch-bar").hidden && document.querySelector(".batch-bar").textContent.includes("2 selected")');
       assert.equal(await evaluate('document.querySelector("[data-control=import-selected]").textContent'), 'Import 2 selected skills');
@@ -627,6 +649,14 @@ test('workbench at desktop and docked sizes, with keyboard, themes, Markdown and
       assert.equal(fixture.preparing.get('Fast/SKILL.md'), 'Fast-commit');
       assert.deepEqual(fixture.applied, { route: '/imports/Fast-plan/apply', data: { revision: 'Fast-commit', name: 'fixture-import', providers: ['codex', 'gemini'] } });
       await wait('!document.querySelector("#reader-screen").hidden');
+      await click('[data-route="explore"]');
+      await wait('document.querySelector("#explore-screen .result-button")');
+      // Pasting `npx skills add owner/repo --skill name` lists the repository and opens that skill, with a copy action back.
+      await evaluate('{ const pasted = document.querySelector("#explore-screen input[type=search]"); pasted.value = "npx skills add fixture/repo --skill fast"; pasted.dispatchEvent(new Event("input")); }');
+      await wait('document.querySelector("#explore-preview h2")?.textContent === "Fast review"', 'the pasted npx command did not open the named skill');
+      assert.equal(await evaluate('document.querySelector("#explore-preview [data-control=copy-npx]").title'), 'npx skills add fixture/repo --skill Fast');
+      await evaluate('{ const pasted = document.querySelector("#explore-screen input[type=search]"); pasted.value = ""; pasted.dispatchEvent(new Event("input")); }');
+      await wait('document.querySelector("#explore-preview .preview-empty") && document.querySelectorAll(".result-pick").length > 4 && !document.querySelector(".explore-results.is-stale")');
 
       await click('[data-route="settings"]');
       await textButton('Appearance & Startup');
@@ -763,6 +793,9 @@ test('workbench at desktop and docked sizes, with keyboard, themes, Markdown and
       // Projects: add a folder, choose skills and targets, save.
       await click('[data-route="projects"]');
       await wait('document.querySelector("#projects-screen .workspaces-empty")');
+      assert.equal(await evaluate('document.querySelector("#projects-screen .page-heading .actions .btn").hidden'), true, 'empty Projects shows one add button');
+      // A heading focused by navigation never draws an outline over the intro below it.
+      assert.equal(await evaluate('(() => { const title = document.querySelector("#projects-screen h1"); title.focus(); return getComputedStyle(title).outlineStyle; })()'), 'none');
       await textButton('Add your first project');
       await wait('document.querySelector("dialog[open] input")');
       await evaluate('const projectPath = document.querySelector("dialog[open] input"); projectPath.value = "C:/code/demo-app"; projectPath.dispatchEvent(new Event("input"));');
@@ -773,7 +806,7 @@ test('workbench at desktop and docked sizes, with keyboard, themes, Markdown and
       await click('.workspace-targets input[data-target="copilot"]');
       await click('.workspace-foot .primary');
       await until(() => fixture.workspaceUpdate, 'Workspace update was not sent');
-      assert.deepEqual(fixture.workspaceUpdate, { skills: ['fixture'], targets: ['claude', 'codex', 'gemini', 'cursor', 'copilot'], keep_local: true });
+      assert.deepEqual(fixture.workspaceUpdate, { skills: ['fixture'], targets: ['claude', 'codex', 'gemini', 'cursor', 'copilot'], keep_local: true, umbrella: false });
       await wait('document.querySelector(".workspace-detail")?.textContent.includes("5 files written")');
       // The chosen skill is also global: flagged, with a one-click switch to Project-only.
       await wait('document.querySelector(".workspace-skill-flags [data-redundant=fixture]")', 'Redundant badge missing');
@@ -784,6 +817,36 @@ test('workbench at desktop and docked sizes, with keyboard, themes, Markdown and
       assert.deepEqual(fixture.scopeRequests[1], { scope: 'project', names: ['fixture'] });
       assert.doesNotMatch(await evaluate('document.querySelector("main").textContent'), /github\/instructions/);
       assert.match(await evaluate('document.querySelector("[data-umbrella-note]")?.textContent ?? ""'), /umbrella folder once/);
+      assert.equal(await evaluate('document.querySelector("#projects-screen .page-heading .actions .btn").hidden'), false);
+      // Custom icons and initials appear in the project's skill list.
+      assert.ok(await evaluate('document.querySelector(".workspace-skill .skill-glyph")'), 'project skill rows show badges');
+      // Umbrella folder mode: one switch, saved with the project, and the detected subfolders are listed.
+      await click('[data-umbrella]');
+      await click('.workspace-foot .primary');
+      await until(() => fixture.workspaceUpdate?.umbrella === true, 'Umbrella mode was not sent');
+      await wait('document.querySelectorAll("[data-umbrella-children] .chip").length === 2', 'umbrella children were not listed');
+      assert.match(await evaluate('document.querySelector("[data-umbrella-children]").textContent'), /2 subfolders receive the skills.*obby.*tycoon/);
+      assert.match(await evaluate('document.querySelector(".workspace-tab small").textContent'), /umbrella, 2 folders/);
+
+      // Relative times are English whatever the system locale is.
+      await send('Emulation.setLocaleOverride', { locale: 'de-DE' });
+      assert.equal(await evaluate('import("/js/ui.js").then(ui => ui.relativeTime(new Date(Date.now() - 2 * 3600e3).toISOString()))'), '2 hours ago');
+      assert.equal(await evaluate('import("/js/ui.js").then(ui => ui.relativeTime(new Date(Date.now() - 3 * 86400e3).toISOString()))'), '3 days ago');
+      await send('Emulation.setLocaleOverride', {});
+      // Project-only and Off skills are not "pending": they are never synced globally.
+      assert.equal(await evaluate('import("/js/state.js").then(state => state.deployment({ scope: "project", targets: {}, destinations: [] }, ["codex"]).label)'),
+        'Project-only \u00b7 not synced globally');
+      // SkillHub's own protocol skill sits in My Skills with a Built-in badge and its token cost.
+      assert.deepEqual(await evaluate(`import("/js/state.js").then(state => [
+        state.inCollection({ name: "00-skillhub-bootstrap", source_category: "system" }, "user", { synced: [] }),
+        state.inCollection({ name: "other-system", source_category: "system" }, "user", { synced: [] })])`), [true, false]);
+      assert.deepEqual(await evaluate(`import("/js/components/skillList.js").then(list => list.builtInBadge({ name: "00-skillhub-bootstrap", source_category: "system", always_loaded_tokens: 120 })
+        .filter(Boolean).map(node => node.textContent))`), ['Built-in', '~120 tokens / chat']);
+      // skills.sh commands and links.
+      assert.deepEqual(await evaluate('import("/js/skillsCli.js").then(cli => ["npx skills add vercel-labs/agent-skills --skill frontend-design", "pnpm dlx skills add a/b@pdf", "https://skills.sh/acme/kit/lint", "npx skills add acme/kit", "react hooks", "owner/repo"].map(cli.parseSkillsCommand))'),
+        [{ repo: 'vercel-labs/agent-skills', skill: 'frontend-design' }, { repo: 'a/b', skill: 'pdf' }, { repo: 'acme/kit', skill: 'lint' }, { repo: 'acme/kit', skill: null }, null, null]);
+      assert.deepEqual(await evaluate('import("/js/skillsCli.js").then(cli => [cli.skillsAddCommand("acme/kit", "lint"), cli.skillsAddCommand("local/catalog", "x"), cli.skillFolderName("skills/lint/SKILL.md")])'),
+        ['npx skills add acme/kit --skill lint', null, 'lint']);
 
       // Skill pack import: the review lists conflicts and scripts before anything is applied.
       await click('[data-route="explore"]');
@@ -833,7 +896,7 @@ test('workbench at desktop and docked sizes, with keyboard, themes, Markdown and
             rowMore: status.querySelector('.overflow-more-button')?.textContent, pillInside: pill.getBoundingClientRect().right <= innerWidth,
             noPageOverflow: document.documentElement.scrollWidth <= innerWidth };
         })()`);
-        assert.deepEqual(overflow, { headerIcons: 3, headerMore: '+5', count: '8', rowIcons: 3, rowMore: '+5', pillInside: true, noPageOverflow: true }, 'overflow at ' + width);
+        assert.deepEqual(overflow, { headerIcons: 3, headerMore: '+5', count: '8 tools', rowIcons: 3, rowMore: '+5', pillInside: true, noPageOverflow: true }, 'overflow at ' + width);
         await click('[data-control=row-everywhere] + div .overflow-more-button');
         const pop = await evaluate(`(() => {
           const pop = document.querySelector('[data-control=row-everywhere] + div .overflow-pop');

@@ -96,6 +96,28 @@ public static class SkillDoctor
         return results;
     }
 
+    private static readonly Regex Guardrail = new(@"\b(never|only if|only when|must not|must|do not|don't|unless|under no circumstances)\b", RegexOptions.IgnoreCase | RegexOptions.Compiled);
+    private static readonly Regex RuleWords = new(@"\b(never|always|must|without asking|do not|don't|only if|only when|autonomous(ly)?|no (force|branches?)|forbid(den)?)\b", RegexOptions.IgnoreCase | RegexOptions.Compiled);
+    private static readonly Regex ReadPointer = new(
+        @"\b(read|open|load|follow|consult|check)\b[^.]{0,40}\b(full|whole|entire|complete|this skill|skill\.md|instructions|guardrails|rules)\b|\bbefore (acting|running|you|any|making|doing|starting|using|editing|changing|committing)\b",
+        RegexOptions.IgnoreCase | RegexOptions.Compiled);
+
+    /// <summary>
+    /// The "description summary trap": a body with strict guardrails whose description restates rules (or reads like a
+    /// multi-sentence summary) but never tells the agent to read the full skill. Agents that only see the description act on it.
+    /// </summary>
+    public static bool SummarizesGuardrails(CanonicalSkillModel skill)
+    {
+        var description = (skill.Description ?? string.Empty).Trim();
+        if (description.Length == 0) return false;
+        var body = InlineCode.Replace(skill.InstructionsMarkdown ?? string.Empty, " ");
+        if (Guardrail.Matches(body).Count < 2) return false;
+        var trigger = description + " " + (skill.WhenToUse ?? string.Empty);
+        if (ReadPointer.IsMatch(trigger)) return false;
+        var sentences = Regex.Matches(description, @"[.!?;:](\s|$)").Count;
+        return RuleWords.IsMatch(description) || sentences >= 3;
+    }
+
     public static DoctorReport Lint(CanonicalSkillModel skill, IEnumerable<CanonicalSkillModel>? others = null)
     {
         var findings = new List<DoctorFinding>();
@@ -119,6 +141,10 @@ public static class SkillDoctor
                 findings.Add(new("description-trigger", "info", "Neither the description nor “When to use” says when to use the skill (for example “Use when …”)."));
             if (skill.Description.Contains('<') || skill.Description.Contains('>'))
                 findings.Add(new("description-angle", "warning", "Description contains angle brackets, which some providers strip from frontmatter."));
+            if (SummarizesGuardrails(skill))
+                findings.Add(new("description-summary", "warning",
+                    "The instructions contain strict guardrails (never, must, only if), but the description summarizes the rules without telling the AI to read the full skill first. " +
+                    "Agents may act on the summary and skip the guardrails. Make the description a trigger + pointer, e.g. “Use whenever … Read the full SKILL.md before …”."));
         }
         if (skill.Targets.Cursor.Enabled && skill.Targets.Cursor.Globs.Count == 0 && !skill.Targets.Cursor.AlwaysApply)
             findings.Add(new("cursor-globs", "warning", "Cursor is enabled but the rule has no globs and is not always applied, so Cursor never attaches it automatically."));

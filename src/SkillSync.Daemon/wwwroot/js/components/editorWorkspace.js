@@ -77,7 +77,7 @@ export function createEditorWorkspace({ instructions, description, trigger, titl
     return h('div', { class: 'budget-meter', 'data-tone': tone, title: hint },
       h('span', { class: 'budget-label' }, label),
       h('span', { class: 'budget-track' }, h('span', { class: 'budget-fill', style: 'width:' + Math.round(ratio / 1.25 * 100) + '%' })),
-      h('span', { class: 'budget-value' }, used.toLocaleString() + ' / ' + limit.toLocaleString() + ' ' + unit));
+      h('span', { class: 'budget-value' }, used.toLocaleString('en-US') + ' / ' + limit.toLocaleString('en-US') + ' ' + unit));
   }
   function updateMeters() {
     const descriptionText = description.value.trim() + (trigger.value.trim() ? ' ' + trigger.value.trim() : '');

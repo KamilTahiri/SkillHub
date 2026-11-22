@@ -108,7 +108,7 @@ public static class SkillRestEndpoints
         api.MapPost("/workspaces", async (WorkspaceCreateRequest request, WorkspaceService workspaces, CancellationToken ct) =>
             Results.Json(await workspaces.RegisterAsync(request.Path, request.Name, ct).ConfigureAwait(false), WebJsonOptions));
         api.MapPut("/workspaces/{id}", async (string id, WorkspaceUpdateRequest request, WorkspaceService workspaces, CancellationToken ct) =>
-            Results.Json(await workspaces.UpdateAsync(id, request.Skills, request.Targets, request.Name, ct, request.KeepLocal).ConfigureAwait(false), WebJsonOptions));
+            Results.Json(await workspaces.UpdateAsync(id, request.Skills, request.Targets, request.Name, ct, request.KeepLocal, request.Umbrella).ConfigureAwait(false), WebJsonOptions));
         api.MapPost("/workspaces/{id}/sync", async (string id, WorkspaceService workspaces, CancellationToken ct) =>
             Results.Json(await workspaces.SyncAsync(id, ct).ConfigureAwait(false), WebJsonOptions));
         api.MapDelete("/workspaces/{id}", async (string id, bool? remove_files, WorkspaceService workspaces, CancellationToken ct) =>
@@ -719,7 +719,7 @@ public sealed record ConflictRecoveryRequest(string Id, string Revision);
 public sealed record FolderOpenRequest(string Path);
 public sealed record WorkspaceCreateRequest(string Path, string? Name);
 public sealed record WorkspaceUpdateRequest(IReadOnlyList<string>? Skills, IReadOnlyList<string>? Targets, string? Name,
-    [property: System.Text.Json.Serialization.JsonPropertyName("keep_local")] bool? KeepLocal = null);
+    [property: System.Text.Json.Serialization.JsonPropertyName("keep_local")] bool? KeepLocal = null, bool? Umbrella = null);
 public sealed record SkillPackExportRequest(IReadOnlyList<string>? Names);
 public sealed record SkillPackUploadRequest([property: System.Text.Json.Serialization.JsonPropertyName("file_name")] string? FileName, string? Data);
 public sealed record TagRenameRequest(

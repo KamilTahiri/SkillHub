@@ -27,11 +27,11 @@ export function relativeTime(value) {
   if (!Number.isFinite(time)) return 'at an unknown time';
   const seconds = Math.round((Date.now() - time) / 1000);
   if (seconds < 45) return 'just now';
-  const format = new Intl.RelativeTimeFormat(undefined, { numeric: 'auto' });
+  const format = new Intl.RelativeTimeFormat('en-US', { numeric: 'auto' });
   if (seconds < 3600) return format.format(-Math.round(seconds / 60), 'minute');
   if (seconds < 86400) return format.format(-Math.round(seconds / 3600), 'hour');
   if (seconds < 30 * 86400) return format.format(-Math.round(seconds / 86400), 'day');
-  return new Date(time).toLocaleDateString(undefined, { dateStyle: 'medium' });
+  return new Date(time).toLocaleDateString('en-US', { dateStyle: 'medium' });
 }
 
 const SCRIPT_FILE = /\.(py|sh|bash|zsh|ps1|psm1|bat|cmd|js|mjs|cjs|ts|tsx|jsx|rb|go|rs|java|kt|php|pl|lua)$/i;
@@ -96,11 +96,19 @@ export function autoLoadMore(container, total, shown, append, list, noun = 'resu
 }
 
 /** Uses a shorter placeholder on compact windows so it never reads as cut off. */
-export function responsivePlaceholder(input, full, compact, query = '(max-width: 720px)') {
-  const media = matchMedia(query);
-  const apply = () => { input.placeholder = media.matches ? compact : full; };
-  media.addEventListener('change', apply);
-  apply();
+/** Shows the full placeholder while it fits the input's own width, otherwise the compact one (never a clipped sentence). */
+export function responsivePlaceholder(input, full, compact) {
+  const canvas = document.createElement('canvas').getContext('2d');
+  const apply = () => {
+    const width = input.clientWidth;
+    if (!width) return;
+    const style = getComputedStyle(input);
+    canvas.font = style.font || (style.fontSize + ' ' + style.fontFamily);
+    const room = width - parseFloat(style.paddingLeft || '0') - parseFloat(style.paddingRight || '0') - 8;
+    input.placeholder = canvas.measureText(full).width <= room ? full : compact;
+  };
+  input.placeholder = full;
+  new ResizeObserver(apply).observe(input);
   return input;
 }
 
@@ -156,7 +164,14 @@ export function notify(message, options = {}) {
   let remaining = options.duration ?? (tone === 'error' ? 8000 : 5200);
   let started = Date.now();
   let timer;
-  const toast = h('div', { class: 'notice', 'data-tone': tone },
+  // The same message again refreshes the toast already on screen; a new status message replaces the previous one.
+  // Errors and toasts with an action (Undo) stay until they time out, so nothing the user may act on disappears.
+  const transient = !options.action && tone !== 'error';
+  for (const existing of [...region.children]) {
+    const same = existing.querySelector('.notice-text')?.textContent === message;
+    if (same || transient && existing.dataset.transient === 'true') existing.remove();
+  }
+  const toast = h('div', { class: 'notice', 'data-tone': tone, 'data-transient': String(transient) },
     h('span', { class: 'notice-text' }, message));
   const dismiss = () => {
     clearTimeout(timer);

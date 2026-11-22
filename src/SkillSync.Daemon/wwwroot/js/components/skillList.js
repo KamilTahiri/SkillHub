@@ -1,5 +1,5 @@
 import { api } from '../api.js';
-import { COLLECTIONS, PROVIDERS, Latest, deployment, installedProviders, matchesFilters, inCollection, skillKey, targetIssues, slugify, tagSlug } from '../state.js';
+import { COLLECTIONS, PROVIDERS, Latest, deployment, installedProviders, matchesFilters, inCollection, isBuiltInProtocol, skillKey, targetIssues, slugify, tagSlug } from '../state.js';
 import { icon, PROVIDER_NAMES } from '../icons.js';
 import { highlighted } from '../markdown.js';
 import { appearanceFor, skillBadge } from '../skillBadge.js';
@@ -331,7 +331,7 @@ export function createLibrary(root, app) {
           h('span', { class: 'result-description' }, highlighted(skill.instruction_match ?? skill.description ?? '', query)),
           h('span', { class: 'result-files' }, bundleBadge(skill.file_count ?? Object.keys(skill.supporting_files ?? {}).length,
             { paths: skill.supporting_paths ?? Object.keys(skill.supporting_files ?? {}) })),
-          !syncView && h('span', { class: 'chips' }, scopeBadge(skill), origin && !['My Skill', 'Personal', 'SkillHub'].includes(origin) &&
+          !syncView && h('span', { class: 'chips' }, builtInBadge(skill), scopeBadge(skill), origin && !['My Skill', 'Personal', 'SkillHub'].includes(origin) &&
             h('span', { class: 'result-meta', title: origin }, origin),
             tags.slice(0, 2).map(tag => h('span', { class: 'chip' }, '#' + tag)),
             tags.length > 2 && h('span', { class: 'chip', title: tags.slice(2).join(', ') }, '+' + (tags.length - 2))));
@@ -475,4 +475,12 @@ function showTagManager(app, initialTags, onUsage) {
   }
   render(initialTags);
   const manager = modal('Manage tags', body);
+}
+
+/** "Built-in" chip and always-loaded token cost for SkillHub's own protocol skill (read-only, updated with SkillHub releases). */
+export function builtInBadge(skill) {
+  if (!isBuiltInProtocol(skill)) return null;
+  const tokens = skill.always_loaded_tokens ?? 0;
+  return [h('span', { class: 'builtin-badge', 'data-builtin': '', title: 'Ships with SkillHub. Read-only and protected from deletion; SkillHub updates it with new releases.' }, 'Built-in'),
+    tokens > 0 && h('span', { class: 'chip token-chip', title: 'Its description is loaded into every chat' }, '~' + tokens + ' tokens / chat')];
 }

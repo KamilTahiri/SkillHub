@@ -282,6 +282,8 @@ public sealed partial class SyncEngine
 
             model = ReadInbound(slug, native, null);
             model.OriginProvider = native.Destination.Provider.ToString();
+            // Installed by `npx skills add owner/repo`: keep the upstream link from the CLI's lock file.
+            if (native.Destination.HasBundle) SkillsCliLock.Apply(model, native.Destination.Path);
             await CommitCanonicalAsync(slug, model, entry, "discovery").ConfigureAwait(false);
             await RecordAppliedAsync(slug, entry, model, native, owned: false).ConfigureAwait(false);
             foreach (var other in observations.Where(item => item != native && item.Snapshot.Markdown is not null))

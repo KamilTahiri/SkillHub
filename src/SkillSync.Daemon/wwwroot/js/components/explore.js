@@ -3,7 +3,12 @@ import { reviewPack } from './skillPacks.js';
 import { Latest, PROVIDERS, slugify } from '../state.js';
 import { renderMarkdown } from '../markdown.js';
 import { icon, PROVIDER_NAMES } from '../icons.js';
-import { h, button, field, select, panel, modal, errorText, busy, notify, disclosure, confirmAction, fill, bundleBadge, autoLoadMore, responsivePlaceholder } from '../ui.js';
+import { h, button, field, select, panel, modal, errorText, busy, notify, disclosure, confirmAction, fill, bundleBadge, autoLoadMore, responsivePlaceholder, copy } from '../ui.js';
+import { parseSkillsCommand, skillFolderName, skillsAddCommand } from '../skillsCli.js';
+import { appearanceFor, skillBadge } from '../skillBadge.js';
+
+// Pasted text that is a skills.sh command or link (rather than a plain GitHub link to one file).
+const isSkillsShInput = text => /^\s*(?:npx|bunx|pnpm\s+dlx|skills(?:\.sh)?\s)|^\s*(?:https?:\/\/)?skills\.sh\//i.test(text);
 
 const TOPICS = [['', 'All topics'], ['coding', 'Coding'], ['web', 'Web and design'], ['data', 'Data'],
   ['devops', 'Infrastructure'], ['productivity', 'Productivity'], ['testing', 'Testing and security']];
@@ -11,7 +16,7 @@ const GROUPS = [['skills', 'Skills'], ['commands', 'Commands'], ['rules', 'Rules
 const KIND_LABELS = { skill: 'Skill', command: 'Command', prompt: 'Prompt', rule: 'Rule', instructions: 'Instructions',
   'project-rules': 'Project rules', agent: 'Agent', chatmode: 'Chat mode', doc: 'Doc' };
 
-const compactNumber = value => new Intl.NumberFormat(undefined, { notation: 'compact', maximumFractionDigits: 1 }).format(value);
+const compactNumber = value => new Intl.NumberFormat('en-US', { notation: 'compact', maximumFractionDigits: 1 }).format(value);
 // Trust context for the user and the AI: "★ 18.4k stars · 420k installs".
 const trustLine = (stars, installs) => [stars != null && '★ ' + compactNumber(stars) + (stars === 1 ? ' star' : ' stars'),
   installs > 0 && compactNumber(installs) + ' installs'].filter(Boolean).join(' · ');
@@ -223,6 +228,7 @@ export function createExplore(root, app) {
       if (pendingSources.length && search.value.trim()) pendingTimer = setTimeout(() => { if (!isApplying && root.isConnected && !root.hidden) load(); }, 12000);
       results.scrollTop = 0;
       showList();
+      openPastedSkill();
     } catch (error) {
       if (job.current()) {
         items = [];
@@ -235,6 +241,26 @@ export function createExplore(root, app) {
         results.removeAttribute('aria-busy');
       }
     }
+  }
+
+  // `npx skills add owner/repo --skill name` (or skills.sh/owner/repo/name) pasted into search opens that skill's preview.
+  let autoOpened = '';
+  function openPastedSkill() {
+    const text = search.value.trim();
+    const parsed = parseSkillsCommand(text);
+    if (!parsed?.skill || autoOpened === text) return;
+    const wanted = slugify(parsed.skill);
+    const match = items.find(skill => skillFolderName(skill.path) === parsed.skill) ??
+      items.find(skill => slugify(skillFolderName(skill.path, skill.slug) ?? '') === wanted || skill.slug === wanted);
+    if (!match) return;
+    autoOpened = text;
+    openPreview(match, match);
+  }
+
+  // An installed skill shows its library badge (custom icon or image included) next to "In library".
+  function installedGlyph(skill) {
+    const local = skill.existing_name && app.snapshot.skills.find(item => item.name === skill.existing_name && !item.is_catalog_only);
+    return local ? skillBadge(local, appearanceFor(local, app.snapshot.appearance), { className: 'tiny' }) : null;
   }
 
   function repositoryCard() {
@@ -304,10 +330,10 @@ export function createExplore(root, app) {
           h('span', { class: 'result-meta' },
             skill.kind && skill.kind !== 'skill' && h('span', { class: 'kind-badge', 'data-kind': skill.kind }, KIND_LABELS[skill.kind] ?? skill.kind),
             rowBadge(skill),
-            skill.stars != null && h('span', { class: 'stars-badge', title: skill.stars.toLocaleString() + ' GitHub stars on ' + skill.repo }, '★ ' + compactNumber(skill.stars)),
-            skill.installs > 0 && h('span', { class: 'installs-badge', title: skill.installs.toLocaleString() + ' installs on skills.sh' },
+            skill.stars != null && h('span', { class: 'stars-badge', title: skill.stars.toLocaleString('en-US') + ' GitHub stars on ' + skill.repo }, '★ ' + compactNumber(skill.stars)),
+            skill.installs > 0 && h('span', { class: 'installs-badge', title: skill.installs.toLocaleString('en-US') + ' installs on skills.sh' },
               icon('download'), compactNumber(skill.installs)),
-            skill.is_installed && h('span', { class: 'installed-badge' }, icon('check'), 'In library'),
+            skill.is_installed && h('span', { class: 'installed-badge' }, installedGlyph(skill) ?? icon('check'), 'In library'),
             h('span', { class: 'result-path' }, repository ? skill.path : skill.repo)));
         row.skill = skill;
         resultRows.set(skill, row);
@@ -587,7 +613,8 @@ export function createExplore(root, app) {
       disclosure('Source and revision', h('p', { class: 'path' }, review.path), h('p', { class: 'path' }, 'Revision ' + review.revision),
         excluded.length > 0 && h('div', { class: 'stack' }, h('p', {}, 'Not imported (binary, too large, or unsupported location):'),
           excluded.map(path => h('p', { class: 'path warning' }, path)))),
-      existing && button('Open existing skill', () => app.read(existing), 'quiet small'));
+      existing && button('Open existing skill', () => app.read(existing), 'quiet small'),
+      copyNpxButton(review.repo, skillFolderName(review.path, review.slug)));
     const fileText = new Map();
     const documentBody = h('div', { class: 'import-document', tabindex: '0', role: 'region', 'aria-label': 'Skill preview' });
     const tabs = files.length > 0 && h('div', { class: 'file-tabs', role: 'tablist', 'aria-label': 'Bundle files' });
@@ -648,7 +675,7 @@ export function createExplore(root, app) {
 
   function directImport() {
     if (isApplying) return;
-    const input = h('input', { class: 'input', type: 'text', placeholder: 'GitHub or skills.sh link', autofocus: true });
+    const input = h('input', { class: 'input', type: 'text', placeholder: 'GitHub link, skills.sh link or npx skills add …', autofocus: true });
     const file = h('input', { class: 'input', type: 'file', accept: '.md,.mdc,.zip,text/markdown,text/plain,application/zip' });
     const feedback = h('div', { role: 'status' });
     const review = button('Review skill', () => busy(review, async () => {
@@ -664,13 +691,20 @@ export function createExplore(root, app) {
       if (selectedFile) {
         if (selectedFile.size > 2 * 1024 * 1024) throw new Error('Choose a file smaller than 2 MB.');
         selection = { file_name: selectedFile.name, raw_markdown: await selectedFile.text() };
+      } else if (isSkillsShInput(input.value) && parseSkillsCommand(input.value)) {
+        // A skills.sh command or link: list its repository and open the named skill, as if pasted into search.
+        dialog.close();
+        search.value = input.value.trim();
+        autoOpened = '';
+        load();
+        return;
       } else if (input.value.trim()) selection = { source: input.value.trim() };
       else throw new Error('Paste a link or choose a file.');
       if (!dialog.open) return;
       dialog.close();
       openPreview(selection);
     }, error => feedback.replaceChildren(errorText(error.message))), 'primary');
-    const dialog = modal('Import from URL / File', [field('Link: GitHub URL, owner/repo or skills.sh', input),
+    const dialog = modal('Import from URL / File', [field('Link: GitHub URL, owner/repo, skills.sh or npx skills add', input),
       field('Markdown file or skill pack', file, 'A SKILL.md, .mdc or .md file, or a .skillpack.zip exported from SkillHub.'), feedback], review);
   }
 
@@ -685,4 +719,11 @@ export function createExplore(root, app) {
     directImport,
     get isApplying() { return isApplying; }
   };
+}
+
+/** One-click "Copy npx skills add" for a community skill (null for the local catalog and uploaded files). */
+export function copyNpxButton(repo, skill) {
+  const command = skillsAddCommand(repo, skill);
+  return command && button([icon('copy'), 'Copy npx skills add'], () => copy(command), 'quiet small',
+    { 'data-control': 'copy-npx', title: command });
 }

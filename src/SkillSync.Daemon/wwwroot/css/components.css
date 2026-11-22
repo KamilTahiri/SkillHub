@@ -575,6 +575,21 @@ mark { background: var(--accent-soft); color: var(--text); border-radius: 2px; }
 .restart-hint > .ui-icon { color: var(--warn); }
 .restart-hint > span { flex: 1; min-width: 12ch; }
 .action-menu { position: relative; }
+/* Disclosures use the app's chevron instead of the default triangle (menus and dropdowns draw their own button). */
+:where(details:not(.action-menu, .filter-dropdown)) > summary { list-style: none; display: flex; align-items: center; gap: 6px; }
+:where(details:not(.action-menu, .filter-dropdown)) > summary::-webkit-details-marker { display: none; }
+:where(details:not(.action-menu, .filter-dropdown)) > summary::before {
+  content: "";
+  flex: none;
+  width: 14px;
+  height: 14px;
+  background: currentColor;
+  opacity: .7;
+  mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2.2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E") center / contain no-repeat;
+  transform: rotate(-90deg);
+  transition: transform 140ms var(--ease);
+}
+:where(details[open]:not(.action-menu, .filter-dropdown)) > summary::before { transform: none; }
 .action-menu > summary { list-style: none; cursor: pointer; }
 .action-menu > summary::-webkit-details-marker { display: none; }
 .action-menu[open] > summary { background: var(--raised); }
@@ -759,6 +774,9 @@ kbd {
 }
 .btn.primary:hover:not(:disabled) { background: var(--accent); filter: brightness(1.07); }
 .btn.quiet { border-color: transparent; background: transparent; box-shadow: none; }
+/* Secondary action that should stay subtle next to data (e.g. "Set pack to Project-only"). */
+.btn.outline { background: transparent; box-shadow: none; color: var(--accent); border-color: color-mix(in srgb, var(--accent) 45%, var(--hairline)); }
+.btn.outline:hover:not(:disabled) { background: var(--accent-soft); box-shadow: none; }
 .btn.quiet:hover:not(:disabled) { background: var(--surface-2); box-shadow: none; transform: none; }
 .btn.danger { color: var(--error); border-color: color-mix(in srgb, var(--error) 30%, var(--hairline)); }
 .btn.icon-only { width: 34px; padding: 0; }
@@ -922,6 +940,12 @@ dialog, dialog :is(.dialog-body, .palette-list, .onboarding-body, .file-code) { 
   background: color-mix(in srgb, var(--p) 15%, var(--panel));
   box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--p) 26%, transparent);
 }
+.skill-glyph.small { width: 26px; height: 26px; border-radius: 8px; font-size: .66rem; }
+.skill-glyph.tiny { width: 20px; height: 20px; border-radius: 6px; font-size: .56rem; }
+.skill-glyph.tiny .badge-icon { width: 13px; height: 13px; }
+.skill-glyph.small .badge-icon { width: 16px; height: 16px; }
+.installed-badge .skill-glyph, .palette-icon .skill-glyph { grid-row: auto; align-self: center; }
+.workspace-skill .skill-glyph { grid-row: auto; flex: none; }
 .skill-glyph[data-provider="codex"] { --p: var(--p-codex); }
 .skill-glyph[data-provider="gemini"] { --p: var(--p-gemini); }
 .skill-glyph[data-provider="claude"] { --p: var(--p-claude); }
@@ -1011,9 +1035,9 @@ dialog.icon-picker .dialog-foot [data-control="reset-initials"] { margin-right: 
 }
 .explore-loading { color: var(--muted); padding: 10px 4px; }
 .result-pick {
-  margin: 14px 0 0 10px;
-  width: 16px;
-  height: 16px;
+  margin: 10px 0 0 6px;
+  width: 24px;
+  height: 24px;
   accent-color: var(--accent);
   cursor: pointer;
 }
@@ -1950,11 +1974,15 @@ dialog.wide-dialog { width: min(980px, calc(100% - 24px)); }
 .chip-toggle { display: inline-flex; align-items: center; gap: 6px; padding: 5px 10px; border: 1px solid var(--line); border-radius: 999px; font-size: .85rem; cursor: pointer; }
 .chip-toggle:has(input:checked) { border-color: var(--accent); background: var(--accent-soft); }
 .workspace-skills { list-style: none; margin: 8px 0 0; padding: 0; display: grid; gap: 4px; max-height: 46vh; overflow-y: auto; }
-.workspace-skill { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 10px; align-items: start; padding: 7px 9px; border-radius: 8px; cursor: pointer; }
+.workspace-skill { display: grid; grid-template-columns: auto auto minmax(0, 1fr); gap: 10px; align-items: start; padding: 7px 9px; border-radius: 8px; cursor: pointer; }
 .workspace-skill:hover { background: var(--surface-2); }
 .workspace-skill-text { display: grid; min-width: 0; }
 .workspace-skill-text small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .workspace-foot { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
+.umbrella-children { display: grid; gap: 8px; margin-top: 10px; padding: 10px 12px; border: 1px solid var(--line); border-radius: var(--radius-s); background: var(--raised); }
+.umbrella-children .chips { list-style: none; margin: 0; padding: 0; }
+.umbrella-children .chip { display: inline-flex; align-items: center; gap: 4px; }
+.umbrella-children .chip svg { width: 14px; height: 14px; }
 .workspaces-empty > .ui-icon { width: 34px; height: 34px; color: var(--accent); }
 @media (max-width: 760px) {
   .workspace-layout { grid-template-columns: 1fr; }
@@ -2061,6 +2089,13 @@ dialog.onboarding { width: min(640px, calc(100vw - 32px)); padding: 0; }
 
 /* Library health: always-loaded budget meter, scope badges, library audit and trigger tester. */
 .library-health-row { display: flex; flex-wrap: wrap; align-items: center; gap: 7px; }
+/* Narrow windows: every toolbar row fills the width instead of leaving ragged gaps. */
+@media (max-width: 560px) {
+  .library-search-row .sort-select { flex: 1 1 auto; }
+  .library-search-row #new-skill { flex: 0 0 auto; }
+  .library-health-row > :first-child { flex: 1 1 100%; }
+  .library-health-row > .btn:not(:first-child) { flex: 1 1 0; white-space: nowrap; }
+}
 .btn.ctx-meter { --tone: var(--ok); display: inline-flex; align-items: center; gap: 9px; min-height: 30px; font-size: .84rem; border-color: color-mix(in srgb, var(--tone) 45%, var(--line)); }
 .btn.ctx-meter[data-state="warning"] { --tone: var(--warn); }
 .btn.ctx-meter[data-state="over"], .btn.ctx-meter[data-state="error"] { --tone: var(--error); }
@@ -2084,6 +2119,8 @@ dialog.onboarding { width: min(640px, calc(100vw - 32px)); padding: 0; }
 .scope-badge { display: inline-flex; align-items: center; min-height: 20px; padding: 0 7px; border-radius: var(--radius-s); font-size: .74rem; font-weight: 600; color: var(--ok); background: var(--raised); }
 .scope-badge[data-scope="project"] { color: var(--accent); background: var(--accent-soft); }
 .scope-badge[data-scope="off"] { color: var(--muted); }
+.builtin-badge { display: inline-flex; align-items: center; min-height: 20px; padding: 0 7px; border: 1px solid var(--accent); border-radius: var(--radius-s); font-size: .74rem; font-weight: 700; color: var(--accent); background: var(--accent-soft); }
+.result-count .builtin-badge { margin-right: 6px; }
 .audit-list > li { padding: 9px 12px; border: 1px solid var(--line); border-radius: var(--radius-m); background: var(--panel); }
 .audit-list ul { margin: 6px 0 0; padding-left: 18px; display: grid; gap: 3px; font-size: .86rem; }
 .audit-skill-score { font-variant-numeric: tabular-nums; font-weight: 600; }

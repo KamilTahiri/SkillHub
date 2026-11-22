@@ -18,7 +18,7 @@ export async function copySkillPrompt(app, key) {
   await copy(skillPrompt(detail.skill));
 }
 
-const when = value => new Date(value).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' });
+const when = value => new Date(value).toLocaleString('en-US', { dateStyle: 'medium', timeStyle: 'short' });
 const tone = score => score >= 85 ? 'ok' : score >= 60 ? 'near' : 'over';
 
 /** Compact Skill Doctor summary for the Reader inspector. */
@@ -149,7 +149,7 @@ export function proposalsBanner(app, skill) {
         h('strong', {}, proposals.length === 1 ? 'A suggested improvement is waiting' : proposals.length + ' suggested improvements are waiting'),
         h('ul', {}, proposals.map(proposal => h('li', { class: 'proposal-row' },
           h('div', {}, h('p', {}, proposal.summary),
-            h('small', { class: 'muted' }, 'Suggested ' + new Date(proposal.created_at).toLocaleString() + ' via ' + proposal.source)),
+            h('small', { class: 'muted' }, 'Suggested ' + new Date(proposal.created_at).toLocaleString('en-US') + ' via ' + proposal.source)),
           h('div', { class: 'actions wrap' },
             proposal.instructions_markdown != null && button('Compare', () => modal('Suggested change · ' + (skill.title || skill.name),
               renderDiff(skill.instructions_markdown ?? '', proposal.instructions_markdown, { labels: ['Current', 'Suggested'] })), 'quiet small'),

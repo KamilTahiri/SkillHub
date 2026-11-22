@@ -7,6 +7,9 @@ import { copySkillPrompt, doctorPanel, historySection, updateBanner, proposalsBa
 import { icon } from '../icons.js';
 import { exportPack } from './skillPacks.js';
 import { appearanceFor, skillBadge, showIconPicker } from '../skillBadge.js';
+import { builtInBadge } from './skillList.js';
+import { copyNpxButton } from './explore.js';
+import { skillFolderName } from '../skillsCli.js';
 
 export function createReader(root, app) {
   let modelKey;
@@ -52,10 +55,13 @@ export function createReader(root, app) {
       : skill.is_catalog_only ? button('Clone to My Skills', () => app.edit(detail, { clone: true }), 'primary')
       : button('Edit skill', () => app.edit(detail), 'primary');
     const actions = button('Actions', () => showActions(detail, snapshot, readOnly), '', { 'data-focus-key': 'actions' });
+    // Imported community skills can be shared as the skills.sh command that installs the same upstream skill.
+    const passthrough = skill.x_passthrough ?? {};
+    const copyNpx = copyNpxButton(passthrough.import_source ?? skill.import_source, skillFolderName(passthrough.import_path, skill.name));
     const copyPrompt = button([icon('copy'), 'Copy skill prompt'], event => busy(event.currentTarget, () => copySkillPrompt(app, skillKey(skill))), '',
       { 'data-focus-key': 'copy-prompt', title: 'Copy the instructions as a prompt for any chat' });
-    const title = heading(skill.title || skill.name, h('div', { class: 'actions' }, primary, copyPrompt, actions),
-      h('p', { class: 'result-count' }, skill.origin_provider || 'Personal', ' · ',
+    const title = heading(skill.title || skill.name, h('div', { class: 'actions' }, primary, copyPrompt, copyNpx, actions),
+      h('p', { class: 'result-count' }, builtInBadge(skill), skill.origin_provider || 'Personal', ' · ',
         h('span', { class: 'muted' }, sync.key === 'issue' ? 'Managed skill' : sync.label), ' · ',
         bundleBadge(Object.keys(files).length, { paths: Object.keys(files).sort(), verbose: true })));
     // The badge doubles as the "change icon" control; the choice lives in SkillHub only, never in the skill files.

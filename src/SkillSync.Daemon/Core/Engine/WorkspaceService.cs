@@ -46,6 +46,11 @@ public sealed class WorkspaceRecord
     /// Null means the default: on. Turn it off to commit the skills so a team shares them.
     /// </summary>
     [JsonPropertyName("keep_local")] public bool? KeepLocal { get; set; }
+    /// <summary>
+    /// Umbrella folder: the skills go into every direct subfolder (each child project or repository), never into this folder itself.
+    /// Owned paths then start with the child's folder name. A folder watcher picks up new subfolders.
+    /// </summary>
+    [JsonPropertyName("umbrella")] public bool? Umbrella { get; set; }
     [JsonPropertyName("created_at")] public DateTimeOffset CreatedAt { get; set; } = DateTimeOffset.UtcNow;
     [JsonPropertyName("last_synced_at")] public DateTimeOffset? LastSyncedAt { get; set; }
 }
@@ -68,7 +73,9 @@ public sealed record WorkspaceStatus(
     [property: JsonPropertyName("keep_local")] bool KeepLocal = true,
     [property: JsonPropertyName("git_repo")] bool GitRepo = false,
     [property: JsonPropertyName("also_global")] IReadOnlyList<string>? AlsoGlobal = null,
-    [property: JsonPropertyName("off_skills")] IReadOnlyList<string>? OffSkills = null);
+    [property: JsonPropertyName("off_skills")] IReadOnlyList<string>? OffSkills = null,
+    [property: JsonPropertyName("umbrella")] bool Umbrella = false,
+    [property: JsonPropertyName("children")] IReadOnlyList<string>? Children = null);
 
 /// <summary>
 /// Projects chosen library skills into a project's own AI folders (<c>.claude/skills</c>, <c>.agents/skills</c>,
@@ -93,6 +100,93 @@ public sealed partial class WorkspaceService : IDisposable
         _discovery = discovery;
         _debounce = new Timer(_ => _ = ReprojectChangedAsync(), null, Timeout.Infinite, Timeout.Infinite);
         _engine.SkillChanged += OnSkillChanged;
+        RefreshUmbrellaWatchers();
+    }
+
+    private readonly Dictionary<string, UmbrellaWatch> _umbrellaWatchers = new(StringComparer.Ordinal);
+    private bool _disposed;
+
+    /// <summary>How long a new umbrella subfolder settles (a clone or an Explorer rename) before SkillHub writes into it.</summary>
+    public TimeSpan UmbrellaSettleDelay { get; set; } = TimeSpan.FromMilliseconds(1500);
+
+    private sealed record UmbrellaWatch(string Path, FileSystemWatcher Watcher, Timer Timer);
+
+    /// <summary>Folders inside an umbrella that never receive skills: tooling, build output and dependency folders.</summary>
+    private static readonly HashSet<string> IgnoredChildren = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "node_modules", "bin", "obj", "packages", "vendor", "__pycache__", "venv", "env", "dist", "build", "out", "target",
+        "System Volume Information"
+    };
+
+    /// <summary>Names of the direct subfolders an umbrella project writes into, sorted. Hidden, system and tooling folders are skipped.</summary>
+    public static IReadOnlyList<string> UmbrellaChildren(string folder)
+    {
+        var result = new List<string>();
+        try
+        {
+            foreach (var child in new DirectoryInfo(folder).EnumerateDirectories())
+            {
+                if (IsIgnoredChild(child)) continue;
+                result.Add(child.Name);
+                if (result.Count >= 500) break;
+            }
+        }
+        catch (Exception error) when (error is IOException or UnauthorizedAccessException) { }
+        return result.Order(StringComparer.OrdinalIgnoreCase).ToList();
+    }
+
+    private static bool IsIgnoredName(string name) => name.StartsWith('.') || name.StartsWith('$') || IgnoredChildren.Contains(name);
+
+    private static bool IsIgnoredChild(DirectoryInfo child)
+    {
+        if (IsIgnoredName(child.Name)) return true;
+        try { return (child.Attributes & (FileAttributes.Hidden | FileAttributes.System | FileAttributes.ReparsePoint)) != 0; }
+        catch (Exception error) when (error is IOException or UnauthorizedAccessException) { return true; }
+    }
+
+    /// <summary>Keeps one folder watcher per umbrella project, so a new subfolder gets the skills without a manual sync.</summary>
+    private void RefreshUmbrellaWatchers()
+    {
+        lock (_umbrellaWatchers)
+        {
+            if (_disposed) return;
+            var wanted = ReadAll().Where(record => record.Umbrella == true && Directory.Exists(record.Path))
+                .ToDictionary(record => record.Id, record => Path.GetFullPath(record.Path), StringComparer.Ordinal);
+            foreach (var (id, watch) in _umbrellaWatchers.ToArray())
+            {
+                if (wanted.TryGetValue(id, out var path) && string.Equals(path, watch.Path, StringComparison.OrdinalIgnoreCase)) continue;
+                watch.Watcher.Dispose();
+                watch.Timer.Dispose();
+                _umbrellaWatchers.Remove(id);
+            }
+            foreach (var (id, path) in wanted)
+            {
+                if (_umbrellaWatchers.ContainsKey(id)) continue;
+                try
+                {
+                    var timer = new Timer(_ => _ = ReprojectUmbrellaAsync(id), null, Timeout.Infinite, Timeout.Infinite);
+                    var watcher = new FileSystemWatcher(path) { IncludeSubdirectories = false, NotifyFilter = NotifyFilters.DirectoryName };
+                    void Schedule(string fullPath)
+                    {
+                        if (IsIgnoredName(Path.GetFileName(fullPath))) return;
+                        try { timer.Change(UmbrellaSettleDelay, Timeout.InfiniteTimeSpan); }
+                        catch (ObjectDisposedException) { }
+                    }
+                    watcher.Created += (_, args) => Schedule(args.FullPath);
+                    watcher.Renamed += (_, args) => Schedule(args.FullPath);
+                    watcher.Deleted += (_, args) => Schedule(args.FullPath);
+                    watcher.EnableRaisingEvents = true;
+                    _umbrellaWatchers[id] = new UmbrellaWatch(path, watcher, timer);
+                }
+                catch (Exception error) when (error is IOException or ArgumentException or UnauthorizedAccessException) { }
+            }
+        }
+    }
+
+    private async Task ReprojectUmbrellaAsync(string id)
+    {
+        try { await SyncAsync(id).ConfigureAwait(false); }
+        catch (Exception error) when (error is IOException or UnauthorizedAccessException or ArgumentException or KeyNotFoundException or ObjectDisposedException) { }
     }
 
     public string Root => System.IO.Path.Combine(_discovery.SkillHubRoot, "workspaces");
@@ -137,7 +231,7 @@ public sealed partial class WorkspaceService : IDisposable
     /// is add (default), remove or replace. Returns the workspace after its files were written.
     /// </summary>
     public async Task<WorkspaceStatus> SetSkillsByPathAsync(string path, IReadOnlyList<string> skills, string? mode,
-        IReadOnlyList<string>? targets, bool? keepLocal, CancellationToken ct = default)
+        IReadOnlyList<string>? targets, bool? keepLocal, CancellationToken ct = default, bool? umbrella = null)
     {
         var existing = FindByPath(path) ?? await RegisterAsync(path, null, ct).ConfigureAwait(false);
         var current = existing.Skills.ToList();
@@ -148,7 +242,7 @@ public sealed partial class WorkspaceService : IDisposable
             "replace" => skills.ToList(),
             _ => throw new ArgumentException("mode must be add, remove or replace.")
         };
-        return await UpdateAsync(existing.Id, chosen, targets, null, ct, keepLocal).ConfigureAwait(false);
+        return await UpdateAsync(existing.Id, chosen, targets, null, ct, keepLocal, umbrella).ConfigureAwait(false);
     }
 
     public async Task<WorkspaceStatus> RegisterAsync(string path, string? name, CancellationToken ct = default)
@@ -172,7 +266,7 @@ public sealed partial class WorkspaceService : IDisposable
     }
 
     public async Task<WorkspaceStatus> UpdateAsync(string id, IReadOnlyList<string>? skills, IReadOnlyList<string>? targets, string? name,
-        CancellationToken ct = default, bool? keepLocal = null)
+        CancellationToken ct = default, bool? keepLocal = null, bool? umbrella = null)
     {
         await _gate.WaitAsync(ct).ConfigureAwait(false);
         try
@@ -189,7 +283,10 @@ public sealed partial class WorkspaceService : IDisposable
             }
             if (!string.IsNullOrWhiteSpace(name)) record.Name = name.Trim();
             if (keepLocal is not null) record.KeepLocal = keepLocal;
+            var watchChanged = umbrella is not null && (record.Umbrella == true) != umbrella.Value;
+            if (umbrella is not null) record.Umbrella = umbrella.Value ? true : null;
             await ProjectAsync(record, ct).ConfigureAwait(false);
+            if (watchChanged) RefreshUmbrellaWatchers();
             return Status(record);
         }
         finally { _gate.Release(); }
@@ -223,11 +320,15 @@ public sealed partial class WorkspaceService : IDisposable
             }
             if (Directory.Exists(record.Path))
             {
-                try { GitExclude.Write(record.Path, []); }
-                catch (Exception error) when (error is IOException or UnauthorizedAccessException) { kept.Add(new(".git/info/exclude", error.Message)); }
+                foreach (var folder in ExcludeFolders(record, OwnedChildren(record)))
+                {
+                    try { GitExclude.Write(folder, []); }
+                    catch (Exception error) when (error is IOException or UnauthorizedAccessException) { kept.Add(new(".git/info/exclude", error.Message)); }
+                }
             }
             File.Delete(RecordPath(record.Id));
             _issues.Remove(record.Id);
+            RefreshUmbrellaWatchers();
             return kept;
         }
         finally { _gate.Release(); }
@@ -308,6 +409,15 @@ public sealed partial class WorkspaceService : IDisposable
         }
         var desired = DesiredFiles(record, missing, issues);
         foreach (var slug in missing) issues.Add(new(slug, "This skill is no longer in your library."));
+        var previousChildren = OwnedChildren(record);
+        if (record.Umbrella == true)
+        {
+            // One copy per direct subfolder, none in the umbrella folder itself.
+            var children = UmbrellaChildren(record.Path);
+            desired = children.SelectMany(child => desired.Select(file => (Key: child + "/" + file.Key, file.Value)))
+                .ToDictionary(file => file.Key, file => file.Value, StringComparer.OrdinalIgnoreCase);
+            if (children.Count == 0) issues.Add(new(record.Path, "This umbrella folder has no subfolders yet. New subfolders get the skills automatically."));
+        }
 
         foreach (var (relative, content) in desired)
         {
@@ -351,7 +461,8 @@ public sealed partial class WorkspaceService : IDisposable
                 {
                     if (onDisk is not null) File.Delete(path);
                     record.Owned.Remove(relative);
-                    PruneEmptyFolders(record.Path, Path.GetDirectoryName(path)!);
+                    var child = ChildOf(relative);
+                    PruneEmptyFolders(child is null ? record.Path : Path.Combine(record.Path, child), Path.GetDirectoryName(path)!);
                 }
                 catch (Exception error) when (error is IOException or UnauthorizedAccessException)
                 {
@@ -364,17 +475,45 @@ public sealed partial class WorkspaceService : IDisposable
                 issues.Add(new(relative, "Removed from the workspace, but the file was edited in the project, so SkillHub left it in place."));
             }
         }
-        try
+        // Each child repository of an umbrella gets its own exclude block, and the umbrella's own block is cleared (and vice versa).
+        var keep = record.KeepLocal != false;
+        foreach (var folder in ExcludeFolders(record, previousChildren.Concat(OwnedChildren(record))))
         {
-            GitExclude.Write(record.Path, record.KeepLocal != false ? GitExclude.EntriesFor(record.Owned.Keys) : []);
-        }
-        catch (Exception error) when (error is IOException or UnauthorizedAccessException)
-        {
-            issues.Add(new(".git/info/exclude", "Could not keep the skill folders out of Git: " + error.Message));
+            var child = string.Equals(folder, record.Path, StringComparison.OrdinalIgnoreCase) ? null : Path.GetFileName(folder);
+            IReadOnlyList<string> entries = !keep ? [] : child is null
+                ? GitExclude.EntriesFor(record.Owned.Keys.Where(key => ChildOf(key) is null))
+                : GitExclude.EntriesFor(record.Owned.Keys.Where(key => string.Equals(ChildOf(key), child, StringComparison.OrdinalIgnoreCase))
+                    .Select(key => key[(child.Length + 1)..]));
+            try { GitExclude.Write(folder, entries); }
+            catch (Exception error) when (error is IOException or UnauthorizedAccessException)
+            {
+                issues.Add(new(".git/info/exclude", "Could not keep the skill folders out of Git: " + error.Message));
+            }
         }
         record.LastSyncedAt = DateTimeOffset.UtcNow;
         _issues[record.Id] = issues;
         await WriteAsync(record).ConfigureAwait(false);
+    }
+
+    /// <summary>The umbrella child a project-relative path belongs to, or null for a path in the project folder itself
+    /// (those start with a tool folder such as <c>.claude</c>; umbrella children never start with a dot).</summary>
+    private static string? ChildOf(string relative)
+    {
+        var slash = relative.IndexOf('/');
+        return slash > 0 && relative[0] != '.' ? relative[..slash] : null;
+    }
+
+    private static HashSet<string> OwnedChildren(WorkspaceRecord record) =>
+        record.Owned.Keys.Select(ChildOf).OfType<string>().ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>The project folder plus every existing child folder whose exclude block may need writing.</summary>
+    private static List<string> ExcludeFolders(WorkspaceRecord record, IEnumerable<string> children)
+    {
+        var names = children.ToHashSet(StringComparer.OrdinalIgnoreCase);
+        if (record.Umbrella == true) names.UnionWith(UmbrellaChildren(record.Path));
+        var folders = new List<string> { record.Path };
+        folders.AddRange(names.Order(StringComparer.OrdinalIgnoreCase).Select(name => Path.Combine(record.Path, name)).Where(Directory.Exists));
+        return folders;
     }
 
     private static void PruneEmptyFolders(string projectRoot, string directory)
@@ -424,9 +563,13 @@ public sealed partial class WorkspaceService : IDisposable
         var alsoGlobal = models.Where(item => item.Model is { } model && ContextBudget.SkillTokens(model) > 0).Select(item => item.Key).ToArray();
         var off = models.Where(item => item.Model?.Scope == CanonicalSkillModel.ScopeOff).Select(item => item.Key).ToArray();
         var exists = Directory.Exists(record.Path);
+        var umbrella = record.Umbrella == true;
+        var children = umbrella && exists ? UmbrellaChildren(record.Path) : null;
+        var git = exists && (GitExclude.FindRepository(record.Path) is not null ||
+            children is not null && children.Any(child => IsGitRoot(Path.Combine(record.Path, child))));
         return new WorkspaceStatus(record.Id, record.Name, record.Path, exists, record.Skills, record.Targets,
             record.Owned.Count, record.LastSyncedAt, issues, missing, record.KeepLocal != false,
-            exists && GitExclude.FindRepository(record.Path) is not null, alsoGlobal, off);
+            git, alsoGlobal, off, umbrella, children);
     }
 
     private string RecordPath(string id)
@@ -464,6 +607,12 @@ public sealed partial class WorkspaceService : IDisposable
 
     public void Dispose()
     {
+        lock (_umbrellaWatchers)
+        {
+            _disposed = true;
+            foreach (var watch in _umbrellaWatchers.Values) { watch.Watcher.Dispose(); watch.Timer.Dispose(); }
+            _umbrellaWatchers.Clear();
+        }
         _engine.SkillChanged -= OnSkillChanged;
         _debounce.Dispose();
         _gate.Dispose();

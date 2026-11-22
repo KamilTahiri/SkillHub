@@ -69,15 +69,24 @@ export function deployment(skill, installed) {
   }
   if (issues.length) return { key: 'issue', label: 'Needs attention', tone: 'warning', synced, issues };
   if (synced.length) return { key: 'synced', label: 'Synced', tone: 'ok', synced, issues };
+  // Project-only and Off skills are never written to the tools' global folders, so nothing is pending.
+  if (skill.scope === 'project') return { key: 'project', label: 'Project-only · not synced globally', synced, issues };
+  if (skill.scope === 'off') return { key: 'off', label: 'Off · not synced', synced, issues };
   if (Object.values(skill.targets ?? {}).every(target => target.enabled === false) || installed.length && !enabled.length)
     return { key: 'disabled', label: 'Disabled', synced, issues };
   if (targets.some(target => target.state === 'external')) return { key: 'pending', label: 'Provider-owned', synced, issues };
   return { key: 'pending', label: installed.length ? targets.length ? 'Pending sync' : 'Not deployed' : 'No providers detected', synced, issues };
 }
 
+export const BOOTSTRAP_SKILL = '00-skillhub-bootstrap';
+
+/** SkillHub's own protocol skill: read-only and shipped with the app, but listed with the user's skills because it is always loaded. */
+export const isBuiltInProtocol = skill => skill.source_category === 'system' && skill.name === BOOTSTRAP_SKILL;
+
 export function inCollection(skill, collection, sync) {
-  if (collection === 'all') return skill.source_category !== 'system';
-  if (collection === 'synced') return skill.source_category !== 'system' && sync.synced.length > 0;
+  if (collection === 'all') return skill.source_category !== 'system' || isBuiltInProtocol(skill);
+  if (collection === 'synced') return (skill.source_category !== 'system' || isBuiltInProtocol(skill)) && sync.synced.length > 0;
+  if (collection === 'user') return skill.source_category === 'user' || isBuiltInProtocol(skill);
   return skill.source_category === collection;
 }
 

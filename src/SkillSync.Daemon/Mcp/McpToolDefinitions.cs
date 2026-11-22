@@ -133,7 +133,7 @@ public static class McpToolDefinitions
               },
               {
                 "name": "create_skill",
-                "description": "Creates a new canonical AI skill in SkillHub and automatically transpiles and syncs it to all installed AI providers (Claude, Gemini/Antigravity, OpenAI Codex, Cursor). Always use this tool instead of writing directly to ~/.claude/skills, ~/.gemini/skills, ~/.codex/skills, ~/.agents/skills, or .cursor/rules.",
+                "description": "Creates a new canonical AI skill in SkillHub and automatically transpiles and syncs it to all installed AI providers (Claude, Gemini/Antigravity, OpenAI Codex, Cursor). Always use this tool instead of writing directly to ~/.claude/skills, ~/.gemini/skills, ~/.codex/skills, ~/.agents/skills, or .cursor/rules. Write the description as a trigger + pointer (when to use it, and that the full SKILL.md must be read first when it has guardrails), never as a summary of its rules.",
                 "inputSchema": {
                   "type": "object",
                   "properties": {
@@ -153,7 +153,7 @@ public static class McpToolDefinitions
                       "type": "string",
                       "minLength": 10,
                       "maxLength": 500,
-                      "description": "Clear explanation of what the skill does and the capabilities it provides."
+                      "description": "A trigger + pointer, never a summary of the rules: say what the skill is for and when it must activate. If the body has mandatory steps or guardrails (never, must, only if), say explicitly that the AI MUST read the full SKILL.md before acting, e.g. 'Use whenever you commit, push, tag or release. Read the full SKILL.md before running any git command.' Agents that only see the description act on a summary and skip the rules."
                     },
                     "when_to_use": {
                       "type": "string",
@@ -232,7 +232,7 @@ public static class McpToolDefinitions
                     },
                     "description": {
                       "type": "string",
-                      "description": "Updated description (omit to keep existing)."
+                      "description": "Updated description (omit to keep existing). A trigger + pointer, never a summary of the rules: say what the skill is for and when it must activate. If the body has mandatory steps or guardrails (never, must, only if), say explicitly that the AI MUST read the full SKILL.md before acting, e.g. 'Use whenever you commit, push, tag or release. Read the full SKILL.md before running any git command.' Agents that only see the description act on a summary and skip the rules."
                     },
                     "when_to_use": {
                       "type": "string",
@@ -586,7 +586,8 @@ public static class McpToolDefinitions
                     "mode": { "type": "string", "enum": ["add", "remove", "replace"], "description": "add (default) keeps the project's other skills; remove takes these out; replace sets exactly these." },
                     "make_project_only": { "type": "boolean", "description": "Also set these skills to Project-only scope (removes them from global sync)." },
                     "targets": { "type": "array", "items": { "type": "string", "enum": ["claude", "codex", "gemini", "cursor", "copilot", "windsurf", "cline", "roocode"] }, "description": "Project folders to write (default claude, codex, gemini, cursor)." },
-                    "keep_local": { "type": "boolean", "description": "Keep the generated folders out of Git via .git/info/exclude (default true). false: commit them for a team." }
+                    "keep_local": { "type": "boolean", "description": "Keep the generated folders out of Git via .git/info/exclude (default true). false: commit them for a team." },
+                    "umbrella": { "type": "boolean", "description": "Umbrella folder mode for a path that groups several projects (e.g. 'Roblox Games'): true writes the skills into each direct subfolder (and each child repository's .git/info/exclude), never into the umbrella folder itself, and new subfolders get them automatically. false returns to a single project folder. Omit to keep the current mode." }
                   },
                   "required": ["path"],
                   "additionalProperties": false
@@ -625,7 +626,7 @@ public static class McpToolDefinitions
               },
               {
                 "name": "create_project",
-                "description": "Registers a folder as a SkillHub project (idempotent: an existing project is returned as is), optionally creating the folder and choosing skills. Defaults: Claude, Codex, Gemini and Cursor folders, and Keep local on (generated folders listed in .git/info/exclude). Also returns an umbrella hint when the folder sits next to sibling projects, and .git boundary warnings.",
+                "description": "Registers a folder as a SkillHub project (idempotent: an existing project is returned as is), optionally creating the folder and choosing skills. Defaults: Claude, Codex, Gemini and Cursor folders, and Keep local on (generated folders listed in .git/info/exclude). umbrella: true makes it an umbrella folder whose direct subfolders each receive the skills. Also returns an umbrella hint when the folder sits next to sibling projects, and .git boundary warnings.",
                 "inputSchema": {
                   "type": "object",
                   "properties": {
@@ -636,7 +637,8 @@ public static class McpToolDefinitions
                     "source": { "type": "string", "description": "Also add every skill imported from this owner/repo, or 'personal'." },
                     "targets": { "type": "array", "items": { "type": "string", "enum": ["claude", "codex", "gemini", "cursor", "copilot", "windsurf", "cline", "roocode"] } },
                     "keep_local": { "type": "boolean", "description": "Keep generated folders out of Git (default true)." },
-                    "create_folder": { "type": "boolean", "description": "Create the folder when it does not exist yet." }
+                    "create_folder": { "type": "boolean", "description": "Create the folder when it does not exist yet." },
+                    "umbrella": { "type": "boolean", "description": "Umbrella folder mode: write the skills into each direct subfolder (hidden, system and tooling folders such as .git, node_modules and .vs are skipped), never into this folder; new subfolders get them automatically. Use it when the subfolders are separate Git repositories, so IDE tools that stop at .git still see the skills." }
                   },
                   "required": ["path"],
                   "additionalProperties": false
@@ -644,7 +646,7 @@ public static class McpToolDefinitions
               },
               {
                 "name": "inspect_project_skills",
-                "description": "Shows which skills reach the AI tools in a folder: skills of a SkillHub project registered for this folder or inherited from a registered parent (umbrella) folder, with compact metadata {slug, description, tags, scope, via, also_global}, skill files found on disk (managed or not), the global skill names, the Git root, umbrella hints and .git boundary warnings. Use it to judge which skills are relevant or redundant without reading skill files.",
+                "description": "Shows which skills reach the AI tools in a folder: skills of a SkillHub project registered for this folder or inherited from a registered parent (umbrella) folder, with compact metadata {slug, description, tags, scope, via, also_global}, skill files found on disk (managed or not), the global skill names, the Git root, umbrella projects with their detected children, umbrella hints and .git boundary warnings. Use it to judge which skills are relevant or redundant without reading skill files.",
                 "inputSchema": {
                   "type": "object",
                   "properties": { "path": { "type": "string", "minLength": 1, "description": "Absolute path of the folder you are working in." } },

@@ -10,11 +10,11 @@ public static class BootstrapManager
         {
             Name = SyncEngine.BootstrapSkillName,
             Title = "SkillHub Bootstrap Protocol",
-            Version = "1.4.0",
+            Version = "1.5.0",
             SourceCategory = "system",
             OriginProvider = "SkillHub System",
             Description = "Mandatory protocol for creating, reading, updating, tagging, importing, or deleting AI agent skills and rules across all local AI environments (Claude, Gemini/Antigravity, OpenAI Codex, and Cursor) via the SkillHub MCP server.",
-            WhenToUse = "ALWAYS activate whenever the user asks to create, update, delete, list, tag or import skills, toggles provider sync, starts work in a Roblox, Blender or other domain-specific project, or modifies files inside ~/.claude/skills, ~/.gemini/skills, ~/.codex/skills, ~/.agents/skills, or .cursor/rules.",
+            WhenToUse = "ALWAYS activate whenever the user asks to create, update, delete, list, tag or import skills, toggles provider sync, starts work in a Roblox, Blender or other domain-specific project, or modifies files inside ~/.claude/skills, ~/.gemini/skills, ~/.codex/skills, ~/.agents/skills, or .cursor/rules. Read the full SKILL.md before calling any SkillHub tool.",
             SummaryShort = "Mandatory skill management protocol: use SkillHub MCP tools (list_skills, get_skill, create_skill, update_skill, delete_skill, manage_skill_tags, prepare_skill_import, apply_skill_import) for all skill operations.",
             Tags = ["system", "skillhub", "meta-skill"],
             Targets = new SkillTargetsConfig
@@ -106,7 +106,7 @@ public static class BootstrapManager
                 4. **PRESERVE CROSS-PROVIDER METADATA WHEN AUTHORING SKILLS:**
                    When calling `create_skill` or `update_skill`, always provide:
                    - `name`: Lowercase kebab-case slug (e.g., `api-contract-validator`).
-                   - `description`: Detailed explanation of what the skill does.
+                   - `description`: A **trigger + pointer, never a summary of the rules**. Say what the skill is for and when it must activate. When the body contains mandatory steps or guardrails (`never`, `must`, `only if`), say explicitly that the AI MUST read the full `SKILL.md` before acting, e.g. "Use whenever you commit, push, tag or release. Read the full SKILL.md before running any git command." An agent that only sees a summary acts on it and skips the guardrails; `lint_skill` reports this as `description-summary`.
                    - `when_to_use`: Explicit trigger conditions (SkillHub combines this into a single-line description for Gemini and keeps it separate for Claude).
                    - `summary_short`: A concise (<160 chars) summary optimized for OpenAI Codex's token budget.
                    - `instructions_markdown`: Clean, well-structured Markdown body (without YAML frontmatter fences, as SkillHub generates the frontmatter for each target provider).
@@ -131,8 +131,8 @@ public static class BootstrapManager
                    - **When the workspace matches a Project-only pack that this project does not have yet** (call `inspect_project_skills` first: a parent umbrella project may already provide it) (e.g. `.luau`, `default.project.json` or `.rbxlx` for Roblox; `.blend` or `bpy` scripts for Blender): check `list_skills` with `scope: "project"` and `list_projects`, then offer once: "SkillHub has a Project-only Roblox pack. Attach it to this project?" On a yes → `set_project_skills` with the project's absolute `path` and the pack's `source` or `tag`. Do not ask again in the same conversation after a no.
 
                 9. **PREFER UMBRELLA FOLDERS, MIND THE `.git` BOUNDARY:**
-                   - Before suggesting where to attach a domain pack, check whether the project sits in an umbrella folder that groups related projects (e.g. `Roblox Games\` holding one folder per game). `create_project` and `inspect_project_skills` return an `umbrella` hint. Prefer suggesting the umbrella folder so the pack is written once instead of into every project.
-                   - If the individual projects have their own `.git` (the hint lists `separate_git_repos`), say briefly that Claude Code reads parent folders but IDE tools (Cursor, Copilot, Windsurf, Antigravity IDE) opened on one repository may stop at its `.git` boundary, and let the user choose: the umbrella folder, or the specific repository.
+                   - Before suggesting where to attach a domain pack, check whether the project sits in an umbrella folder that groups related projects (e.g. `Roblox Games\` holding one folder per game). `create_project` and `inspect_project_skills` return an `umbrella` hint. Prefer suggesting the umbrella folder so the pack is managed once instead of per project.
+                   - If the individual projects have their own `.git` (the hint lists `separate_git_repos`), IDE tools (Cursor, Copilot, Windsurf, Antigravity IDE) opened on one repository may stop at its `.git` boundary. Suggest **umbrella mode** (`create_project` or `set_project_skills` with `umbrella: true`): SkillHub then writes the pack into each direct subfolder (with each repository's `.git/info/exclude`), never into the umbrella folder itself, and new subfolders get it automatically. `inspect_project_skills` lists the detected `children`.
 
                 10. **AUDIT RELEVANCE, ASK WHEN UNSURE:**
                    - When you work in a project or are asked to review its skills, call `inspect_project_skills` and compare each active skill's description and tags with the workspace. Point out skills that look irrelevant or redundant (`also_global`).

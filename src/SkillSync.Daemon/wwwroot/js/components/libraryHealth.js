@@ -104,11 +104,12 @@ export async function showBudget(app) {
               ' · ' + pack.global_skills + ' global' + (pack.project_only_skills ? ' · ' + pack.project_only_skills + ' Project-only' : '') +
               (pack.off_skills ? ' · ' + pack.off_skills + ' Off' : ''))),
           h('div', { class: 'actions' },
-            h('span', { class: 'budget-share' }, '~' + formatTokens(pack.tokens) + ' (' + share + '%)'),
+            h('span', { class: 'budget-share' }, pack.tokens > 0 || pack.global_skills > 0 ? '~' + formatTokens(pack.tokens) + ' (' + share + '%)'
+              : pack.off_skills === pack.skills.length ? 'Off' : 'Project-only'),
             canMove && pack.global_skills > 0 && button('Set pack to Project-only', event => busy(event.currentTarget, async () => {
               await applyScope(app, packSelection, 'project');
               await load();
-            }), 'small primary', { 'data-pack-action': 'project' }),
+            }), 'small outline', { 'data-pack-action': 'project' }),
             canMove && pack.global_skills < pack.skills.length && button('Set pack to Global', event => busy(event.currentTarget, async () => {
               await applyScope(app, packSelection, 'global');
               await load();

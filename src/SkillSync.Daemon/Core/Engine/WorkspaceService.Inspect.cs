@@ -13,7 +13,8 @@ public sealed record ProjectCreateResult(bool Created, WorkspaceStatus Project, 
 /// <summary>Compact skill metadata for relevance checks: never the body or companion files.</summary>
 public sealed record InspectedSkill(string Slug, string Description, IReadOnlyList<string> Tags, string Scope, string Via, bool Inherited, bool AlsoGlobal);
 
-public sealed record InspectedProject(string Id, string Name, string Path, bool Inherited, IReadOnlyList<string> Targets, bool KeepLocal);
+public sealed record InspectedProject(string Id, string Name, string Path, bool Inherited, IReadOnlyList<string> Targets, bool KeepLocal,
+    bool Umbrella = false, IReadOnlyList<string>? Children = null);
 
 public sealed record SkillFolderOnDisk(string Tool, string Slug, string Path, bool ManagedBySkillHub);
 
@@ -51,7 +52,7 @@ public sealed partial class WorkspaceService
     /// choosing skills. Defaults: the standard targets and Keep local on, so Git repositories get <c>.git/info/exclude</c> entries.
     /// </summary>
     public async Task<ProjectCreateResult> CreateAsync(string path, string? name, IReadOnlyList<string> skills, IReadOnlyList<string>? targets,
-        bool? keepLocal, bool createFolder, CancellationToken ct = default)
+        bool? keepLocal, bool createFolder, CancellationToken ct = default, bool? umbrella = null)
     {
         if (string.IsNullOrWhiteSpace(path)) throw new ArgumentException("Choose a project folder.");
         var full = Path.GetFullPath(path.Trim().Trim('"')).TrimEnd('\\', '/');
@@ -64,8 +65,8 @@ public sealed partial class WorkspaceService
         var existing = FindByPath(full);
         var created = existing is null;
         var project = existing ?? await RegisterAsync(full, name, ct).ConfigureAwait(false);
-        project = created || skills.Count > 0 || targets is not null || keepLocal is not null
-            ? await UpdateAsync(project.Id, project.Skills.Concat(skills).ToList(), targets, created ? null : name, ct, keepLocal).ConfigureAwait(false)
+        project = created || skills.Count > 0 || targets is not null || keepLocal is not null || umbrella is not null
+            ? await UpdateAsync(project.Id, project.Skills.Concat(skills).ToList(), targets, created ? null : name, ct, keepLocal, umbrella).ConfigureAwait(false)
             : project;
         return new ProjectCreateResult(created, project, Locate(full));
     }
@@ -92,7 +93,8 @@ public sealed partial class WorkspaceService
         foreach (var (record, root) in records)
         {
             var inherited = !string.Equals(root, full, StringComparison.OrdinalIgnoreCase);
-            if (inherited && git is not null && SkillPaths.IsInside(root, git))
+            // An umbrella project writes real copies into each direct subfolder, so there is no .git boundary to cross.
+            if (inherited && record.Umbrella != true && git is not null && SkillPaths.IsInside(root, git))
                 warnings.Add($"Skills come from the parent project '{root}', but this folder is its own Git repository ('{git}'). " +
                     "Claude Code reads parent folders, while IDE tools (Cursor, Copilot, Windsurf, Antigravity IDE) opened on this repository may stop at its .git boundary and not see them. " +
                     "Ask the user whether to keep the umbrella project or attach the skills to this repository too.");
@@ -126,7 +128,8 @@ public sealed partial class WorkspaceService
 
         return new ProjectInspection(full, exists, git,
             records.Select(item => new InspectedProject(item.Record.Id, item.Record.Name, item.Root,
-                !string.Equals(item.Root, full, StringComparison.OrdinalIgnoreCase), item.Record.Targets, item.Record.KeepLocal != false)).ToList(),
+                !string.Equals(item.Root, full, StringComparison.OrdinalIgnoreCase), item.Record.Targets, item.Record.KeepLocal != false,
+                item.Record.Umbrella == true, item.Record.Umbrella == true && Directory.Exists(item.Root) ? UmbrellaChildren(item.Root) : null)).ToList(),
             skills, onDisk, globals, location.Umbrella, warnings,
             "Judge relevance from slug, description and tags against the files in this workspace. If you are unsure whether a skill belongs here, " +
             "ask the user about those specific skills before adding or removing anything (set_project_skills).");
@@ -145,7 +148,8 @@ public sealed partial class WorkspaceService
             if (repos.Count > 0)
                 warnings.Add($"This umbrella folder holds separate Git repositories ({string.Join(", ", repos.Take(6))}{(repos.Count > 6 ? ", …" : string.Empty)}). " +
                     "Claude Code finds skills in parent folders, but IDE tools (Cursor, Copilot, Windsurf, Antigravity IDE) opened on one of those repositories may stop at its .git boundary. " +
-                    "Let the user choose: keep the umbrella project, or attach the pack to the specific repositories they open in an IDE.");
+                    "Offer umbrella mode (umbrella: true), which copies the pack into each direct subfolder and its .git/info/exclude so every tool sees it, " +
+                    "or attach the pack to the specific repositories they open in an IDE.");
         }
         var parent = Path.GetDirectoryName(full);
         if (parent is not null && IsAllowedUmbrella(parent))
@@ -156,7 +160,7 @@ public sealed partial class WorkspaceService
                 var repos = siblings.Where(child => IsGitRoot(Path.Combine(parent, child))).ToList();
                 umbrella = new UmbrellaHint(parent, siblings.Take(12).ToList(), repos.Take(12).ToList(),
                     $"'{Path.GetFileName(full)}' sits in '{parent}' with {siblings.Count - 1} other project(s). Prefer one SkillHub project on the umbrella folder so the pack is not copied into every project" +
-                    (repos.Count > 0 ? "; but these projects have their own .git, and IDE tools may stop at that boundary, so ask the user which they prefer." : "."));
+                    (repos.Count > 0 ? "; these projects have their own .git and IDE tools may stop at that boundary, so ask the user whether to use umbrella mode (umbrella: true), which copies the pack into each subfolder." : "."));
             }
         }
         return new ProjectLocation(umbrella, warnings);

@@ -114,6 +114,18 @@ export function showIconPicker(app, skill) {
   const preview = h('div', { class: 'icon-picker-preview' });
   const feedback = h('div', { role: 'status', class: 'icon-picker-feedback' });
   const grid = h('div', { class: 'icon-picker-grid', role: 'group', 'aria-label': 'Built-in icons' });
+  const noMatch = h('p', { class: 'muted icon-picker-empty', hidden: true }, 'No icon matches. Try another word.');
+  const filter = h('input', { class: 'input', type: 'search', placeholder: 'Filter icons (e.g. code, game, data)', 'aria-label': 'Filter icons',
+    'data-control': 'icon-filter', oninput: () => {
+      const query = filter.value.trim().toLowerCase();
+      let shown = 0;
+      for (const choice of grid.children) {
+        const match = !query || (choice.dataset.icon + ' ' + choice.title).toLowerCase().includes(query);
+        choice.hidden = !match;
+        if (match) shown++;
+      }
+      noMatch.hidden = shown > 0;
+    } });
   const choose = next => { pending = next; feedback.replaceChildren(); render(); };
   for (const [id, item] of Object.entries(BADGE_ICONS)) {
     grid.append(h('button', { type: 'button', class: 'icon-choice', 'data-icon': id, title: item.label, 'aria-label': item.label,
@@ -144,7 +156,7 @@ export function showIconPicker(app, skill) {
   }
   render();
   const dialog = modal('Skill icon', [preview,
-    h('section', { class: 'stack icon-picker-section' }, h('h3', {}, 'Built-in icons'), grid),
+    h('section', { class: 'stack icon-picker-section' }, h('h3', {}, 'Built-in icons'), filter, grid, noMatch),
     h('section', { class: 'stack icon-picker-section' }, h('h3', {}, 'Your own image'),
       h('div', { class: 'actions' }, upload, file,
         h('small', { class: 'muted' }, 'Stored only in SkillHub (~/.skillhub/appearance). AI tool folders never change.'))),

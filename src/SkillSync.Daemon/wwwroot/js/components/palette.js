@@ -1,6 +1,7 @@
 import { h } from '../ui.js';
 import { icon } from '../icons.js';
-import { skillKey } from '../state.js';
+import { skillKey, isBuiltInProtocol } from '../state.js';
+import { appearanceFor, skillBadge } from '../skillBadge.js';
 
 /**
  * Scores how well a query matches a label as a subsequence. Matches at word starts and consecutive
@@ -45,9 +46,9 @@ export function openPalette(app, commands) {
   let active = 0;
   let entries = [];
 
-  const skillEntries = () => app.snapshot.skills.filter(skill => skill.source_category !== 'system').map(skill => ({
+  const skillEntries = () => app.snapshot.skills.filter(skill => skill.source_category !== 'system' || isBuiltInProtocol(skill)).map(skill => ({
     id: 'skill:' + skillKey(skill), group: 'Skills', label: skill.title || skill.name, hint: skill.name,
-    icon: 'library', keywords: (skill.description ?? '') + ' ' + (skill.tags ?? []).join(' '),
+    icon: 'library', skill, keywords: (skill.description ?? '') + ' ' + (skill.tags ?? []).join(' '),
     run: () => app.read(skillKey(skill))
   }));
 
@@ -72,7 +73,8 @@ export function openPalette(app, commands) {
       nodes.push(h('li', { class: 'palette-item', role: 'option', id: 'palette-' + index, 'aria-selected': String(index === active),
         onmousemove: () => { if (active !== index) { active = index; highlight(); } },
         onclick: () => run(index) },
-        h('span', { class: 'palette-icon', 'data-icon': entry.icon }, icon(entry.icon ?? 'palette')),
+        h('span', { class: 'palette-icon', 'data-icon': entry.icon }, entry.skill
+          ? skillBadge(entry.skill, appearanceFor(entry.skill, app.snapshot.appearance), { className: 'tiny' }) : icon(entry.icon ?? 'palette')),
         h('span', { class: 'palette-label' }, entry.label),
         entry.hint && h('span', { class: 'palette-hint' }, entry.hint),
         entry.shortcut && h('kbd', {}, entry.shortcut)));

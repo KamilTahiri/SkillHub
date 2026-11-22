@@ -74,7 +74,7 @@ public sealed partial class McpJsonRpcHandler
         projects = Workspaces.List().Select(project => new
         {
             project.Id, project.Name, project.Path, project.Exists, project.Skills, project.Targets, project.KeepLocal, project.GitRepo,
-            also_global = project.AlsoGlobal, project.MissingSkills, project.OffSkills, project.LastSyncedAt,
+            project.Umbrella, project.Children, also_global = project.AlsoGlobal, project.MissingSkills, project.OffSkills, project.LastSyncedAt,
             issues = project.Issues
         }),
         targets = WorkspaceTargets.All,
@@ -85,20 +85,22 @@ public sealed partial class McpJsonRpcHandler
     {
         var path = args["path"]?.GetValue<string>() ?? throw new ArgumentException("path is required: the project folder.");
         var mode = args["mode"]?.GetValue<string>() ?? "add";
-        var names = ResolveSkillSelection(args, required: mode != "replace");
+        // Changing only the folder settings (umbrella mode, Keep local, targets) needs no skill names.
+        var settingsOnly = args["umbrella"] is not null || args["keep_local"] is not null || args["targets"] is not null;
+        var names = ResolveSkillSelection(args, required: mode != "replace" && !settingsOnly);
         var targets = args["targets"] is JsonArray ? ReadStringList(args["targets"]) : null;
         var keepLocal = args["keep_local"]?.GetValue<bool>();
         ScopeChangeResult? scope = null;
         if (args["make_project_only"]?.GetValue<bool>() == true && mode != "remove")
             scope = await _syncEngine.SetScopeAsync(names, CanonicalSkillModel.ScopeProject, "mcp:set_project_skills", ct).ConfigureAwait(false);
-        var project = await Workspaces.SetSkillsByPathAsync(path, names, mode, targets, keepLocal, ct).ConfigureAwait(false);
+        var project = await Workspaces.SetSkillsByPathAsync(path, names, mode, targets, keepLocal, ct, args["umbrella"]?.GetValue<bool>()).ConfigureAwait(false);
         return JsonSerializer.Serialize(new
         {
             status = "synced",
             project = new
             {
                 project.Id, project.Name, project.Path, project.Skills, project.Targets, project.KeepLocal, project.GitRepo,
-                files_written = project.FileCount, also_global = project.AlsoGlobal, project.Issues
+                files_written = project.FileCount, also_global = project.AlsoGlobal, project.Issues, project.Umbrella, project.Children
             },
             made_project_only = scope?.Changed,
             message = project.AlsoGlobal is { Count: > 0 } alsoGlobal
@@ -203,7 +205,7 @@ public sealed partial class McpJsonRpcHandler
             ? ResolveSkillSelection(args, required: false) : [];
         var targets = args["targets"] is JsonArray ? ReadStringList(args["targets"]) : null;
         var result = await Workspaces.CreateAsync(path, args["name"]?.GetValue<string>(), names, targets, args["keep_local"]?.GetValue<bool>(),
-            args["create_folder"]?.GetValue<bool>() ?? false, ct).ConfigureAwait(false);
+            args["create_folder"]?.GetValue<bool>() ?? false, ct, args["umbrella"]?.GetValue<bool>()).ConfigureAwait(false);
         var project = result.Project;
         return JsonSerializer.Serialize(new
         {
@@ -211,7 +213,7 @@ public sealed partial class McpJsonRpcHandler
             project = new
             {
                 project.Id, project.Name, project.Path, project.Skills, project.Targets, project.KeepLocal, project.GitRepo,
-                files_written = project.FileCount, also_global = project.AlsoGlobal, project.Issues
+                files_written = project.FileCount, also_global = project.AlsoGlobal, project.Issues, project.Umbrella, project.Children
             },
             umbrella = result.Location.Umbrella,
             warnings = result.Location.Warnings,

@@ -403,7 +403,7 @@ export function createSettings(root, app) {
         h('div', { class: 'backup-text' },
           h('div', { class: 'backup-title' }, h('strong', {}, entry.skill),
             entry.provider && h('span', { class: 'status-badge small muted' }, (PROVIDER_LABELS[entry.provider] ?? entry.provider) + ' copy'),
-            h('small', { class: 'muted', title: entry.saved_at ? new Date(entry.saved_at).toLocaleString() : '' }, when(entry.saved_at))),
+            h('small', { class: 'muted', title: entry.saved_at ? new Date(entry.saved_at).toLocaleString('en-US') : '' }, when(entry.saved_at))),
           h('p', {}, entry.reason ?? 'This tool’s copy differed from SkillHub’s version, so it was saved before syncing.'),
           h('p', { class: 'path muted' }, entry.destination + (entry.file_count > 1 ? ' · ' + entry.file_count + ' files' : ''))),
         h('div', { class: 'actions wrap' }, compare, restoreReplace, restoreNew, undo));
@@ -422,7 +422,7 @@ export function createSettings(root, app) {
             slug ? (skill ? button(skill.title || slug, () => app.read(slug), 'link small') : h('strong', {}, slug)) : null,
             provider && h('span', { class: 'muted' }, (kind.label === 'Imported' ? 'from ' : '→ ') + provider)),
           event.details && h('small', { class: 'muted activity-detail' }, event.details)),
-        h('time', { class: 'muted', datetime: event.timestamp_utc, title: new Date(event.timestamp_utc).toLocaleString() }, when(event.timestamp_utc)));
+        h('time', { class: 'muted', datetime: event.timestamp_utc, title: new Date(event.timestamp_utc).toLocaleString('en-US') }, when(event.timestamp_utc)));
     }
 
     function renderSection() {
@@ -469,7 +469,7 @@ export function createSettings(root, app) {
             });
           }, 'small');
           return h('div', { class: 'settings-row spread' }, h('div', {}, h('strong', {}, item.title),
-            h('p', { class: 'muted' }, [item.origin, item.deleted_at && new Date(item.deleted_at).toLocaleString()].filter(Boolean).join(' · ')),
+            h('p', { class: 'muted' }, [item.origin, item.deleted_at && new Date(item.deleted_at).toLocaleString('en-US')].filter(Boolean).join(' · ')),
             item.restore_targets?.length && h('p', {}, 'Restore to ' + item.restore_targets.join(', '))), restore);
         }));
         if (!trash.length) body.append(h('p', { class: 'muted' }, 'Trash is empty.'));
