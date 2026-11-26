@@ -45,9 +45,13 @@ jobs:
           ./build-installer.ps1
           ./build-installer.ps1 -TestPackage -OutputDirectory ./dist/setup-test
           ./tests/packaging/Smoke-Setup.ps1 -Setup ./dist/setup-test/SkillHub-Setup.exe
+      # Keeps the 500 MB Actions storage quota free: the release carries the installer on tags,
+      # and a 3-day preview is enough to try a build from main.
       - uses: actions/upload-artifact@v7
+        if: ${{ !startsWith(github.ref, 'refs/tags/') }}
         with:
           name: skillhub-windows-preview
           path: |
             dist/SkillHub-Setup.exe
             dist/SkillHub-Setup.exe.sha256
+          retention-days: 3
