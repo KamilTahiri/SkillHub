@@ -82,7 +82,7 @@ Cline and Roo Code load every rule into every conversation, so skills reach them
 
 ## Quick start
 
-1. **Install.** Download `SkillHub-Setup.exe` from a release (or build it, below) and run it. It installs per user into `%LOCALAPPDATA%\SkillHub`, adds a Start Menu shortcut, and needs the Microsoft Edge WebView2 Runtime (already present on Windows 11).
+1. **Install.** Download `SkillHub-Setup.exe` from the [latest release](https://github.com/KamilTahiri/SkillHub/releases/latest) (or build it, below) and run it. It installs per user into `%LOCALAPPDATA%\SkillHub`, adds a Start Menu shortcut, and needs the Microsoft Edge WebView2 Runtime (already present on Windows 11).
 2. **Follow the welcome guide.** It shows the AI tools SkillHub found and connects their MCP settings in one click. Restart each tool you connected.
 3. **Ask your assistant.** In any connected tool, try:
 
@@ -132,7 +132,7 @@ Connected assistants get 34 tools: `list_skills`, `get_skill`, `create_skill`, `
         │  read/write their own folders            │  MCP over stdio
         ▼                                            ▼
  MultiRootFileWatcher ──► SyncEngine ◄── SkillHub.exe mcp-stdio ──named pipe──► McpJsonRpcHandler
-   (debounced saves,        │   ▲                                                 (18 tools, prompts,
+   (debounced saves,        │   ▲                                                 (34 tools, prompts,
     ignores *.skillsync-tmp)│   │ transpilers: Canonical · Claude · Gemini ·       resources)
                             │   │ Codex · Cursor .mdc · Agent skill · Plain rule
                             ▼   │
@@ -160,6 +160,6 @@ installer/              Inno Setup script
 
 ## Status
 
-SkillHub 1.4 is a Windows preview. Compatibility with a particular client depends on its configuration format; Settings shows the exact paths and registration state SkillHub uses.
+SkillHub is a Windows preview; [Releases](https://github.com/KamilTahiri/SkillHub/releases) lists the current version and its changes. Compatibility with a particular client depends on its configuration format; Settings shows the exact paths and registration state SkillHub uses.
 
 See [LICENSE](LICENSE) (Apache 2.0), [third-party notices](THIRD_PARTY_NOTICES.md), [Contributing](CONTRIBUTING.md) and [Security](SECURITY.md).
